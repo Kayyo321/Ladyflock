@@ -18,4 +18,6 @@ Follow the [inherited build instructions](Documentation/BuildInstructionsLadybir
 
 ## Upstream and license
 
+See [Updating from Ladybird](UPSTREAM.md) to review newer upstream revisions without importing upstream branches or tags.
+
 Ladyflock is a separate project and is not affiliated with the Ladybird Browser Initiative. This repository preserves the upstream Git history and copyright notices. The inherited source is distributed under the [BSD 2-Clause license](LICENSE), with individual notices where applicable.
