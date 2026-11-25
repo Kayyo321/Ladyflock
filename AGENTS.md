@@ -9,6 +9,16 @@ Ladyflock is a standalone downstream browser based on Ladybird. Its first goal i
 3. Keep changes scoped and reviewable. Use the project's [coding style](Documentation/CodingStyle.md) and follow the local C++23, Rust, or generated-binding conventions. Do not move code between languages or reformat unrelated files as part of a feature.
 4. Keep inherited copyright notices and the [license](LICENSE). Leave logos, product naming inside the browser, release infrastructure, and upstream metadata alone unless the task explicitly covers them.
 
+## UI skills
+
+For visual or interactive changes, use the repo-wide skills under `.agents/skills/` (Codex) or `.claude/skills/` (Claude Code):
+
+- `ladyflock-qt-chrome` for desktop widgets and browser chrome.
+- `ladyflock-webui` for browser-owned HTML/CSS/JS.
+- `ladyflock-visual-regression` for both surfaces before claiming visual parity. A source review or skipped test is not visual evidence.
+
+If skills are not auto-discovered, read the relevant `SKILL.md` directly. Keep policy bodies in `.agents/skills/`; Claude's entrypoints reference them.
+
 ## Where work belongs
 
 | Area | Start in | What to verify |
