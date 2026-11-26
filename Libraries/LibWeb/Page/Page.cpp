@@ -2284,6 +2284,26 @@ void Page::set_content_blocking_policy(bool enabled, ReadonlySpan<String> disabl
     invalidate_user_style();
 }
 
+bool Page::scripting_enabled_for_top_level_url(Optional<URL::URL> const& url) const
+{
+    if (m_scripting_disabled_sites.is_empty() || !url.has_value())
+        return true;
+    auto host = content_blocking_site(*url);
+    return !host.has_value() || !m_scripting_disabled_sites.contains(*host);
+}
+
+void Page::set_scripting_disabled_sites(ReadonlySpan<String> disabled_sites)
+{
+    HashTable<String> sites;
+    sites.ensure_capacity(disabled_sites.size());
+    for (auto const& site : disabled_sites) {
+        if (auto host = canonical_content_blocking_host(site); host.has_value())
+            sites.set(host.release_value());
+    }
+    m_scripting_disabled_sites = move(sites);
+    ++m_scripting_policy_generation;
+}
+
 Vector<GC::Root<DOM::Document>> Page::documents_in_active_window() const
 {
     if (!has_local_traversable())

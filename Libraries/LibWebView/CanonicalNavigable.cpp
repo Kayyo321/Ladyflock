@@ -10,9 +10,11 @@
 #include <AK/Random.h>
 #include <LibCore/StatsLog.h>
 #include <LibHTTP/HeaderList.h>
+#include <LibPrivacy/Navigation/TrackingParameters.h>
 #include <LibWebCommon/HTML/BrowsingContext.h>
 #include <LibWebCommon/HTML/HistoryOperation.h>
 #include <LibWebCommon/HTML/SerializationRecords.h>
+#include <LibWebCommon/Loader/ContentBlocking.h>
 #include <LibWebCommon/Page/ViewportIsFullscreen.h>
 #include <LibWebCommon/SecureContexts/AbstractOperations.h>
 #include <LibWebView/Application.h>
@@ -26,6 +28,8 @@
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/IdentityManager.h>
 #include <LibWebView/PictureInPictureManager.h>
+#include <LibWebView/PrivacyActivity.h>
+#include <LibWebView/Settings.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebDriverBiDi.h>
@@ -199,6 +203,25 @@ Web::HTML::PreparedNavigationDescriptor CanonicalNavigable::prepare_navigation(U
 void CanonicalNavigable::begin_navigation(Web::HTML::PreparedNavigationDescriptor navigation, RefPtr<WebContentPage> source_page)
 {
     auto& traversable = top_level_traversable();
+
+    // Tracking parameters come off a top-level navigation's URL before anything else sees it: the identity handoff, DNS
+    // and the request. Reloads and history traversals do not come through here, and redirects that the server sends are
+    // followed as they are.
+    if (!parent() && Application::browser_options().privacy_strip_tracking_parameters) {
+        size_t removed_parameter_count = 0;
+        if (auto stripped = Privacy::strip_tracking_parameters(navigation.url, &removed_parameter_count); stripped.has_value()) {
+            navigation.url = stripped.release_value();
+            if (auto view = traversable.view(); view.has_value())
+                Application::privacy_activity().record_sanitized_navigation(view->session(), removed_parameter_count);
+        }
+    }
+    if (!parent()) {
+        if (auto site = Web::content_blocking_site(navigation.url); site.has_value() && !Application::settings().scripting_enabled_for_site(*site)) {
+            if (auto view = traversable.view(); view.has_value())
+                Application::privacy_activity().record_scripting_blocked_navigation(view->session());
+        }
+    }
+
     auto const& url = navigation.url;
     auto user_involvement = navigation.user_involvement;
     auto const& navigation_id = navigation.navigation_id;

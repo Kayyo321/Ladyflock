@@ -96,6 +96,8 @@ static constexpr auto UPDATE_CHECKS_KEY = "updateChecks"sv;
 static constexpr auto CONTENT_BLOCKERS_KEY = "contentBlockers"sv;
 static constexpr auto CONTENT_BLOCKER_SUBSCRIPTION_UPDATES_KEY = "contentBlockerSubscriptionUpdates"sv;
 static constexpr auto CONTENT_BLOCKER_DISABLED_SITES_KEY = "disabledSites"sv;
+static constexpr auto SITE_CONTROLS_KEY = "siteControls"sv;
+static constexpr auto SCRIPTING_DISABLED_SITES_KEY = "scriptingDisabledSites"sv;
 static constexpr auto CONTENT_BLOCKER_BUILT_IN_LISTS_KEY = "builtInLists"sv;
 static constexpr auto CONTENT_BLOCKER_CUSTOM_SUBSCRIPTIONS_KEY = "customSubscriptions"sv;
 static constexpr auto CONTENT_BLOCKER_LOCAL_LISTS_KEY = "localLists"sv;
@@ -601,6 +603,17 @@ void Settings::load_from_json(JsonValue const& json_value)
             m_custom_content_blocker_filters = *filters;
     }
 
+    if (auto site_controls = json.get_object(SITE_CONTROLS_KEY); site_controls.has_value()) {
+        if (auto sites = site_controls->get_array(SCRIPTING_DISABLED_SITES_KEY); sites.has_value()) {
+            sites->for_each([&](JsonValue const& entry) {
+                if (!entry.is_string())
+                    return;
+                if (auto host = Web::canonical_content_blocking_host(entry.as_string()); host.has_value())
+                    m_scripting_disabled_sites.set(host.release_value());
+            });
+        }
+    }
+
     if (auto dns_settings = json.get(DNS_SETTINGS_KEY); dns_settings.has_value())
         m_dns_settings = parse_dns_settings(*dns_settings);
 
@@ -987,6 +1000,14 @@ JsonValue Settings::serialize_json() const
     content_blockers.set(CONTENT_BLOCKER_LOCAL_LISTS_KEY, move(local_content_blocker_lists));
     content_blockers.set(CONTENT_BLOCKER_CUSTOM_FILTERS_KEY, m_custom_content_blocker_filters);
     settings.set(CONTENT_BLOCKERS_KEY, move(content_blockers));
+
+    JsonArray scripting_disabled_sites;
+    scripting_disabled_sites.ensure_capacity(m_scripting_disabled_sites.size());
+    for (auto const& host : m_scripting_disabled_sites)
+        scripting_disabled_sites.must_append(host);
+    JsonObject site_controls;
+    site_controls.set(SCRIPTING_DISABLED_SITES_KEY, move(scripting_disabled_sites));
+    settings.set(SITE_CONTROLS_KEY, move(site_controls));
 
     // dnsSettings :: ({ mode: "system" } | { mode: "custom", server: string, port: u16, type: "udp" | "tls", forciblyEnabled: bool, dnssec: bool })
     //                & { proxy?: { server: string, resolvesAllHostnames: bool } }
@@ -1633,6 +1654,30 @@ ErrorOr<void> Settings::set_content_blocker_enabled_for_site(StringView site, bo
 
     for (auto& observer : m_observers)
         observer.content_blocker_settings_changed();
+    return {};
+}
+
+bool Settings::scripting_enabled_for_site(StringView site) const
+{
+    auto host = Web::canonical_content_blocking_host(site);
+    return !host.has_value() || !m_scripting_disabled_sites.contains(*host);
+}
+
+ErrorOr<void> Settings::set_scripting_enabled_for_site(StringView site, bool enabled)
+{
+    auto host = Web::canonical_content_blocking_host(site);
+    if (!host.has_value())
+        return Error::from_string_literal("Invalid site hostname");
+
+    auto changed = enabled
+        ? m_scripting_disabled_sites.remove(*host)
+        : m_scripting_disabled_sites.set(*host) == HashSetResult::InsertedNewEntry;
+    if (!changed)
+        return {};
+
+    persist_settings();
+    for (auto& observer : m_observers)
+        observer.site_scripting_settings_changed();
     return {};
 }
 

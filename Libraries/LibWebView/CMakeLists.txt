@@ -71,6 +71,7 @@ set(SOURCES
     PictureInPictureWindow.cpp
     PermissionManager.cpp
     PlatformFeatureDecisions.cpp
+    PrivacyActivity.cpp
     PrivacyPolicyCoordinator.cpp
     Process.cpp
     ProcessManager.cpp

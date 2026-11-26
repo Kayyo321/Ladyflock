@@ -69,6 +69,7 @@
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/PictureInPictureManager.h>
 #include <LibWebView/PictureInPictureWindow.h>
+#include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/ProcessType.h>
 #include <LibWebView/RequestServerManager.h>
@@ -167,6 +168,11 @@ struct ApplicationSettingsObserver final : public SettingsObserver {
     virtual void content_blocker_settings_changed() override
     {
         Application::the().content_blocker_settings_changed({});
+    }
+
+    virtual void site_scripting_settings_changed() override
+    {
+        Application::the().site_scripting_settings_changed({});
     }
 
     virtual void permission_settings_changed(Web::Permissions::PermissionName) override
@@ -380,6 +386,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     Optional<Privacy::NetworkMode> privacy_network_mode;
     Optional<Privacy::ProxyRoute> privacy_proxy_route;
     bool privacy_proxy_isolation = false;
+    bool privacy_strip_tracking_parameters = false;
     Optional<Privacy::ProxyRoute> privacy_tor_route;
     Vector<ByteString> content_blocker_list_paths;
     Vector<ByteString> load_extension_paths;
@@ -543,6 +550,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .value_name = "url",
         .accept_value = [&](StringView value) { return parse_route(value, privacy_proxy_route); },
     });
+    args_parser.add_option(privacy_strip_tracking_parameters, "Remove tracking query parameters (utm_*, fbclid, gclid, ...) from top-level navigations", "privacy-strip-tracking-parameters");
     args_parser.add_option(privacy_proxy_isolation, "Give each identity and top-level site its own SOCKS5 credentials on the privacy proxy", "privacy-proxy-isolation");
     args_parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
@@ -690,6 +698,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .privacy_proxy_route = move(privacy_proxy_route),
         .privacy_proxy_isolation = privacy_proxy_isolation,
         .privacy_tor_route = move(privacy_tor_route),
+        .privacy_strip_tracking_parameters = privacy_strip_tracking_parameters,
     };
     if (m_browser_options.privacy_network_mode == Privacy::NetworkMode::ProxyOnly && !m_browser_options.privacy_proxy_route.has_value())
         warnln("Proxy-only privacy mode has no --privacy-proxy route, so browsing starts with no network access");
@@ -852,6 +861,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .isolate_proxy_streams = m_browser_options.privacy_proxy_isolation,
         .tor_route = m_browser_options.privacy_tor_route,
     });
+    m_privacy_activity = make<PrivacyActivity>();
     m_identity_manager = make<IdentityManager>();
     TRY(launch_services());
 
@@ -3295,6 +3305,8 @@ void Application::apply_view_options(Badge<ViewImplementation>, ViewImplementati
     view.set_preferred_motion(m_motion);
 
     apply_content_blocking_policy(page);
+    page.async_set_scripting_disabled_sites(m_settings->scripting_disabled_sites().values());
+    page.async_set_strips_tracking_parameters(m_browser_options.privacy_strip_tracking_parameters);
 
     page.async_debug_request("set-line-box-borders"sv, m_shows_line_box_borders ? "on"sv : "off"sv);
     page.async_debug_request("set-caret-hit-test-debug-overlay"sv, m_shows_caret_hit_test_debug_overlay ? "on"sv : "off"sv);
@@ -3545,6 +3557,20 @@ void Application::apply_content_blocking_policy(WebContentPage& page)
 {
     auto disabled_sites = m_settings->content_blocker_disabled_sites().values();
     page.async_set_content_blocking_policy(content_blocking_enabled(), disabled_sites);
+}
+
+// A changed policy reaches every page at once. Script that already ran stays run; from then on, the page's documents run
+// script only if their top-level site allows it.
+void Application::site_scripting_settings_changed(Badge<ApplicationSettingsObserver>)
+{
+    auto disabled_sites = m_settings->scripting_disabled_sites().values();
+    WebContentClient::for_each_client([&](WebContentClient& client) {
+        client.for_each_page([&](WebContentPage& page) {
+            client.async_set_scripting_disabled_sites(page.id(), disabled_sites);
+            return IterationDecision::Continue;
+        });
+        return IterationDecision::Continue;
+    });
 }
 
 void Application::content_blocker_settings_changed(Badge<ApplicationSettingsObserver>)

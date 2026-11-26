@@ -513,6 +513,17 @@ public:
     bool content_blocking_enabled_for_url(Optional<URL::URL> const&) const;
     void set_content_blocking_policy(bool enabled, ReadonlySpan<String> disabled_sites);
 
+    // Sites whose documents run no script, keyed by the site of the top-level document. The generation changes with
+    // every new policy, so that environments can cache their answer until then.
+    // Whether tracking query parameters come off top-level navigations that this process starts itself.
+    bool strips_tracking_parameters() const { return m_strips_tracking_parameters; }
+    void set_strips_tracking_parameters(bool strips) { m_strips_tracking_parameters = strips; }
+
+    bool has_scripting_disabled_sites() const { return !m_scripting_disabled_sites.is_empty(); }
+    u64 scripting_policy_generation() const { return m_scripting_policy_generation; }
+    bool scripting_enabled_for_top_level_url(Optional<URL::URL> const&) const;
+    void set_scripting_disabled_sites(ReadonlySpan<String>);
+
     bool pdf_viewer_supported() const { return m_pdf_viewer_supported; }
 
     void clear_selection();
@@ -734,6 +745,9 @@ private:
 
     bool m_content_blocking_enabled { true };
     HashTable<String> m_content_blocking_disabled_sites;
+    HashTable<String> m_scripting_disabled_sites;
+    u64 m_scripting_policy_generation { 0 };
+    bool m_strips_tracking_parameters { false };
 
     // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-supported
     // Each user agent has a PDF viewer supported boolean, whose value is implementation-defined (and might vary
@@ -1097,6 +1111,7 @@ public:
     virtual void reset_gamepad_access_for_testing() { }
 
     virtual void page_did_block_resource([[maybe_unused]] URL::URL const& url, [[maybe_unused]] StringView kind) { }
+    virtual void page_did_strip_tracking_parameters([[maybe_unused]] size_t removed_parameter_count) { }
     virtual void page_did_start_network_request([[maybe_unused]] u64 request_id, [[maybe_unused]] URL::URL const& url, [[maybe_unused]] ByteString const& method, [[maybe_unused]] Vector<HTTP::Header> const& request_headers, [[maybe_unused]] ReadonlyBytes request_body, [[maybe_unused]] Optional<String> initiator_type, [[maybe_unused]] String const& referrer_policy, [[maybe_unused]] bool is_navigation_request, [[maybe_unused]] Fetch::Infrastructure::Request::Priority priority) { }
     virtual void page_did_receive_network_response_headers([[maybe_unused]] u64 request_id, [[maybe_unused]] u32 status_code, [[maybe_unused]] Optional<String> reason_phrase, [[maybe_unused]] Vector<HTTP::Header> const& response_headers, [[maybe_unused]] Requests::CacheState cache_state) { }
     virtual void page_did_receive_network_response_body([[maybe_unused]] u64 request_id, [[maybe_unused]] ReadonlyBytes data) { }

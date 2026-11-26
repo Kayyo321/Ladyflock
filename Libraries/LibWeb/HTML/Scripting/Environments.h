@@ -156,6 +156,10 @@ public:
 
     virtual void discard_environment() override;
 
+    // Whether the page's per-site scripting policy lets this environment run script. The answer is cached until the
+    // page's policy changes, since scripting is checked on every script, callback and event handler.
+    bool is_scripting_allowed_by_site_policy(Page const&) const;
+
     void add_owned_worker_agent(WorkerAgentParent&);
     void remove_owned_worker_agent(WorkerAgentParent&);
     void release_owned_worker_agents();
@@ -186,6 +190,9 @@ protected:
 private:
     NonnullOwnPtr<JS::ExecutionContext> m_realm_execution_context;
     EnvironmentSettingsObjectAddress m_address;
+
+    mutable u64 m_site_scripting_policy_generation { 0 };
+    mutable bool m_site_scripting_allowed { true };
     GC::Ptr<ModuleMap> m_module_map;
 
     GC::Ptr<EventLoop> m_responsible_event_loop;

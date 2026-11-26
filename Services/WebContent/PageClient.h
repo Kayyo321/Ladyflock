@@ -451,6 +451,7 @@ private:
     virtual void page_did_check_web_request_before_request(u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails const& details) override;
     virtual void received_message_from_web_ui(Utf16String const& name, JS::Value data) override;
     virtual void page_did_block_resource(URL::URL const&, StringView kind) override;
+    virtual void page_did_strip_tracking_parameters(size_t removed_parameter_count) override;
     virtual void page_did_start_network_request(u64 request_id, URL::URL const&, ByteString const&, Vector<HTTP::Header> const&, ReadonlyBytes, Optional<String>, String const& referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::Request::Priority) override;
     virtual void page_did_receive_network_response_headers(u64 request_id, u32 status_code, Optional<String>, Vector<HTTP::Header> const&, Requests::CacheState) override;
     virtual void page_did_receive_network_response_body(u64 request_id, ReadonlyBytes) override;

@@ -34,6 +34,7 @@
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/PictureInPictureManager.h>
+#include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/RecordingNotificationBackend.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibPrivacy/Storage/PartitionKey.h>
@@ -1405,6 +1406,15 @@ void WebContentPage::did_output_js_console_message(ConsoleOutput console_output)
 void WebContentPage::did_block_resource(URL::URL url, String kind)
 {
     view().did_block_resource({}, url, kind);
+}
+
+// NB: The renderer reports how much it stripped; the count only feeds the session's in-memory counters, so a renderer
+//     can at worst skew its own session's numbers. A single URL has a bounded number of parameters.
+void WebContentPage::did_strip_tracking_parameters(u32 removed_parameter_count)
+{
+    if (!Application::browser_options().privacy_strip_tracking_parameters || removed_parameter_count == 0)
+        return;
+    Application::privacy_activity().record_sanitized_navigation(view().session(), min(removed_parameter_count, 1024u));
 }
 
 void WebContentPage::did_start_network_request(u64 request_id, URL::URL url, ByteString method, Vector<HTTP::Header> request_headers, ByteBuffer request_body, Optional<String> initiator_type, String referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::RequestPriority priority)

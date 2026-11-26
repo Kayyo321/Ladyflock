@@ -133,6 +133,7 @@ public:
 
     static RequestServerManager& request_server_manager() { return *the().m_request_server_manager; }
     static PrivacyPolicyCoordinator& privacy_policy_coordinator() { return *the().m_privacy_policy_coordinator; }
+    static PrivacyActivity& privacy_activity() { return *the().m_privacy_activity; }
     static IdentityManager& identity_manager() { return *the().m_identity_manager; }
     static ImageDecoderManager& image_decoder_manager() { return *the().m_image_decoder_manager; }
     // The UI process's own client of the session's RequestServer with no site.
@@ -207,6 +208,7 @@ public:
     bool has_content_blocking_rules() const;
     void apply_content_blocking_policy(WebContentPage&);
     void content_blocker_settings_changed(Badge<ApplicationSettingsObserver>);
+    void site_scripting_settings_changed(Badge<ApplicationSettingsObserver>);
 
     bool content_blocker_list_update_in_progress() const;
     void update_content_blocker_lists(Badge<SettingsUI>);
@@ -679,6 +681,7 @@ private:
     WebDriverSessionConfig m_webdriver_session_config;
 
     OwnPtr<PrivacyPolicyCoordinator> m_privacy_policy_coordinator;
+    OwnPtr<PrivacyActivity> m_privacy_activity;
     OwnPtr<IdentityManager> m_identity_manager;
     OwnPtr<RequestServerManager> m_request_server_manager;
     OwnPtr<ImageDecoderManager> m_image_decoder_manager;

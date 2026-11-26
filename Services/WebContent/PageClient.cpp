@@ -2727,6 +2727,11 @@ void PageClient::page_did_block_resource(URL::URL const& url, StringView kind)
     client().async_did_block_resource(id(), url, MUST(String::from_utf8(kind)));
 }
 
+void PageClient::page_did_strip_tracking_parameters(size_t removed_parameter_count)
+{
+    client().async_did_strip_tracking_parameters(id(), static_cast<u32>(min(removed_parameter_count, NumericLimits<u32>::max())));
+}
+
 void PageClient::page_did_start_network_request(u64 request_id, URL::URL const& url, ByteString const& method, Vector<HTTP::Header> const& request_headers, ReadonlyBytes request_body, Optional<String> initiator_type, String const& referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::Request::Priority priority)
 {
     client().async_did_start_network_request(m_id, request_id, url, method, request_headers, request_body, move(initiator_type), referrer_policy, is_navigation_request, priority);

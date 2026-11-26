@@ -3464,6 +3464,18 @@ void ConnectionFromClient::set_content_blocking_policy(Web::PageId page_id, bool
         page->page().set_content_blocking_policy(enabled, disabled_sites);
 }
 
+void ConnectionFromClient::set_scripting_disabled_sites(Web::PageId page_id, Vector<String> disabled_sites)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().set_scripting_disabled_sites(disabled_sites);
+}
+
+void ConnectionFromClient::set_strips_tracking_parameters(Web::PageId page_id, bool strips)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().set_strips_tracking_parameters(strips);
+}
+
 void ConnectionFromClient::set_content_blockers(Core::AnonymousBuffer patterns_buffer)
 {
     auto& blocker = Web::ContentBlocker::the();

@@ -124,6 +124,8 @@ struct BrowserOptions {
     bool privacy_proxy_isolation { false };
     // The Tor SOCKS endpoint that Tor-routed identities must use. Their streams are always isolated.
     Optional<Privacy::ProxyRoute> privacy_tor_route {};
+    // Removes tracking query parameters from top-level navigations before they are dispatched.
+    bool privacy_strip_tracking_parameters { false };
     // How much memory a WebContent process may use before it is ended. Zero means that there is no limit, and no value
     // means the default limit for this machine.
     Optional<u64> web_content_memory_limit_in_bytes {};

@@ -329,6 +329,17 @@ void clean_up_after_running_callback(EnvironmentSettingsObject const& settings)
     event_loop.pop_backup_incumbent_realm_stack();
 }
 
+bool EnvironmentSettingsObject::is_scripting_allowed_by_site_policy(Page const& page) const
+{
+    if (!page.has_scripting_disabled_sites())
+        return true;
+    if (m_site_scripting_policy_generation != page.scripting_policy_generation()) {
+        m_site_scripting_allowed = page.scripting_enabled_for_top_level_url(top_level_creation_url);
+        m_site_scripting_policy_generation = page.scripting_policy_generation();
+    }
+    return m_site_scripting_allowed;
+}
+
 // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-script
 bool is_scripting_enabled(EnvironmentSettingsObject const& settings)
 {
@@ -346,6 +357,11 @@ bool is_scripting_enabled(EnvironmentSettingsObject const& settings)
 
     // NB: WebUI pages are internal pages requiring javascript, so we do not consider user configuration for these.
     if (!document.page().is_scripting_enabled() && !URL::is_webui_url(document.url()))
+        return false;
+
+    // NB: The user may also disable scripting per site, by the site of the top-level document. That can only turn
+    //     scripting off, never back on, and leaves browser pages alone.
+    if (!settings.is_scripting_allowed_by_site_policy(document.page()) && !URL::is_webui_url(document.url()))
         return false;
 
     // Either settings's global object is not a Window object, or settings's global object's associated Document's active sandboxing flag set does not have its sandboxed scripts browsing context flag set.

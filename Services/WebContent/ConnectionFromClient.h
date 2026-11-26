@@ -253,6 +253,8 @@ private:
     virtual void remove_dom_node(Web::PageId page_id, Web::UniqueNodeID node_id) override;
 
     virtual void set_content_blocking_policy(Web::PageId page_id, bool enabled, Vector<String> disabled_sites) override;
+    virtual void set_scripting_disabled_sites(Web::PageId page_id, Vector<String> disabled_sites) override;
+    virtual void set_strips_tracking_parameters(Web::PageId page_id, bool strips) override;
     virtual void set_content_blockers(Core::AnonymousBuffer patterns) override;
 
     virtual void set_force_dark_settings(Web::PageId page_id, bool enabled, HashMap<String, bool> per_host) override;

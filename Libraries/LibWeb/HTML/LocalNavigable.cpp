@@ -16,6 +16,7 @@
 #include <AK/Variant.h>
 #include <LibCore/Timer.h>
 #include <LibGC/RootVector.h>
+#include <LibPrivacy/Navigation/TrackingParameters.h>
 #include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/FontComputer.h>
 #include <LibWeb/CSS/PropertyID.h>
@@ -3849,6 +3850,20 @@ void LocalNavigable::begin_navigation(PreparedNavigation navigation)
 
     // NB: A provisional navigable's document stands in for one another page hosts, which the navigation navigates.
     VERIFY(!is_provisional());
+
+    // AD-HOC: Tracking parameters come off a top-level navigation's URL before it is fetched, when the user asked for
+    //         that. The UI process does the same for the navigations it starts, so this covers those that a page
+    //         starts in its own process.
+    if (is_top_level_traversable()) {
+        auto& page = active_browsing_context()->page();
+        size_t removed_parameter_count = 0;
+        if (page.strips_tracking_parameters()) {
+            if (auto stripped = Privacy::strip_tracking_parameters(navigation.url, &removed_parameter_count); stripped.has_value()) {
+                navigation.url = stripped.release_value();
+                page.client().page_did_strip_tracking_parameters(removed_parameter_count);
+            }
+        }
+    }
 
     auto url = navigation.url;
     auto document_resource = navigation.document_resource;

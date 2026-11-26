@@ -210,6 +210,7 @@ public:
     virtual void config_variable_changed(ConfigVariableID) { }
     virtual void background_networking_settings_changed() { }
     virtual void content_blocker_settings_changed() { }
+    virtual void site_scripting_settings_changed() { }
 
 private:
     WeakPtr<Settings> m_settings;
@@ -247,6 +248,7 @@ struct WEBVIEW_API SettingsData {
 #endif
     bool m_content_blocker_enabled { false };
     HashTable<String> m_content_blocker_disabled_sites;
+    HashTable<String> m_scripting_disabled_sites;
     Vector<ContentBlockerList> m_content_blocker_lists;
     String m_custom_content_blocker_filters;
 
@@ -371,6 +373,12 @@ public:
     HashTable<String> const& content_blocker_disabled_sites() const { return m_content_blocker_disabled_sites; }
     bool content_blocker_enabled_for_site(StringView) const;
     ErrorOr<void> set_content_blocker_enabled_for_site(StringView, bool enabled);
+
+    // Sites (hosts, canonicalized like content blocking's) whose documents run no script. Applies to every document
+    // whose top-level document is on the site, including its frames, and not to browser pages.
+    HashTable<String> const& scripting_disabled_sites() const { return m_scripting_disabled_sites; }
+    bool scripting_enabled_for_site(StringView) const;
+    ErrorOr<void> set_scripting_enabled_for_site(StringView, bool enabled);
 
     Vector<ContentBlockerList> const& content_blocker_lists() const { return m_content_blocker_lists; }
     Optional<ContentBlockerList const&> content_blocker_list(StringView identifier) const;
