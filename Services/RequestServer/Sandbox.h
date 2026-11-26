@@ -14,7 +14,12 @@
 
 namespace RequestServer {
 
+enum class NetworkAccess : u8 {
+    Allowed,
+    Denied,
+};
+
 // The disk cache directory is the only place on disk this process may write to, and it has none without a disk cache.
-[[nodiscard]] ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory);
+[[nodiscard]] ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory, NetworkAccess = NetworkAccess::Allowed);
 
 }

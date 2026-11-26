@@ -15,6 +15,7 @@
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/Extensions/CatalogClient.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 
 namespace WebView::Extensions {
 
@@ -151,6 +152,10 @@ ErrorOr<Vector<CatalogEntry>> CatalogClient::parse_search_response(StringView js
 
 static void fetch_amo(URL::URL const& url, CatalogResource resource, unsigned redirects_remaining, Function<void(ErrorOr<ByteBuffer>)> callback)
 {
+    if (!Application::privacy_policy_coordinator().allows_network_egress(Application::default_session())) {
+        callback(Error::from_string_literal("Blocked by privacy policy"));
+        return;
+    }
     if (!is_amo_url(url, resource)) {
         callback(Error::from_string_literal("Mozilla Add-ons URL is outside the allowed provider"));
         return;

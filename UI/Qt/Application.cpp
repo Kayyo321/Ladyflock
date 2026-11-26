@@ -983,6 +983,7 @@ ErrorOr<void> Application::connect_to_hub(Main::Arguments const& arguments)
     if (state.devtools_enabled)
         m_devtools_port = state.devtools_port;
     m_gpu_painting_enabled = state.gpu_painting_enabled;
+    m_privacy_network_mode = state.privacy_network_mode;
     m_profile_is_temporary = state.profile_is_temporary;
 #    if defined(AK_OS_MACOS)
     set_profile_application_icon(state.profile_identifier, state.profile_identity, state.profile_is_temporary);
@@ -1310,6 +1311,7 @@ void Application::create_platform_actions()
     if (hub.devtools_enabled())
         m_devtools_port = WebView::Application::browser_options().devtools_port;
     m_gpu_painting_enabled = hub.compositor_gpu_painting_enabled();
+    m_privacy_network_mode = WebView::Application::privacy_policy_coordinator().network_mode(WebView::Application::default_session());
 
     RemoteDownloads::the().set_downloads(Hub::ConnectionFromUI::downloads());
 #endif
@@ -1320,10 +1322,12 @@ void Application::create_platform_actions()
             hub->send_settings_changes(settings);
     };
 #if defined(LADYBIRD_HAS_SPARKLE)
-    m_software_updater = SoftwareUpdater::create();
-    m_software_updater->on_will_relaunch = [this] {
-        m_restart = Restart::ByUpdater;
-    };
+    if (!is_privacy_offline()) {
+        m_software_updater = SoftwareUpdater::create();
+        m_software_updater->on_will_relaunch = [this] {
+            m_restart = Restart::ByUpdater;
+        };
+    }
 #elif defined(AK_OS_LINUX)
     watch_for_replaced_installation();
 #endif
@@ -3105,6 +3109,24 @@ void Application::did_change_gpu_painting(bool enabled)
 {
     m_gpu_painting_enabled = enabled;
     update_cpu_painting_bars();
+}
+
+void Application::did_change_privacy_network_mode(Privacy::NetworkMode mode)
+{
+    m_privacy_network_mode = mode;
+#if defined(LADYBIRD_HAS_SPARKLE)
+    if (is_privacy_offline()) {
+        if (m_software_updater) {
+            m_software_updater->set_offline(true);
+            m_software_updater = nullptr;
+        }
+    } else if (!m_software_updater) {
+        m_software_updater = SoftwareUpdater::create();
+        m_software_updater->on_will_relaunch = [this] {
+            m_restart = Restart::ByUpdater;
+        };
+    }
+#endif
 }
 
 void Application::dismiss_cpu_painting_bar()

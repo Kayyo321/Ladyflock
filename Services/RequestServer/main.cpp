@@ -54,6 +54,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     StringView top_level_site;
     bool wait_for_debugger = false;
     bool disable_sandbox = false;
+    bool disable_network = false;
     bool enable_test_mode = false;
 
     int crash_report_fd = -1;
@@ -69,6 +70,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     args_parser.add_option(top_level_site, "The top-level site this RequestServer serves", "site", 0, "site");
     args_parser.add_option(wait_for_debugger, "Wait for debugger", "wait-for-debugger");
     args_parser.add_option(disable_sandbox, "Disable process sandboxing", "disable-sandbox");
+    args_parser.add_option(disable_network, "Disable OS-level network access in the RequestServer sandbox", "disable-network");
     args_parser.add_option(enable_test_mode, "Enable test mode", "test-mode");
     args_parser.parse(arguments);
 
@@ -143,7 +145,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
         Optional<StringView> disk_cache_directory;
         if (disk_cache.has_value())
             disk_cache_directory = disk_cache->cache_directory().string();
-        TRY(RequestServer::apply_sandbox(mach_server_name, certificates, disk_cache_directory));
+        auto network_access = disable_network ? RequestServer::NetworkAccess::Denied : RequestServer::NetworkAccess::Allowed;
+        TRY(RequestServer::apply_sandbox(mach_server_name, certificates, disk_cache_directory, network_access));
     }
 
     // Connections are stored on the stack to ensure they are destroyed before static destruction begins. This prevents

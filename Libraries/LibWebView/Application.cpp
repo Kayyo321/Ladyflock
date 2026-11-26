@@ -984,7 +984,12 @@ ErrorOr<bool> Application::load_content_blocker_lists()
 
 void Application::start_content_blocker_list_update(ContentBlockerListUpdateTrigger trigger, Optional<StringView> requested_identifier)
 {
-    if (trigger == ContentBlockerListUpdateTrigger::Automatic && !m_settings->automatic_filter_list_updates_allowed())
+    if (trigger == ContentBlockerListUpdateTrigger::Automatic
+        && (!m_settings->automatic_filter_list_updates_allowed()
+            || !m_privacy_policy_coordinator->allows_background_services(*m_default_session))) {
+        return;
+    }
+    if (!m_privacy_policy_coordinator->allows_network_egress(*m_default_session))
         return;
     if (content_blocker_list_update_in_progress() && !requested_identifier.has_value())
         return;
@@ -1008,6 +1013,10 @@ void Application::start_content_blocker_list_update(ContentBlockerListUpdateTrig
 
 void Application::start_next_content_blocker_list_update()
 {
+    if (!m_privacy_policy_coordinator->allows_network_egress(*m_default_session)) {
+        m_pending_content_blocker_list_updates.clear();
+        return;
+    }
     m_pending_content_blocker_list_updates.remove_all_matching([&](auto const& update) {
         auto list = m_settings->content_blocker_list(update.identifier);
         return !list.has_value() || !list->enabled;

@@ -10,7 +10,7 @@ compile_ipc(HubServer.ipc HubServerEndpoint.h)
 add_library(hubipc STATIC ${SOURCES})
 target_include_directories(hubipc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/../..)
 target_include_directories(hubipc PRIVATE ${LADYBIRD_SOURCE_DIR}/Services/)
-target_link_libraries(hubipc PRIVATE LibCore LibGfx LibHTTP LibIPC LibURL LibWebView)
+target_link_libraries(hubipc PRIVATE LibCore LibGfx LibHTTP LibIPC LibPrivacy LibURL LibWebView)
 
 set(SOURCES
     Application.cpp

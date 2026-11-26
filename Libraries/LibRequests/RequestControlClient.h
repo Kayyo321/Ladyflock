@@ -45,6 +45,7 @@ public:
     Function<void()> on_request_server_died;
     Function<void(u64 size)> on_disk_cache_size_changed;
     Function<void(u64 check_id, int client_id, URL::URL const&, ByteString const& method)> on_check_web_request_before_request;
+    Function<bool(ByteString const& host, bool ipv6)> on_allow_system_dns_resolution;
 
 private:
     virtual void die() override;

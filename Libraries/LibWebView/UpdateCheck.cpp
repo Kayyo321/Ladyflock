@@ -26,6 +26,7 @@
 #include <LibWebCommon/Loader/UserAgent.h>
 #include <LibWebCommon/WebView/Utilities.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/Settings.h>
 #include <LibWebView/UpdateCheck.h>
 #include <LibWebView/Utilities.h>
@@ -585,6 +586,10 @@ void UpdateChecker::check_if_due()
 {
     if (!m_started || !Application::settings().automatic_update_checks_allowed())
         return;
+    if (!Application::privacy_policy_coordinator().allows_background_services(Application::default_session())) {
+        schedule();
+        return;
+    }
 
     // Another instance of Ladybird may have checked meanwhile.
     if (time_until_next_update_check(next_check_waits_from(), UnixDateTime::now(), update_check_interval()) > AK::Duration::zero()) {
@@ -598,6 +603,12 @@ void UpdateChecker::check(UpdateCheckTrigger trigger)
 {
     if (trigger == UpdateCheckTrigger::UserInitiated && !BROWSER_IS_RELEASE_BUILD) {
         report({ .kind = UpdateCheckResult::Kind::DevelopmentBuild, .update = {} }, trigger);
+        return;
+    }
+
+    if (!Application::privacy_policy_coordinator().allows_network_egress(Application::default_session())
+        || (trigger == UpdateCheckTrigger::Automatic && !Application::privacy_policy_coordinator().allows_background_services(Application::default_session()))) {
+        report({ .kind = UpdateCheckResult::Kind::Failed, .update = {} }, trigger);
         return;
     }
 

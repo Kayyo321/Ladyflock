@@ -9,7 +9,9 @@
 #include <AK/ScopeGuard.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/Timer.h>
+#include <LibPrivacy/Hooks/RequestServerHooks.h>
 #include <RequestServer/DNSStreamCurl.h>
+#include <RequestServer/PrivacyPolicy.h>
 
 #if defined(AK_OS_WINDOWS)
 #    include <AK/Windows.h> // Needed because curl.h includes winsock2.h
@@ -262,6 +264,10 @@ static ByteString host_for_url(StringView host)
 
 ErrorOr<NonnullOwnPtr<DNS::StreamConnection>> connect_dns_stream(Core::SocketAddress const& address, ByteString const& server_name, DNS::StreamSecurity security, DNSStreamTLSOptions const& tls_options)
 {
+    auto lookup_host = server_name.is_empty() ? "dns"sv : server_name.view();
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), lookup_host, false).is_denied())
+        return Error::from_string_literal("Blocked by privacy policy");
+
     auto* easy_handle = curl_easy_init();
     if (!easy_handle)
         return Error::from_errno(ENOMEM);

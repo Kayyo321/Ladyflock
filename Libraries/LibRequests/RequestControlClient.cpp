@@ -79,6 +79,11 @@ static constexpr auto SYSTEM_LOOKUP_DEADLINE = AK::Duration::from_seconds(15);
 
 void RequestControlClient::resolve_host_with_system_resolver(u64 resolution_id, ByteString host, bool ipv6)
 {
+    if (on_allow_system_dns_resolution && !on_allow_system_dns_resolution(host, ipv6)) {
+        async_resolved_host_with_system_resolver(resolution_id, {}, {});
+        return;
+    }
+
     // getaddrinfo() blocks, for as long as the lookup takes, so it runs on a worker, and the answer goes back to
     // RequestServer from this thread.
     auto queued_at = MonotonicTime::now();

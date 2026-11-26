@@ -14,6 +14,7 @@
 #include <LibCore/Forward.h>
 #include <LibCore/Platform/ProcessStatistics.h>
 #include <LibCore/Process.h>
+#include <LibPrivacy/Policy/Types.h>
 #include <LibURL/URL.h>
 #include <LibWebCommon/Page/PageId.h>
 #include <LibWebView/Application.h>
@@ -176,8 +177,9 @@ public:
     BrowserWindow* active_window_if_any() const { return m_active_window; }
     BrowserWindow* non_private_window_if_any() const;
 
+    bool is_privacy_offline() const { return m_privacy_network_mode == Privacy::NetworkMode::Offline; }
 #if defined(LADYBIRD_HAS_SPARKLE)
-    SoftwareUpdater* software_updater() { return m_software_updater.ptr(); }
+    SoftwareUpdater* software_updater() { return is_privacy_offline() ? nullptr : m_software_updater.ptr(); }
 #endif
 
     Tab* active_tab() const { return m_active_window ? m_active_window->current_tab() : nullptr; }
@@ -329,6 +331,7 @@ private:
     void did_enable_devtools(u16 port);
     void did_disable_devtools();
     void did_change_gpu_painting(bool enabled);
+    void did_change_privacy_network_mode(Privacy::NetworkMode);
     void update_cpu_painting_bars() const;
     void on_recently_closed_entries_changed() const;
     void did_clear_history_since(UnixDateTime);
@@ -342,6 +345,7 @@ private:
     Optional<u16> m_devtools_port;
     bool m_gpu_painting_enabled { true };
     bool m_cpu_painting_bar_dismissed { false };
+    Privacy::NetworkMode m_privacy_network_mode { Privacy::NetworkMode::Allow };
 
 #ifdef LADYBIRD_HUB_IN_OWN_PROCESS
     ErrorOr<void> connect_to_hub(Main::Arguments const&);

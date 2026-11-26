@@ -43,6 +43,7 @@ struct Resolver
     static NonnullRefPtr<Resolver> private_resolver();
 
     static void reset_connections();
+    static void quiesce_for_privacy_policy();
 
     // From now on, every resolver sends the names that it looks up with the system resolver to the process that
     // launched RequestServer: RequestServer may not read the files the system resolver needs, like /etc/resolv.conf.

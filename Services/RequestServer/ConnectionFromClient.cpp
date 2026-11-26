@@ -682,6 +682,13 @@ static size_t aia_write_body(char* data, size_t size, size_t count, void* user_d
 
 void ConnectionFromClient::fetch_aia_intermediate(Badge<Request>, ByteString const& url, u64 for_request_id)
 {
+    auto parsed = URL::Parser::basic_parse(url);
+    if (!parsed.has_value() || Privacy::Hooks::on_before_aia_fetch(privacy_network_gate(), *parsed).is_denied()) {
+        if (auto request = m_active_requests.get(for_request_id); request.has_value())
+            (*request)->retry_after_aia({});
+        return;
+    }
+
     for (auto& in_flight : m_aia_fetches) {
         if (in_flight.value->url == url) {
             in_flight.value->request_ids.append(for_request_id);
@@ -697,8 +704,7 @@ void ConnectionFromClient::fetch_aia_intermediate(Badge<Request>, ByteString con
     }
     m_pending_aia_lookups.set(url, { for_request_id });
 
-    auto parsed = URL::Parser::basic_parse(url);
-    if (!parsed.has_value() || !parsed->host().has_value() || !can_pin_host_in_curl_resolve_list(parsed->serialized_host()) || parsed->includes_credentials()) {
+    if (!parsed->host().has_value() || !can_pin_host_in_curl_resolve_list(parsed->serialized_host()) || parsed->includes_credentials()) {
         abandon_aia_lookup(url);
         return;
     }
@@ -724,11 +730,22 @@ void ConnectionFromClient::fetch_aia_intermediate(Badge<Request>, ByteString con
 
 void ConnectionFromClient::look_up_aia_host(ByteString const& url, ByteString const& fetch_url, ByteString const& host, u16 port, Optional<HTTP::Proxy> proxy)
 {
+    auto parsed = URL::Parser::basic_parse(fetch_url);
+    if (!parsed.has_value() || Privacy::Hooks::on_before_aia_fetch(privacy_network_gate(), *parsed).is_denied()) {
+        abandon_aia_lookup(url);
+        return;
+    }
+
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
 
     // Avoid leaking hostnames resolved by the proxy.
     if (proxy.has_value() && proxy->resolves_hostnames()) {
         start_aia_fetch(url, fetch_url, move(proxy), {});
+        return;
+    }
+
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, !DNSInfo::the().uses_configured_dns_server()).is_denied()) {
+        abandon_aia_lookup(url);
         return;
     }
 
@@ -768,6 +785,12 @@ void ConnectionFromClient::abandon_aia_lookup(ByteString const& url)
 
 void ConnectionFromClient::start_aia_fetch(ByteString const& url, ByteString const& fetch_url, Optional<HTTP::Proxy> proxy, Optional<ByteString> resolve_entry)
 {
+    auto parsed = URL::Parser::basic_parse(fetch_url);
+    if (!parsed.has_value() || Privacy::Hooks::on_before_aia_fetch(privacy_network_gate(), *parsed).is_denied()) {
+        abandon_aia_lookup(url);
+        return;
+    }
+
     auto waiting = m_pending_aia_lookups.take(url);
     if (!waiting.has_value() || waiting->is_empty())
         return;
@@ -933,6 +956,13 @@ void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host, u8 bits)
 {
     using Requests::HostLookupFlag;
     auto flags = static_cast<HostLookupFlag>(bits);
+
+    auto dns_eval = Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, !DNSInfo::the().uses_configured_dns_server());
+    if (dns_eval.is_denied()) {
+        async_host_resolved(lookup_id, {}, {});
+        return;
+    }
+
     // Whatever connects to the host would bypass a proxy, and a proxy that resolves names would never see this lookup,
     // so nothing is looked up while one is configured.
     if (!proxy_configuration().is_empty() || host.is_empty() || host.length() > 253
@@ -950,6 +980,7 @@ void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host, u8 bits)
         async_host_resolved(lookup_id, {}, {});
         return;
     }
+    auto policy_epoch = dns_eval.epoch;
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
     m_resolver->dns.lookup(host, DNS::Messages::Class::IN, move(types), {
                                                                             .validate_dnssec_locally = DNSInfo::the().validate_dnssec_locally,
@@ -961,10 +992,15 @@ void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host, u8 bits)
             if (auto self = weak_self.strong_ref())
                 self->async_host_resolved(lookup_id, {}, {});
         })
-        .when_resolved([weak_self, lookup_id, flags, host = move(host)](auto const& dns_result) {
+        .when_resolved([weak_self, lookup_id, flags, policy_epoch, host = move(host)](auto const& dns_result) {
             auto self = weak_self.strong_ref();
             if (!self)
                 return;
+            if (!privacy_network_gate().is_epoch_current(policy_epoch)
+                || Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, !DNSInfo::the().uses_configured_dns_server()).is_denied()) {
+                self->async_host_resolved(lookup_id, {}, {});
+                return;
+            }
             Vector<ByteString> addresses;
             for (auto const& address : dns_result->cached_addresses()) {
                 if (flags != HostLookupFlag::None && !has_flag(flags, HostLookupFlag::AllowNameCollisions)
@@ -1041,6 +1077,11 @@ void ConnectionFromClient::websocket_connect(u64 websocket_id, URL::URL url, Opt
         return;
     }
 
+    if (Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied()) {
+        fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+        return;
+    }
+
     // Bound shared descriptor usage, including pending WebSockets.
     if (websocket_count() >= max_websockets_per_client || total_websocket_count() >= max_websockets) {
         dbgln("WebSocketConnect: Refusing WebSocket beyond the limit of {} per client and {} overall", max_websockets_per_client, max_websockets);
@@ -1104,6 +1145,14 @@ bool ConnectionFromClient::websocket_retrieved_http_cookie(Badge<ControlConnecti
 
 void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers)
 {
+    auto ws_eval = Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url);
+    if (ws_eval.is_denied()) {
+        if (m_pending_websockets.remove(websocket_id))
+            fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+        return;
+    }
+    auto policy_epoch = ws_eval.epoch;
+
     auto host = url.serialized_host().to_byte_string();
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
 
@@ -1114,10 +1163,15 @@ void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_p
     }
 
     auto proxy = proxy_configuration().proxy_for(url).copy();
-    resolve_proxy_host(proxy, [weak_self, websocket_id, originating_page_id, url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers), proxy](ErrorOr<void> result) mutable {
+    resolve_proxy_host(proxy, [weak_self, websocket_id, originating_page_id, policy_epoch, url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers), proxy](ErrorOr<void> result) mutable {
         auto self = weak_self.strong_ref();
         if (!self)
             return;
+        if (!privacy_network_gate().is_epoch_current(policy_epoch) || Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied()) {
+            if (self->m_pending_websockets.remove(websocket_id))
+                self->fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+            return;
+        }
         if (result.is_error()) {
             dbgln("WebSocketConnect: Proxy lookup failed: {}", result.error());
             if (self->m_pending_websockets.remove(websocket_id))
@@ -1130,6 +1184,14 @@ void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_p
 
 void ConnectionFromClient::look_up_websocket_host(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers, Optional<HTTP::Proxy> proxy)
 {
+    auto ws_eval = Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url);
+    if (ws_eval.is_denied()) {
+        if (m_pending_websockets.remove(websocket_id))
+            fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+        return;
+    }
+    auto policy_epoch = ws_eval.epoch;
+
     auto host = url.serialized_host().to_byte_string();
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
 
@@ -1137,6 +1199,12 @@ void ConnectionFromClient::look_up_websocket_host(u64 websocket_id, u64 originat
     if (proxy.has_value() && proxy->resolves_hostnames()) {
         if (m_pending_websockets.remove(websocket_id))
             open_websocket(websocket_id, originating_page_id, move(url), move(origin), move(protocols), move(extensions), move(additional_request_headers), move(proxy), nullptr);
+        return;
+    }
+
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, !DNSInfo::the().uses_configured_dns_server()).is_denied()) {
+        if (m_pending_websockets.remove(websocket_id))
+            fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
         return;
     }
 
@@ -1150,10 +1218,15 @@ void ConnectionFromClient::look_up_websocket_host(u64 websocket_id, u64 originat
                 return;
             self->fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
         })
-        .when_resolved([weak_self, websocket_id, originating_page_id, host = move(host), url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers), proxy = move(proxy)](auto const& dns_result) mutable {
+        .when_resolved([weak_self, websocket_id, originating_page_id, policy_epoch, host = move(host), url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers), proxy = move(proxy)](auto const& dns_result) mutable {
             auto self = weak_self.strong_ref();
             if (!self)
                 return;
+            if (!privacy_network_gate().is_epoch_current(policy_epoch) || Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied()) {
+                if (self->m_pending_websockets.remove(websocket_id))
+                    self->fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+                return;
+            }
             if (dns_result->is_empty() || !dns_result->has_cached_addresses()) {
                 dbgln("WebSocketConnect: DNS lookup failed for '{}'", host);
                 if (!self->m_pending_websockets.remove(websocket_id))
@@ -1172,6 +1245,11 @@ void ConnectionFromClient::look_up_websocket_host(u64 websocket_id, u64 originat
 
 void ConnectionFromClient::open_websocket(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers, Optional<HTTP::Proxy> proxy, RefPtr<DNS::LookupResult const> dns_result)
 {
+    if (Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied()) {
+        fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+        return;
+    }
+
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
 
     WebSocket::ConnectionInfo connection_info(move(url));
@@ -1247,12 +1325,22 @@ void ConnectionFromClient::open_websocket(u64 websocket_id, u64 originating_page
 
 void ConnectionFromClient::websocket_send(u64 websocket_id, bool is_text, ByteBuffer data)
 {
+    auto const& snapshot = privacy_network_gate().current_snapshot();
+    if (!snapshot.has_value() || !snapshot->network.allows_network_egress() || !snapshot->network.allow_websockets) {
+        websocket_close(websocket_id, to_underlying(WebSocket::CloseStatusCode::AbnormalClosure), "Blocked by privacy policy"sv);
+        return;
+    }
     if (auto* connection = m_websockets.get(websocket_id).value_or({}); connection && connection->ready_state() == WebSocket::ReadyState::Open)
         connection->send(WebSocket::Message { move(data), is_text });
 }
 
 void ConnectionFromClient::websocket_send_shared(u64 websocket_id, bool is_text, Core::AnonymousBuffer data)
 {
+    auto const& snapshot = privacy_network_gate().current_snapshot();
+    if (!snapshot.has_value() || !snapshot->network.allows_network_egress() || !snapshot->network.allow_websockets) {
+        websocket_close(websocket_id, to_underlying(WebSocket::CloseStatusCode::AbnormalClosure), "Blocked by privacy policy"sv);
+        return;
+    }
     auto* connection = m_websockets.get(websocket_id).value_or({});
     if (!connection || connection->ready_state() != WebSocket::ReadyState::Open)
         return;

@@ -7,6 +7,7 @@
 #include <LibCore/EventLoop.h>
 #include <LibHTTP/Cache/DiskCache.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibPrivacy/Hooks/RequestServerHooks.h>
 #include <RequestServer/AlternativeServices.h>
 #include <RequestServer/CertificateExceptions.h>
 #include <RequestServer/ControlConnectionFromClient.h>
@@ -94,7 +95,7 @@ void ControlConnectionFromClient::quiesce_active_network_work()
     for (auto& [resolution_id, on_resolved] : pending_system_resolutions)
         on_resolved(Error::from_string_literal("Blocked by privacy policy"));
 
-    Resolver::reset_connections();
+    Resolver::quiesce_for_privacy_policy();
 
     Vector<NonnullRefPtr<RequestServer::ConnectionFromClient>> connections;
     connections.ensure_capacity(m_connections.size());
@@ -293,6 +294,13 @@ void ControlConnectionFromClient::remove_cache_entries_accessed_before(UnixDateT
 DNS::Resolver::CancelRemoteSystemResolution ControlConnectionFromClient::resolve_host_with_system_resolver(ByteString const& host, Core::Socket::AddressFamily family, Function<void(DNS::Resolver::SystemResolution)> on_resolved)
 {
     VERIFY(family != Core::Socket::AddressFamily::Unspecified);
+
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, true).is_denied()) {
+        Core::deferred_invoke([on_resolved = move(on_resolved)]() mutable {
+            on_resolved(Error::from_string_literal("Blocked by privacy policy"));
+        });
+        return {};
+    }
 
     auto resolution_id = m_next_system_resolution_id++;
     m_pending_system_resolutions.set(resolution_id, move(on_resolved));

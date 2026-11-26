@@ -23,6 +23,7 @@
 #include <LibThreading/Thread.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/ReportSubmission.h>
 
 namespace WebView {
@@ -438,6 +439,11 @@ void ReportSubmission::post(StringView path, StringView activity, StringView con
             });
         if (m_post_serial == serial && m_request_timeout)
             m_cancel_post = move(cancel_post);
+        return;
+    }
+
+    if (!Application::privacy_policy_coordinator().allows_network_egress(Application::default_session())) {
+        fail("Blocked by privacy policy."_string, ShouldRetry::No);
         return;
     }
 

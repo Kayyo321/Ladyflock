@@ -23,6 +23,7 @@
 #include <LibWebView/ImageDecoderManager.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/PageTranslation.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/ProcessSnapshot.h>
 #include <LibWebView/ReportSubmission.h>
 #include <LibWebView/Settings.h>
@@ -55,10 +56,16 @@ ConnectionFromUI::ConnectionFromUI(NonnullOwnPtr<IPC::Transport> transport)
     auto& browser_process = Application::the().browser_process();
     browser_process.on_new_tab = [this](auto const& urls) { async_app_open_new_tab(urls); };
     browser_process.on_new_window = [this](auto const& urls) { async_app_open_new_window(urls); };
+
+    Application::privacy_policy_coordinator().on_policy_committed = [this](WebView::BrowsingSession const& session, Privacy::PolicySnapshot const& snapshot) {
+        if (&session == &Application::default_session())
+            async_app_privacy_network_mode_changed(snapshot.network.mode, snapshot.epoch);
+    };
 }
 
 ConnectionFromUI::~ConnectionFromUI()
 {
+    Application::privacy_policy_coordinator().on_policy_committed = nullptr;
     WebView::ApplicationWebUI::set_callbacks({});
     Application::settings().on_persist = nullptr;
     auto& browser_process = Application::the().browser_process();
@@ -629,6 +636,7 @@ Messages::HubServer::InitializeResponse ConnectionFromUI::initialize()
     state.profile_identifier = profile.identifier();
     state.profile_identity = profile.paths().identity;
     state.profile_is_temporary = profile.is_temporary();
+    state.privacy_network_mode = Application::privacy_policy_coordinator().network_mode(Application::default_session());
     return state;
 }
 
@@ -909,6 +917,12 @@ void ConnectionFromUI::ui_did_start()
 //     for that engine's suggestions, as the UI's own settings say.
 void ConnectionFromUI::fetch_search_suggestions(u64 request_id, String engine_name, String query, WebView::IsPrivate is_private)
 {
+    auto session = WebView::Application::session_for_new_view(is_private);
+    if (!WebView::Application::privacy_policy_coordinator().allows_network_egress(*session)) {
+        async_request_finished(request_id, true, {}, {}, {});
+        return;
+    }
+
     Optional<URL::URL> url;
     if (auto engine = Application::settings().find_search_engine_by_name(engine_name); engine.has_value())
         url = engine->suggestions_url_for_query(query);
@@ -927,7 +941,8 @@ void ConnectionFromUI::fetch_search_suggestions(u64 request_id, String engine_na
 // NB: A report goes only to the report server, with no credentials, and with only the headers that reports carry.
 void ConnectionFromUI::post_report(u64 request_id, URL::URL url, Vector<HTTP::Header> headers, ByteString body)
 {
-    if (!WebView::ReportSubmission::is_report_server_url(url)) {
+    if (!WebView::Application::privacy_policy_coordinator().allows_network_egress(WebView::Application::default_session())
+        || !WebView::ReportSubmission::is_report_server_url(url)) {
         async_request_finished(request_id, true, {}, {}, {});
         return;
     }

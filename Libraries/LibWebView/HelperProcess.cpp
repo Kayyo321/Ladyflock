@@ -22,6 +22,7 @@
 #include <LibWebView/FontServiceHost.h>
 #include <LibWebView/HelperProcess.h>
 #include <LibWebView/ImageDecoderControlClient.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Utilities.h>
 #include <LibWebView/VideoDecoderServerControlClient.h>
@@ -462,9 +463,12 @@ ErrorOr<IPC::TransportHandle> launch_webrtc_client_process(WebContentClient& cli
     Vector<ByteString> arguments;
     if (WebView::Application::browser_options().disable_sandbox == DisableSandbox::Yes)
         arguments.append("--disable-sandbox"sv);
-    // None of WebRTC's traffic could go through a proxy, so with one configured the helper gets no network access at
-    // all rather than reveal the user's address.
-    if (!Application::request_server_options().proxy_configuration.is_empty() || Application::web_content_options().proxy_autoconfig_url.has_value())
+    // None of WebRTC's traffic could go through a proxy, so with one configured — or when the session's privacy policy
+    // denies WebRTC network egress — the helper gets no network access at all.
+    bool disable_network = !Application::request_server_options().proxy_configuration.is_empty()
+        || Application::web_content_options().proxy_autoconfig_url.has_value()
+        || !Application::privacy_policy_coordinator().allows_webrtc_network(client.session());
+    if (disable_network)
         arguments.append("--disable-network"sv);
     if (auto server = mach_server_name(); server.has_value()) {
         arguments.append("--mach-server-name"sv);
@@ -477,6 +481,7 @@ ErrorOr<IPC::TransportHandle> launch_webrtc_client_process(WebContentClient& cli
     TRY(launch_helper_process("WebRTCClient"sv, move(arguments), client.is_private(), [&](Core::ProcessSpawnOptions const& options, bool capture_output) -> ErrorOr<WebView::Process> {
         auto [process, new_transport] = TRY(WebView::Process::spawn_with_transport(ProcessType::WebRTCClient, options, capture_output));
         process.set_owner_child_id(client.child_id());
+        process.set_network_access_allowed(!disable_network);
         transport = move(new_transport);
         return move(process);
     }));
@@ -612,7 +617,7 @@ void apply_dns_settings(Requests::RequestControlClient& client)
         });
 }
 
-ErrorOr<NonnullRefPtr<Requests::RequestControlClient>> launch_request_server_process(ByteString const& cache_path, Optional<Utf16String> const& site, IsPrivate is_private, HTTPDiskCacheMode http_disk_cache_mode)
+ErrorOr<NonnullRefPtr<Requests::RequestControlClient>> launch_request_server_process(ByteString const& cache_path, Optional<Utf16String> const& site, IsPrivate is_private, HTTPDiskCacheMode http_disk_cache_mode, bool disable_network)
 {
     auto const& browser_options = Application::browser_options();
     auto const& request_server_options = Application::request_server_options();
@@ -629,6 +634,8 @@ ErrorOr<NonnullRefPtr<Requests::RequestControlClient>> launch_request_server_pro
 
     if (browser_options.disable_sandbox == DisableSandbox::Yes)
         arguments.append("--disable-sandbox"sv);
+    if (disable_network)
+        arguments.append("--disable-network"sv);
     for (auto const& certificate : request_server_options.certificates)
         arguments.append(ByteString::formatted("--certificate={}", certificate));
 
@@ -660,6 +667,7 @@ ErrorOr<NonnullRefPtr<Requests::RequestControlClient>> launch_request_server_pro
     RefPtr<Requests::RequestControlClient> client;
     TRY(launch_helper_process("RequestServer"sv, move(arguments), is_private, [&](Core::ProcessSpawnOptions const& options, bool capture_output) -> ErrorOr<Process> {
         auto [process, new_client] = TRY(Process::spawn<Requests::RequestControlClient>(ProcessType::RequestServer, options, capture_output));
+        process.set_network_access_allowed(!disable_network);
         if (site.has_value())
             process.set_site_url(URL::Parser::basic_parse(*site));
         client = move(new_client);

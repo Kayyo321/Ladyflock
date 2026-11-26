@@ -109,7 +109,7 @@ static ErrorOr<void> add_certificate_store_paths(Vector<Sandbox::PathRule>& path
     return {};
 }
 
-ErrorOr<void> apply_sandbox(StringView, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory)
+ErrorOr<void> apply_sandbox(StringView, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory, NetworkAccess network_access)
 {
     TRY(Sandbox::install_no_new_privileges());
     TRY(Sandbox::configure_runtime());
@@ -142,7 +142,8 @@ ErrorOr<void> apply_sandbox(StringView, Vector<ByteString> const& certificates, 
     policy.allow_file_descriptor_operations();
     policy.allow_ipc();
     policy.allow_socket_pairs();
-    policy.allow_network();
+    if (network_access == NetworkAccess::Allowed)
+        policy.allow_network();
     policy.allow_common_runtime();
     TRY(policy.install());
 

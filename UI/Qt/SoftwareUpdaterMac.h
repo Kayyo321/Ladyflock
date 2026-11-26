@@ -28,6 +28,7 @@ public:
     static NonnullOwnPtr<SoftwareUpdater> create();
     ~SoftwareUpdater();
 
+    void set_offline(bool offline) { m_offline = offline; }
     void install_update();
     void install_latest_version();
 
@@ -37,6 +38,7 @@ private:
     explicit SoftwareUpdater(NonnullOwnPtr<Detail::SparkleUpdater>);
 
     NonnullOwnPtr<Detail::SparkleUpdater> m_sparkle;
+    bool m_offline { false };
 };
 
 }

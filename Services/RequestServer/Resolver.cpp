@@ -7,9 +7,12 @@
 
 #include <AK/NeverDestroyed.h>
 #include <LibCore/EventLoop.h>
+#include <LibPrivacy/Hooks/RequestServerHooks.h>
+#include <RequestServer/AlternativeServices.h>
 #include <RequestServer/CURL.h>
 #include <RequestServer/ControlConnectionFromClient.h>
 #include <RequestServer/DNSStreamCurl.h>
+#include <RequestServer/PrivacyPolicy.h>
 #include <RequestServer/Resolver.h>
 
 namespace RequestServer {
@@ -99,6 +102,11 @@ void resolve_proxy_host(Optional<HTTP::Proxy> const& proxy, Function<void(ErrorO
 {
     if (!proxy.has_value() || !proxy_is_given_by_name(*proxy)) {
         on_resolved({});
+        return;
+    }
+
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), proxy->host, true).is_denied()) {
+        on_resolved(Error::from_string_literal("Blocked by privacy policy"));
         return;
     }
 
@@ -192,6 +200,15 @@ void Resolver::reset_connections()
             resolver->dns.reset_connection();
         }
     }
+}
+
+void Resolver::quiesce_for_privacy_policy()
+{
+    reset_connections();
+    system_resolver().reset_connection();
+    s_proxy_resolve_entries.clear();
+    AlternativeServiceCache::the().clear(IsPrivate::No);
+    AlternativeServiceCache::the().clear(IsPrivate::Yes);
 }
 
 NonnullRefPtr<Resolver> Resolver::create()

@@ -10,6 +10,7 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
+#include <LibPrivacy/Policy/Types.h>
 #include <LibURL/Origin.h>
 #include <LibWebCommon/NotificationsAPI/NotificationData.h>
 #include <LibURL/URL.h>
@@ -163,6 +164,7 @@ struct Hub::InitialState {
     ByteString profile_identifier;
     ByteString profile_identity;
     bool profile_is_temporary;
+    Privacy::NetworkMode privacy_network_mode;
 }
 
 [ExistingCpp]
@@ -334,6 +336,7 @@ endpoint HubClient
     app_did_enable_devtools(u16 port) =|
     app_did_disable_devtools() =|
     app_gpu_painting_changed(bool gpu_painting_enabled) =|
+    app_privacy_network_mode_changed(Privacy::NetworkMode mode, u64 epoch) =|
     app_open_urls_in_new_tabs(Vector<URL::URL> urls) =|
     app_activate_or_open_tab_with_url(URL::URL url) =|
     app_open_view_in_new_tab(u64 view_id, Optional<u64> source_view_id, WebView::IsPrivate is_private, Web::HTML::ActivateTab activate_tab) =|

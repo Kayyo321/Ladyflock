@@ -139,9 +139,15 @@ ErrorOr<void> RequestServerManager::launch_process(RequestServerInstance& instan
     auto is_private = instance.session().is_private();
     auto keeps_disk_cache = is_private == IsPrivate::No && (instance.site().has_value() || !uses_site_request_servers());
     auto disk_cache_mode = keeps_disk_cache ? Application::request_server_options().http_disk_cache_mode : HTTPDiskCacheMode::Disabled;
-    auto control_client = TRY(launch_request_server_process(instance.cache_path(), instance.site(), is_private, disk_cache_mode));
+    bool disable_network = !Application::privacy_policy_coordinator().allows_network_egress(instance.session());
+    instance.m_network_sandbox_denied = disable_network;
+    auto control_client = TRY(launch_request_server_process(instance.cache_path(), instance.site(), is_private, disk_cache_mode, disable_network));
 
     auto weak_instance = instance.make_weak_ptr();
+    control_client->on_allow_system_dns_resolution = [weak_session = instance.session().make_weak_ptr()](ByteString const&, bool) {
+        auto session = weak_session.strong_ref();
+        return session && Application::privacy_policy_coordinator().allows_dns_resolution(*session);
+    };
     control_client->on_client_disconnected = [weak_instance](int client_id) {
         if (auto instance = weak_instance.strong_ref())
             the().client_disconnected(*instance, client_id);
@@ -369,8 +375,10 @@ void RequestServerManager::restart_network_sandboxed_instances_for_session(Brows
     }
 
     for (auto& instance : instances_to_restart) {
-        if (instance->m_control_client)
+        if (instance->m_control_client) {
+            instance->m_control_client->on_request_server_died = nullptr;
             end_unresponsive_helper(*instance->m_control_client);
+        }
         did_lose_process(*instance);
     }
 }

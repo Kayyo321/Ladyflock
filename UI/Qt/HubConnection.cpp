@@ -348,6 +348,11 @@ void HubConnection::app_gpu_painting_changed(bool gpu_painting_enabled)
     Application::the().did_change_gpu_painting(gpu_painting_enabled);
 }
 
+void HubConnection::app_privacy_network_mode_changed(Privacy::NetworkMode mode, u64)
+{
+    Application::the().did_change_privacy_network_mode(mode);
+}
+
 void HubConnection::app_open_urls_in_new_tabs(Vector<URL::URL> urls)
 {
     Application::the().open_urls_in_new_tabs(urls);

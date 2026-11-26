@@ -12,7 +12,7 @@
 
 namespace RequestServer {
 
-ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory)
+ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> const& certificates, Optional<StringView> disk_cache_directory, NetworkAccess network_access)
 {
     TRY(Sandbox::configure_runtime());
 
@@ -26,12 +26,14 @@ ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> cons
     if (auto bundle = Sandbox::application_bundle_for_executable(executable_path); bundle.has_value())
         TRY(Sandbox::add_seatbelt_path_if_exists(paths, *bundle, Sandbox::SeatbeltPath::Access::ReadOnly));
 
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/etc/hosts"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/etc/resolv.conf"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/hosts"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/resolv.conf"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/ssl"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
-    TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/Library/Preferences/com.apple.networkd.plist"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+    if (network_access == NetworkAccess::Allowed) {
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/etc/hosts"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/etc/resolv.conf"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/hosts"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/resolv.conf"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/private/etc/ssl"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+        TRY(Sandbox::add_seatbelt_path_if_exists(paths, "/Library/Preferences/com.apple.networkd.plist"sv, Sandbox::SeatbeltPath::Access::ReadOnly));
+    }
 
     for (auto const& certificate : certificates)
         TRY(Sandbox::add_seatbelt_path_if_exists(paths, certificate, Sandbox::SeatbeltPath::Access::ReadOnly));
@@ -48,7 +50,7 @@ ErrorOr<void> apply_sandbox(StringView mach_server_name, Vector<ByteString> cons
 
     return Sandbox::apply_macos_sandbox({
         .paths = paths.span(),
-        .network_access = Sandbox::NetworkAccess::Allowed,
+        .network_access = network_access == NetworkAccess::Allowed ? Sandbox::NetworkAccess::Allowed : Sandbox::NetworkAccess::Denied,
         .mach_server_name = mach_server_name,
     });
 }

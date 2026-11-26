@@ -219,11 +219,15 @@ SoftwareUpdater::~SoftwareUpdater() = default;
 
 void SoftwareUpdater::install_update()
 {
+    if (m_offline)
+        return;
     [m_sparkle->updater checkForUpdates];
 }
 
 void SoftwareUpdater::install_latest_version()
 {
+    if (m_offline)
+        return;
     m_sparkle->delegate.offersLatestVersion = YES;
     [m_sparkle->updater checkForUpdates];
 }
