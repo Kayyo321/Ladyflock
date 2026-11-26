@@ -9,6 +9,7 @@
 #include <AK/HashMap.h>
 #include <AK/QuickSort.h>
 #include <AK/Utf8View.h>
+#include <LibPrivacy/Navigation/TrackingParameters.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/AutocompleteMuxer.h>
 #include <LibWebView/URL.h>
@@ -35,16 +36,11 @@ struct QueryParameter {
 
 }
 
-// Query parameters that only say where a visit came from, or keep a cache from answering, and never change the page.
+// Query parameters that only say where a visit came from never change the page. The navigation sanitizer strips the
+// same list.
 static bool is_tracking_query_parameter(StringView name)
 {
-    static constexpr Array tracking_parameter_names {
-        "_ga"sv, "_gl"sv, "dclid"sv, "fbclid"sv, "gbraid"sv, "gclid"sv, "igshid"sv, "mc_cid"sv, "mc_eid"sv, "msclkid"sv,
-        "wbraid"sv, "yclid"sv, "zx"sv
-    };
-    if (name.starts_with("utm_"sv, CaseSensitivity::CaseInsensitive))
-        return true;
-    return any_of(tracking_parameter_names, [&](auto tracking_name) { return name.equals_ignoring_ascii_case(tracking_name); });
+    return Privacy::is_tracking_query_parameter(name);
 }
 
 static QueryParameter split_query_parameter(StringView parameter)

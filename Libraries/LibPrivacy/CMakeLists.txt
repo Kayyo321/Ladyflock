@@ -1,6 +1,7 @@
 set(SOURCES
     Identity/NavigationHandoff.cpp
     Identity/Types.cpp
+    Navigation/TrackingParameters.cpp
     Policy/Compiler.cpp
     Policy/NetworkGate.cpp
     Policy/Route.cpp
