@@ -989,6 +989,15 @@ bool Request::fail_if_blocked_by_privacy_policy(bool is_speculative)
     return false;
 }
 
+bool Request::fail_if_off_the_mandatory_route()
+{
+    if (proxy_satisfies_mandatory_route(m_proxy))
+        return false;
+    m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+    transition_to_state(State::Error);
+    return true;
+}
+
 void Request::abort_for_privacy_policy(Badge<ConnectionFromClient>)
 {
     if (is_complete())
@@ -1551,7 +1560,7 @@ bool Request::configure_certificate_verification()
 
 void Request::handle_connect_state()
 {
-    if (fail_if_blocked_by_privacy_policy(true))
+    if (fail_if_blocked_by_privacy_policy(true) || fail_if_off_the_mandatory_route())
         return;
 
     m_curl_easy_handle = curl_easy_init();
@@ -1593,7 +1602,7 @@ void Request::handle_connect_state()
 
 void Request::handle_fetch_state()
 {
-    if (fail_if_blocked_by_privacy_policy())
+    if (fail_if_blocked_by_privacy_policy() || fail_if_off_the_mandatory_route())
         return;
 
     dbgln_if(REQUESTSERVER_DEBUG, "RequestServer: DNS lookup successful");

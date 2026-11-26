@@ -786,8 +786,10 @@ void ConnectionFromClient::abandon_aia_lookup(ByteString const& url)
 
 void ConnectionFromClient::start_aia_fetch(ByteString const& url, ByteString const& fetch_url, Optional<HTTP::Proxy> proxy, Optional<ByteString> resolve_entry)
 {
+    // The lookup that led here records no policy epoch, so a fetch that chose a direct connection before a mandatory
+    // route was installed is caught by its proxy instead.
     auto parsed = URL::Parser::basic_parse(fetch_url);
-    if (!parsed.has_value() || Privacy::Hooks::on_before_aia_fetch(privacy_network_gate(), *parsed).is_denied()) {
+    if (!parsed.has_value() || Privacy::Hooks::on_before_aia_fetch(privacy_network_gate(), *parsed).is_denied() || !proxy_satisfies_mandatory_route(proxy)) {
         abandon_aia_lookup(url);
         return;
     }
@@ -1250,7 +1252,7 @@ void ConnectionFromClient::look_up_websocket_host(u64 websocket_id, u64 originat
 
 void ConnectionFromClient::open_websocket(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers, Optional<HTTP::Proxy> proxy, RefPtr<DNS::LookupResult const> dns_result)
 {
-    if (Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied()) {
+    if (Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url).is_denied() || !proxy_satisfies_mandatory_route(proxy)) {
         fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
         return;
     }

@@ -81,6 +81,10 @@ bool has_mandatory_route();
 // RequestServer makes for a client takes its proxy from here, so nothing falls back to a direct connection.
 Optional<HTTP::Proxy> proxy_for_connection(URL::URL const&, StringView top_level_site);
 
+// Whether a connection may go out over this proxy now. Under a mandatory route, only the route's endpoint will do, so a
+// continuation that chose its proxy (or no proxy) before the route was installed fails instead of connecting directly.
+bool proxy_satisfies_mandatory_route(Optional<HTTP::Proxy> const&);
+
 // The CURLOPT_NOPROXY value for a handle: under a mandatory route, an empty list that also stops curl from reading
 // no_proxy from the environment; otherwise curl's default.
 char const* curl_no_proxy_option();

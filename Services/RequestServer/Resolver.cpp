@@ -80,6 +80,17 @@ Optional<HTTP::Proxy> proxy_for_connection(URL::URL const& url, StringView top_l
     return proxy;
 }
 
+bool proxy_satisfies_mandatory_route(Optional<HTTP::Proxy> const& proxy)
+{
+    auto route = privacy_network_gate().mandatory_route();
+    if (!route.has_value())
+        return true;
+    return proxy.has_value()
+        && proxy->type == proxy_type_for_route(route->type)
+        && proxy->host == route->host
+        && proxy->port == route->port;
+}
+
 char const* curl_no_proxy_option()
 {
     return has_mandatory_route() ? "" : nullptr;

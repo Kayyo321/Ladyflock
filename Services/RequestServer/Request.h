@@ -258,6 +258,9 @@ private:
     void importer_went_away();
     void handle_complete_state();
     void handle_error_state();
+    // Fails a request whose proxy is not the mandatory route, such as one that chose a direct connection before the
+    // route was installed.
+    bool fail_if_off_the_mandatory_route();
     bool fail_if_blocked_by_privacy_policy(bool is_speculative = false);
 
     static size_t on_header_received(void* buffer, size_t size, size_t nmemb, void* user_data);
