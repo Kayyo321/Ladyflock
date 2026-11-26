@@ -1386,7 +1386,9 @@ void Request::handle_dns_lookup_state()
         return;
     }
 
-    m_proxy = proxy_configuration().proxy_for(m_url).copy();
+    // Under a mandatory route this is always the route, so no request here can fall back to a direct connection.
+    auto isolation_site = m_network_isolation_key.has_value() ? m_network_isolation_key->top_level_site.to_utf8().to_byte_string() : ByteString {};
+    m_proxy = proxy_for_connection(m_url, isolation_site);
     // The proxy configuration can change while a lookup is pending, so resolve again for a different proxy.
     if (!m_proxy_host_resolved || m_resolved_proxy != m_proxy) {
         resolve_proxy_host(m_proxy, weak_callback(*this, [proxy = m_proxy](auto& self, ErrorOr<void> result) {
@@ -1578,6 +1580,7 @@ void Request::handle_connect_state()
     set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
     set_option(CURLOPT_CONNECT_ONLY, 1L);
     set_option(CURLOPT_PROXY, m_proxy.has_value() ? m_proxy->to_curl_url().characters() : "");
+    set_option(CURLOPT_NOPROXY, curl_no_proxy_option());
 
     // Pre-populate the multi's hostcache so libcurl skips its threaded resolver entirely.
     set_curl_resolve_list(m_dns_result ? build_curl_resolve_list(*m_dns_result, m_url.serialized_host(), m_url.port_or_default()) : Optional<ByteString> {});
@@ -1752,6 +1755,7 @@ void Request::handle_fetch_state()
     }
 
     set_option(CURLOPT_PROXY, m_proxy.has_value() ? m_proxy->to_curl_url().characters() : "");
+    set_option(CURLOPT_NOPROXY, curl_no_proxy_option());
 
     set_curl_resolve_list(m_dns_result ? build_curl_resolve_list(*m_dns_result, connect_host(), connect_port()) : Optional<ByteString> {});
 

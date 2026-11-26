@@ -42,6 +42,49 @@ void set_proxy_configuration(HTTP::ProxyConfiguration proxy_configuration)
     g_proxy_configuration = move(proxy_configuration);
 }
 
+bool has_mandatory_route()
+{
+    return privacy_network_gate().mandatory_route().has_value();
+}
+
+static HTTP::Proxy::Type proxy_type_for_route(Privacy::RouteProxyType type)
+{
+    switch (type) {
+    case Privacy::RouteProxyType::HTTP:
+        return HTTP::Proxy::Type::HTTP;
+    case Privacy::RouteProxyType::HTTPS:
+        return HTTP::Proxy::Type::HTTPS;
+    case Privacy::RouteProxyType::SOCKS4A:
+        return HTTP::Proxy::Type::SOCKS4A;
+    case Privacy::RouteProxyType::SOCKS5Hostname:
+        return HTTP::Proxy::Type::SOCKS5Hostname;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+Optional<HTTP::Proxy> proxy_for_connection(URL::URL const& url, StringView top_level_site)
+{
+    auto route = privacy_network_gate().mandatory_route();
+    if (!route.has_value())
+        return proxy_configuration().proxy_for(url).copy();
+
+    HTTP::Proxy proxy {
+        .type = proxy_type_for_route(route->type),
+        .host = route->host,
+        .port = route->port,
+        .userinfo = route->credentials,
+    };
+    // The credentials are hex, so they need no percent-encoding in the proxy URL.
+    if (auto credentials = Privacy::isolation_credentials_for(*route, top_level_site); credentials.has_value())
+        proxy.userinfo = ByteString::formatted("{}:{}", credentials->username, credentials->password);
+    return proxy;
+}
+
+char const* curl_no_proxy_option()
+{
+    return has_mandatory_route() ? "" : nullptr;
+}
+
 Optional<Utf16String> const& process_top_level_site()
 {
     return g_process_top_level_site;

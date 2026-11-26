@@ -72,6 +72,19 @@ void set_default_certificate_path(ByteString);
 HTTP::ProxyConfiguration const& proxy_configuration();
 void set_proxy_configuration(HTTP::ProxyConfiguration);
 
+// Whether the installed privacy policy requires every connection to take its mandatory route.
+bool has_mandatory_route();
+
+// The proxy a connection to the URL must use. Under a mandatory route it is always that route, whatever the proxy
+// configuration and its bypass list say, with the stream isolation credentials of the given top-level site (an empty
+// site names browser-initiated work). Otherwise it is the configured proxy for the URL, if any. Every connection that
+// RequestServer makes for a client takes its proxy from here, so nothing falls back to a direct connection.
+Optional<HTTP::Proxy> proxy_for_connection(URL::URL const&, StringView top_level_site);
+
+// The CURLOPT_NOPROXY value for a handle: under a mandatory route, an empty list that also stops curl from reading
+// no_proxy from the environment; otherwise curl's default.
+char const* curl_no_proxy_option();
+
 // The top-level site this RequestServer serves, when there is one per site.
 Optional<Utf16String> const& process_top_level_site();
 void set_process_top_level_site(Optional<Utf16String>);

@@ -714,7 +714,8 @@ void ConnectionFromClient::fetch_aia_intermediate(Badge<Request>, ByteString con
     auto fetch_url = parsed->serialize().to_byte_string();
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
 
-    auto proxy = proxy_configuration().proxy_for(*parsed).copy();
+    // Certificate intermediates are fetched for the browser, not for the site whose certificate needs them.
+    auto proxy = proxy_for_connection(*parsed, {});
     resolve_proxy_host(proxy, [weak_self, url, fetch_url, host, port, proxy](ErrorOr<void> result) mutable {
         auto self = weak_self.strong_ref();
         if (!self)
@@ -823,6 +824,7 @@ void ConnectionFromClient::start_aia_fetch(ByteString const& url, ByteString con
     set_option(CURLOPT_WRITEFUNCTION, aia_write_body);
     set_option(CURLOPT_WRITEDATA, fetch.ptr());
     set_option(CURLOPT_PROXY, proxy.has_value() ? proxy->to_curl_url().characters() : "");
+    set_option(CURLOPT_NOPROXY, curl_no_proxy_option());
 
     curl_slist* resolve_list = nullptr;
     for (auto const& entry : { move(resolve_entry), curl_resolve_entry_for_proxy(proxy) }) {
@@ -965,7 +967,7 @@ void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host, u8 bits)
 
     // Whatever connects to the host would bypass a proxy, and a proxy that resolves names would never see this lookup,
     // so nothing is looked up while one is configured.
-    if (!proxy_configuration().is_empty() || host.is_empty() || host.length() > 253
+    if (!proxy_configuration().is_empty() || has_mandatory_route() || host.is_empty() || host.length() > 253
         || (flags != HostLookupFlag::None && m_site_binding != SiteBinding::Unrestricted)) {
         async_host_resolved(lookup_id, {}, {});
         return;
@@ -1113,13 +1115,16 @@ void ConnectionFromClient::websocket_connect(u64 websocket_id, URL::URL url, Opt
     static u64 s_next_cookie_request_id = 0;
     auto cookie_request_id = s_next_cookie_request_id++;
 
+    // A mandatory route isolates the WebSocket's stream by the top-level site it was opened under.
+    auto isolation_site = network_isolation_key.has_value() ? network_isolation_key->top_level_site.to_utf8().to_byte_string() : ByteString {};
+
     m_websocket_cookie_requests.set(websocket_id, {
                                                       .cookie_request_id = cookie_request_id,
-                                                      .continuation = [this, websocket_id, originating_page_id, url, origin = move(origin), protocols = move(protocols), extensions = move(extensions), request_headers = move(additional_request_headers)](String cookie) mutable {
+                                                      .continuation = [this, websocket_id, originating_page_id, url, isolation_site = move(isolation_site), origin = move(origin), protocols = move(protocols), extensions = move(extensions), request_headers = move(additional_request_headers)](String cookie) mutable {
                                                           // Sent as UTF-8, like the Cookie header of a fetch.
                                                           if (!cookie.is_empty())
                                                               request_headers.append({ "Cookie"sv, cookie.to_byte_string() });
-                                                          connect_websocket(websocket_id, originating_page_id, move(url), move(origin), move(protocols), move(extensions), move(request_headers));
+                                                          connect_websocket(websocket_id, originating_page_id, move(url), isolation_site, move(origin), move(protocols), move(extensions), move(request_headers));
                                                       },
                                                   });
 
@@ -1143,7 +1148,7 @@ bool ConnectionFromClient::websocket_retrieved_http_cookie(Badge<ControlConnecti
     return true;
 }
 
-void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers)
+void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_page_id, URL::URL url, ByteString const& isolation_site, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers)
 {
     auto ws_eval = Privacy::Hooks::on_before_websocket_connect(privacy_network_gate(), url);
     if (ws_eval.is_denied()) {
@@ -1162,7 +1167,7 @@ void ConnectionFromClient::connect_websocket(u64 websocket_id, u64 originating_p
         return;
     }
 
-    auto proxy = proxy_configuration().proxy_for(url).copy();
+    auto proxy = proxy_for_connection(url, isolation_site);
     resolve_proxy_host(proxy, [weak_self, websocket_id, originating_page_id, policy_epoch, url = move(url), origin = move(origin), protocols = move(protocols), extensions = move(extensions), additional_request_headers = move(additional_request_headers), proxy](ErrorOr<void> result) mutable {
         auto self = weak_self.strong_ref();
         if (!self)

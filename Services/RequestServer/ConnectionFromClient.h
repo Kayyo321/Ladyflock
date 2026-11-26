@@ -112,7 +112,7 @@ private:
     void fail_websocket(u64 websocket_id, Requests::WebSocket::Error);
     size_t websocket_count() const;
     size_t total_websocket_count() const;
-    void connect_websocket(u64 websocket_id, u64 originating_page_id, URL::URL, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> request_headers);
+    void connect_websocket(u64 websocket_id, u64 originating_page_id, URL::URL, ByteString const& isolation_site, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> request_headers);
     void look_up_websocket_host(u64 websocket_id, u64 originating_page_id, URL::URL, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers, Optional<HTTP::Proxy>);
     void open_websocket(u64 websocket_id, u64 originating_page_id, URL::URL, ByteString origin, Vector<ByteString> protocols, Vector<ByteString> extensions, Vector<HTTP::Header> additional_request_headers, Optional<HTTP::Proxy>, RefPtr<DNS::LookupResult const>);
 
