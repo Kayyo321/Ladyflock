@@ -1,6 +1,6 @@
 # Privacy Network Enforcement (Milestones 0 and 1)
 
-This document describes Ladyflock's network privacy enforcement architecture for **Milestone 0 (First Request)** and **Milestone 1 (Offline)**, its platform boundaries, and the verified test results. See [IdentitiesAndStorage.md](IdentitiesAndStorage.md) for **Milestone 2 (Identities and Storage)**.
+This document describes Ladyflock's network privacy enforcement architecture for **Milestone 0 (First Request)** and **Milestone 1 (Offline)**, its platform boundaries, and the verified test results. See [IdentitiesAndStorage.md](IdentitiesAndStorage.md) for **Milestone 2 (Identities and Storage)**. See [ProxyRouting.md](ProxyRouting.md) for **Milestone 3 (Proxy and Tor routing)**, which adds `NetworkMode::ProxyOnly` and policy schema version 2.
 
 ## 1. Architecture Overview
 

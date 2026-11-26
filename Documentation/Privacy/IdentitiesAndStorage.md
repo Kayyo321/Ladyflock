@@ -1,6 +1,6 @@
 # Identities, Partitioned Storage, and Navigation Handoffs (Milestone 2)
 
-This document describes Ladyflock's **Milestone 2 (Identities and Storage)** architecture, SQLite schema migrations and quarantine rules, cross-identity navigation handoff contract, and verified test results. See also [NetworkEnforcement.md](NetworkEnforcement.md) for Milestones 0 and 1.
+This document describes Ladyflock's **Milestone 2 (Identities and Storage)** architecture, SQLite schema migrations and quarantine rules, cross-identity navigation handoff contract, and verified test results. See also [NetworkEnforcement.md](NetworkEnforcement.md) for Milestones 0 and 1. See [ProxyRouting.md](ProxyRouting.md) for Milestone 3, which gives Tor-routed identities a mandatory Tor route.
 
 ## 1. Architecture Overview
 
