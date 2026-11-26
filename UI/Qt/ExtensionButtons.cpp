@@ -423,7 +423,7 @@ void ExtensionButtons::open_menu()
     menu->addSeparator();
     if (auto updates = count_updates(); updates > 0)
         menu->addAction(updates == 1 ? tr("Review 1 Update...") : tr("Review %1 Updates...").arg(updates), this, [this] { if (on_update) on_update(); });
-    menu->addAction(tr("Manage extensions"), this, [this] { if (on_manage) on_manage(); });
+    menu->addAction(tr("Manage Extensions"), this, [this] { if (on_manage) on_manage(); });
     menu->popup(m_menu_button->mapToGlobal(m_menu_button->rect().bottomLeft()));
 }
 

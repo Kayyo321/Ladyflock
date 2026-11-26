@@ -277,12 +277,12 @@ TEST_CASE(extensions_menu_offers_available_updates)
     update->trigger();
     EXPECT_EQ(update_requests, 1u);
 
-    // "Manage extensions" stays last, after the action that reviews every update.
+    // "Manage Extensions" stays last, after the action that reviews every update.
     auto actions = menu->actions();
     EXPECT_EQ(actions.at(actions.size() - 2)->text(), QString("Review 2 Updates..."));
     actions.at(actions.size() - 2)->trigger();
     EXPECT_EQ(update_requests, 2u);
-    EXPECT_EQ(actions.last()->text(), QString("Manage extensions"));
+    EXPECT_EQ(actions.last()->text(), QString("Manage Extensions"));
     menu->close();
 }
 
