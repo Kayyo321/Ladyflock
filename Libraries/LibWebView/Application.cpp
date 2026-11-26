@@ -691,6 +691,8 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .privacy_proxy_isolation = privacy_proxy_isolation,
         .privacy_tor_route = move(privacy_tor_route),
     };
+    if (m_browser_options.privacy_network_mode == Privacy::NetworkMode::ProxyOnly && !m_browser_options.privacy_proxy_route.has_value())
+        warnln("Proxy-only privacy mode has no --privacy-proxy route, so browsing starts with no network access");
 
     if (web_content_memory_limit_in_mebibytes.has_value()) {
         if (*web_content_memory_limit_in_mebibytes > NumericLimits<u64>::max() / MiB)
