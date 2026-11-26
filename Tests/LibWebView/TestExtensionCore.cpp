@@ -12,6 +12,7 @@
 #include <AK/ScopeGuard.h>
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibDatabase/Database.h>
@@ -24,6 +25,7 @@
 #include <LibWebView/Extensions/DeclarativeRequestRules.h>
 #include <LibWebView/Extensions/ExtensionActionController.h>
 #include <LibWebView/Extensions/ExtensionAlarms.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/Extensions/ExtensionSidebarController.h>
 #include <LibWebView/Extensions/ExtensionStorage.h>
 #include <LibWebView/Extensions/RevocationList.h>
@@ -489,4 +491,83 @@ TEST_CASE(addons_ui_backend_commands)
     auto installed_val = WebView::AddonsUI::handle_command_for_testing("getInstalledExtensions"sv, {});
     EXPECT(installed_val.is_object());
     EXPECT(installed_val.as_object().has("extensions"sv));
+}
+
+TEST_CASE(extension_versions_compare_like_firefox)
+{
+    EXPECT_EQ(ExtensionManager::compare_versions("1.77.2"sv, "1.77.2"sv), 0);
+    EXPECT_EQ(ExtensionManager::compare_versions("1.0"sv, "1.0.0"sv), 0);
+    EXPECT(ExtensionManager::compare_versions("1.77.10"sv, "1.77.2"sv) > 0);
+    EXPECT(ExtensionManager::compare_versions("1.9"sv, "1.10"sv) < 0);
+    EXPECT(ExtensionManager::compare_versions("2"sv, "1.99.99"sv) > 0);
+    // A prerelease sorts before its release, and a string part sorts after none only when numbers tie.
+    EXPECT(ExtensionManager::compare_versions("1.0pre1"sv, "1.0"sv) < 0);
+    EXPECT(ExtensionManager::compare_versions("1.0a"sv, "1.0b"sv) < 0);
+    EXPECT(ExtensionManager::compare_versions("1.0b2"sv, "1.0b10"sv) < 0);
+    EXPECT(ExtensionManager::compare_versions("1.0.1"sv, "1.0b"sv) > 0);
+}
+
+TEST_CASE(update_availability_tracks_only_newer_listed_versions)
+{
+    Test::HeadlessTestEnvironment environment { "TestExtensionUpdates"sv };
+    auto app = TRY_OR_FAIL(environment.create_application(Array { "--enable-extensions"sv, "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = ByteString::formatted("{}/ladyflock-update-test-{}", Core::StandardPaths::tempfile_directory(), Core::System::getpid());
+    MUST(Core::Directory::create(directory, Core::Directory::CreateDirectories::Yes));
+    ScopeGuard cleanup = [&] { (void)FileSystem::remove(directory, FileSystem::RecursionMode::Allowed); };
+    auto manifest = TRY_OR_FAIL(Core::File::open(LexicalPath::join(directory, "manifest.json"sv).string(), Core::File::OpenMode::Write));
+    TRY_OR_FAIL(manifest->write_until_depleted(R"({"manifest_version": 2, "name": "Updatable", "version": "1.4.0",
+        "browser_specific_settings": {"gecko": {"id": "updatable@ladyflock.test"}}})"sv.bytes()));
+    manifest->close();
+    auto extension = TRY_OR_FAIL(manager.load_unpacked(directory));
+
+    size_t chrome_changes = 0;
+    auto previous_handler = move(manager.on_chrome_changed);
+    manager.on_chrome_changed = [&] { ++chrome_changes; };
+    ScopeGuard restore = [&] { manager.on_chrome_changed = move(previous_handler); };
+
+    auto update_version_in_summary = [&] -> Optional<String> {
+        auto summary = manager.summary_json();
+        Optional<String> version;
+        summary.get_array("extensions"sv)->for_each([&](JsonValue const& item) {
+            if (item.as_object().get_string("extension_id"sv) == extension.extension_id)
+                version = item.as_object().get_string("update_version"sv).copy();
+        });
+        return version;
+    };
+
+    // An older or equal listing is never offered, which would otherwise be a downgrade.
+    EXPECT(!manager.record_listed_version(extension.extension_id, "1.3.9"sv));
+    EXPECT(!manager.record_listed_version(extension.extension_id, "1.4"sv));
+    EXPECT(!manager.available_update_version(extension.extension_id).has_value());
+    EXPECT_EQ(chrome_changes, 0u);
+
+    EXPECT(manager.record_listed_version(extension.extension_id, "1.5.0"sv));
+    EXPECT_EQ(manager.available_update_version(extension.extension_id), "1.5.0"sv);
+    EXPECT_EQ(update_version_in_summary(), "1.5.0"sv);
+    EXPECT_EQ(chrome_changes, 1u);
+
+    // The same result again doesn't redraw the toolbar; a newer check that finds nothing newer clears the hint.
+    EXPECT(manager.record_listed_version(extension.extension_id, "1.5.0"sv));
+    EXPECT_EQ(chrome_changes, 1u);
+    EXPECT(!manager.record_listed_version(extension.extension_id, "1.4.0"sv));
+    EXPECT(!update_version_in_summary().has_value());
+    EXPECT_EQ(chrome_changes, 2u);
+
+    // An unknown extension is ignored, and removing one forgets its update.
+    EXPECT(!manager.record_listed_version("missing@ladyflock.test"sv, "9"sv));
+    EXPECT(manager.record_listed_version(extension.extension_id, "2.0"sv));
+    TRY_OR_FAIL(manager.remove_extension(extension.extension_id));
+    EXPECT(!manager.available_update_version(extension.extension_id).has_value());
+
+    // An unpacked extension has no Mozilla Add-ons update source, so the page offers no update check for it.
+    EXPECT(!manager.can_check_for_update(extension));
+    bool completed = false;
+    manager.check_for_updates([&](auto result) {
+        completed = true;
+        EXPECT_EQ(result.checked, 0u);
+        EXPECT(result.failed_extension_ids.is_empty());
+    });
+    EXPECT(completed);
 }

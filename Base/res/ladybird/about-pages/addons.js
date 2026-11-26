@@ -33,7 +33,11 @@ const iconRequests = new Map();
 function extensionIdentity(item, label) {
     const identity = element("span", undefined, "extension-identity");
     const icon = byId("extension-icon-template").content.firstElementChild.cloneNode(true);
-    identity.append(icon, element("span", label));
+    // The icon swaps its placeholder for the extension's image, so the update hint sits beside it in a frame.
+    const frame = element("span", undefined, "extension-icon-frame");
+    frame.append(icon);
+    if (item.update_version) frame.append(byId("update-hint-template").content.firstElementChild.cloneNode(true));
+    identity.append(frame, element("span", label));
     if (item.icon_key) {
         icon.dataset.iconKey = item.icon_key;
         if (!iconRequests.has(item.icon_key)) {
@@ -85,6 +89,7 @@ function sendAction(name, data, status, trigger) {
     if (operation) return false;
     operation = { name, trigger, extensionId: data.extension_id };
     if (name === "stageCatalogInstall") setCatalogReviewBusy(trigger, true);
+    setUpdateControlsBusy(true);
     announce(notice, status);
     ladybird.sendMessage(name, data);
     return true;
@@ -92,7 +97,146 @@ function sendAction(name, data, status, trigger) {
 
 function finishAction(message, error = false) {
     operation = null;
+    setUpdateControlsBusy(false);
     announce(notice, message, error);
+}
+
+const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
+
+function updatableExtensions() {
+    return extensions.filter(ext => ext.update_version && ext.can_check_update);
+}
+
+function setUpdateControlsBusy(busy) {
+    for (const control of [byId("check-updates"), byId("update-all")]) {
+        control.ariaDisabled = busy ? "true" : null;
+    }
+}
+
+function renderUpdateControls() {
+    const controls = byId("update-controls");
+    const checkable = extensions.some(ext => ext.can_check_update);
+    controls.hidden = !checkable;
+    const updatable = updatableExtensions();
+    const updateAll = byId("update-all");
+    updateAll.hidden = updatable.length === 0;
+    updateAll.textContent = updatable.length === 1 ? "Update" : "Update All (" + updatable.length + ")";
+    updateAll.setAttribute(
+        "aria-label",
+        updatable.length === 1 ? "Update " + updatable[0].name : "Update all " + updatable.length + " extensions"
+    );
+}
+
+byId("check-updates").addEventListener("click", event => {
+    if (event.currentTarget.ariaDisabled === "true") return;
+    sendAction("checkForUpdates", {}, "Checking Mozilla Add-ons for updates…", event.currentTarget);
+});
+
+byId("update-all").addEventListener("click", event => {
+    if (event.currentTarget.ariaDisabled === "true") return;
+    const ids = updatableExtensions().map(ext => ext.extension_id);
+    if (!ids.length) return;
+    sendAction(
+        "stageUpdates",
+        { extension_ids: ids },
+        "Downloading and verifying " + plural(ids.length, "update", "updates") + "…",
+        event.currentTarget
+    );
+});
+
+function updatesChecked(data) {
+    if (data.summary) renderInstalled(data.summary);
+    const available = updatableExtensions().length;
+    const failed = Array.isArray(data.failed) ? data.failed : [];
+    let message = available
+        ? plural(available, "update is", "updates are") + " available."
+        : "All extensions from Mozilla Add-ons are up to date.";
+    if (failed.length) message += "\nCouldn’t check " + failed.join(", ") + ".";
+    finishAction(message, failed.length > 0 && available === 0);
+}
+
+function stagedUpdateIsComplete(update) {
+    return (
+        update.token &&
+        update.verified_signature === true &&
+        ["Tested in Ladyflock", "Manifest compatible · Untested"].includes(update.compatibility_status) &&
+        Array.isArray(update.newly_requested_permissions)
+    );
+}
+
+function updatesStaged(data) {
+    if (data.summary) renderInstalled(data.summary);
+    const staged = Array.isArray(data.updates) ? data.updates : [];
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    const updates = staged.filter(stagedUpdateIsComplete);
+    const unverified = staged.filter(update => !stagedUpdateIsComplete(update));
+    if (unverified.length) {
+        ladybird.sendMessage("cancelUpdates", { tokens: unverified.map(update => update.token).filter(Boolean) });
+        for (const update of unverified)
+            errors.push({ name: update.name, error: "The package could not be verified for installation." });
+    }
+    const errorText = errors.map(error => error.name + ": " + error.error);
+    if (!updates.length) {
+        finishAction(errorText.length ? errorText.join("\n") : "All extensions are up to date.", errorText.length > 0);
+        return;
+    }
+    announce(notice, "");
+    const content = element("div");
+    const list = element("ul", undefined, "update-list");
+    for (const update of updates) {
+        const row = element("li");
+        const identity = extensionIdentity(update, update.name);
+        row.append(identity);
+        row.append(
+            element(
+                "p",
+                (update.previous_version ? "Version " + update.previous_version + " → " : "Version ") + update.version,
+                "description"
+            )
+        );
+        if (update.newly_requested_permissions.length) {
+            const permissions = element("section", undefined, "permission-group");
+            permissions.append(
+                element("h3", "New permissions"),
+                textList(update.newly_requested_permissions.map(describePermission))
+            );
+            row.append(permissions);
+        }
+        list.append(row);
+    }
+    content.append(list);
+    if (errorText.length) {
+        const skipped = element("section", undefined, "permission-group");
+        skipped.append(element("h3", "Not included"), textList(errorText));
+        content.append(skipped);
+    }
+    const tokens = updates.map(update => update.token);
+    operation.name = "review";
+    confirmAction(
+        updates.length === 1 ? "Review update" : "Review " + updates.length + " updates",
+        content,
+        updates.length === 1 ? "Update" : "Update All",
+        () => {
+            announce(notice, "Updating " + plural(updates.length, "extension", "extensions") + "…");
+            operation.name = "approveUpdates";
+            ladybird.sendMessage("approveUpdates", { tokens, consented: true });
+        },
+        () => {
+            operation.name = "cancelUpdates";
+            ladybird.sendMessage("cancelUpdates", { tokens });
+        },
+        operation.trigger
+    );
+}
+
+function updatesCompleted(data) {
+    if (data.summary) renderInstalled(data.summary);
+    const updated = Array.isArray(data.updated) ? data.updated : [];
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    const lines = [];
+    if (updated.length) lines.push("Updated " + updated.join(", ") + ".");
+    for (const error of errors) lines.push(error.name + ": " + error.error);
+    finishAction(lines.join("\n"), errors.length > 0);
 }
 
 function textList(values) {
@@ -207,6 +351,10 @@ function installedEntry(ext) {
         header,
         element("p", ["Version " + ext.version, source, compatibility(ext)].filter(Boolean).join(" · "), "description")
     );
+    if (ext.update_version) {
+        entry.classList.add("has-update");
+        entry.append(element("p", "Version " + ext.update_version + " is available", "update-available"));
+    }
 
     const access = element("details");
     const summary = element("summary", "Site access");
@@ -281,7 +429,17 @@ function installedEntry(ext) {
         options.dataset.control = "options";
         actions.append(options);
     }
-    if (ext.can_check_update) {
+    if (ext.can_check_update && ext.update_version) {
+        const update = button(
+            "Update to " + ext.update_version,
+            event => {
+                sendAction("checkManualUpdate", id, "Downloading and verifying the update…", event.currentTarget);
+            },
+            "primary-button"
+        );
+        update.dataset.control = "update";
+        actions.append(update);
+    } else if (ext.can_check_update) {
         const update = button("Check for Update", event => {
             sendAction("checkManualUpdate", id, "Checking for an update…", event.currentTarget);
         });
@@ -340,6 +498,7 @@ function renderInstalled(data) {
         );
         (control || byId("installed-heading")).focus();
     }
+    renderUpdateControls();
     byId("pick-file").disabled = !Array.isArray(data.extensions) || data.extensions_enabled === false;
     catalogAvailable = data.enable_public_amo_catalog === true;
     query.disabled = byId("search").disabled = !catalogAvailable;
@@ -457,6 +616,7 @@ function staged(data, update) {
         return;
     }
     if (data.cancelled || data.up_to_date) {
+        if (data.summary) renderInstalled(data.summary);
         finishAction(data.up_to_date ? "The installed version is up to date." : "");
         return;
     }
@@ -531,6 +691,7 @@ const completionMessages = {
     installCompleted: ["approveInstall", "Extension installed."],
     updateCompleted: ["approveUpdate", "Extension updated."],
     installCancelled: ["cancelInstall", ""],
+    updatesCancelled: ["cancelUpdates", ""],
 };
 
 document.addEventListener("WebUIMessage", event => {
@@ -548,6 +709,12 @@ document.addEventListener("WebUIMessage", event => {
         renderInstalled(data);
     } else if (name === "catalogSearchResults") {
         searched(data);
+    } else if (name === "updatesChecked" && operation?.name === "checkForUpdates") {
+        updatesChecked(data);
+    } else if (name === "updatesStaged" && operation?.name === "stageUpdates") {
+        updatesStaged(data);
+    } else if (name === "updatesCompleted" && operation?.name === "approveUpdates") {
+        updatesCompleted(data);
     } else if (name === "installStaged" && ["pickLocalXpi", "stageCatalogInstall"].includes(operation?.name)) {
         staged(data, false);
     } else if (

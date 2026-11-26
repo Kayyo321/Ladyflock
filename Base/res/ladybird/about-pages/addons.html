@@ -22,7 +22,13 @@ SPDX-License-Identifier: BSD-2-Clause
         <main>
             <p id="notice" role="status"></p>
             <section aria-labelledby="installed-heading">
-                <h2 class="card-title" id="installed-heading" tabindex="-1">Installed extensions</h2>
+                <div class="card-title">
+                    <h2 id="installed-heading" tabindex="-1">Installed extensions</h2>
+                    <div class="controls" id="update-controls" hidden>
+                        <button class="secondary-button" id="check-updates">Check for Updates</button>
+                        <button class="primary-button" id="update-all" hidden></button>
+                    </div>
+                </div>
                 <div class="card card-body" id="installed">
                     <p class="description">Loading extensions…</p>
                 </div>
@@ -60,6 +66,12 @@ SPDX-License-Identifier: BSD-2-Clause
                     <path d="M4 5h5V4a2.5 2.5 0 0 1 5 0v1h5v5h1a2.5 2.5 0 0 1 0 5h-1v5h-5v-1a2.5 2.5 0 0 0-5 0v1H4v-5h1a2.5 2.5 0 0 0 0-5H4z" />
                 </svg>
             </span>
+        </template>
+        <template id="update-hint-template">
+            <svg class="update-hint" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="7" />
+                <path d="M8 11.5V4.5M5 7.5l3-3 3 3" />
+            </svg>
         </template>
         <dialog aria-labelledby="review-title" id="review">
             <h2 id="review-title"></h2>
