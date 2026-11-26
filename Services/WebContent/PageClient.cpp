@@ -529,6 +529,73 @@ void PageClient::set_preferred_motion(Web::CSS::PreferredMotion motion)
     page().invalidate_style_for_preference_change();
 }
 
+// Firefox sizes a browser action popup to the preferred size of its document, up to 800x600 CSS pixels. A user-origin
+// style gives the root that preferred width, so the document's own author styles, such as an explicit body width, still
+// win. It goes on the top-level document alone: frames inside the popup lay out at the width their embedder gives them.
+static constexpr auto sizes_to_content_style_owner = "<ladyflock-popup-sizing>"sv;
+static constexpr auto sizes_to_content_style_key = "preferred-width"sv;
+static constexpr auto sizes_to_content_style = ":root { width: max-content; max-width: 800px; }"sv;
+
+void PageClient::set_sizes_to_content(bool sizes_to_content)
+{
+    if (m_sizes_to_content == sizes_to_content)
+        return;
+    m_sizes_to_content = sizes_to_content;
+    m_reported_preferred_size.clear();
+    m_viewport_overflow.clear();
+    if (!sizes_to_content) {
+        if (auto document = m_sized_document.ptr())
+            document->remove_extension_style_sheet(sizes_to_content_style_owner, sizes_to_content_style_key);
+        m_sized_document = nullptr;
+    }
+}
+
+void PageClient::report_preferred_size_if_changed()
+{
+    if (!m_sizes_to_content || !page().has_local_traversable() || !page().local_traversable()->is_top_level_traversable())
+        return;
+    auto document = page().local_traversable()->active_document();
+    // The initial about:blank document has nothing to size the popup to.
+    if (!document || document->is_initial_about_blank() || !document->document_element() || !document->is_fully_active())
+        return;
+    // Each document the popup navigates to gets the style; the next rendering update measures with it.
+    if (m_sized_document.ptr() != document) {
+        m_sized_document = *document;
+        m_viewport_overflow.clear();
+        document->add_extension_style_sheet(
+            MUST(String::from_utf8(sizes_to_content_style_owner)),
+            MUST(String::from_utf8(sizes_to_content_style_key)),
+            MUST(String::from_utf8(sizes_to_content_style)));
+        request_frame();
+        return;
+    }
+    auto& root = *document->document_element();
+    auto rect = root.get_bounding_client_rect();
+    auto width = rect.width().to_double();
+    auto height = rect.height().to_double();
+    // A root sized as a percentage of the viewport can't shrink below it, so measure what overflows it instead. What
+    // overflows such a root, such as the body's margins, overflows it by the same amount however tall the popup grows,
+    // so grow to fit it once, and not again when growing only moved the overflow along.
+    auto viewport_height = page().device_to_css_size(m_viewport_size).height().to_double();
+    if (height >= viewport_height - 1) {
+        auto overflow = static_cast<double>(root.scroll_height()) - viewport_height;
+        bool overflow_follows_viewport = m_viewport_overflow.has_value()
+            && viewport_height > m_viewport_overflow->viewport_height
+            && fabs(overflow - m_viewport_overflow->overflow) < 1;
+        if (!overflow_follows_viewport) {
+            m_viewport_overflow = ViewportOverflow { viewport_height, overflow };
+            height = max(height, viewport_height + overflow);
+        }
+    } else {
+        m_viewport_overflow.clear();
+    }
+    Gfx::IntSize size { static_cast<int>(ceil(width)), static_cast<int>(ceil(height)) };
+    if (size.is_empty() || m_reported_preferred_size == size)
+        return;
+    m_reported_preferred_size = size;
+    client().async_did_change_preferred_size(m_id, size);
+}
+
 void PageClient::set_is_scripting_enabled(bool is_scripting_enabled)
 {
     page().set_is_scripting_enabled(is_scripting_enabled);
@@ -957,6 +1024,7 @@ bool PageClient::has_rendering_opportunity() const
 
 void PageClient::did_finish_rendering_update()
 {
+    report_preferred_size_if_changed();
     m_rendering_opportunity_for_current_update = false;
     if (m_rendering_opportunity_granted) {
         deliver_granted_rendering_opportunity();

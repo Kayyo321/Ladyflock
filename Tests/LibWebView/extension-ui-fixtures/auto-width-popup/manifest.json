@@ -1,0 +1,18 @@
+{
+    "manifest_version": 2,
+    "name": "Fixture: Auto Width Popup",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "auto-width-popup@ui-fixtures.ladyflock.test"
+        }
+    },
+    "icons": {
+        "48": "icon.png"
+    },
+    "browser_action": {
+        "default_title": "Auto width popup",
+        "default_popup": "popup.html",
+        "default_icon": "icon.png"
+    }
+}

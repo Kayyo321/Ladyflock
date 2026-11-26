@@ -1,0 +1,21 @@
+{
+    "manifest_version": 3,
+    "name": "Fixture: Click Action & Badge",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "click-action@ui-fixtures.ladyflock.test"
+        }
+    },
+    "icons": {
+        "32": "icon.svg"
+    },
+    "background": {
+        "scripts": [
+            "background.js"
+        ]
+    },
+    "action": {
+        "default_title": "Click to count"
+    }
+}

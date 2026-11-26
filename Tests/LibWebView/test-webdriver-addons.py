@@ -346,6 +346,109 @@ def run_test(webdriver_binary, theme, width, screenshots):
             click("#cancel")
             assert sent()[0] == "cancelInstall"
             reply("installCancelled")
+
+            # Updates found by a check: a hint on each icon, a direct action, and one review for all of them.
+            first = dict(ext, extension_id="first@example.test", name="First extension", update_version="1.1")
+            second = dict(ext, extension_id="second@example.test", name="Second extension", icon_key=None)
+            second["update_version"] = "3.0"
+            current = dict(ext, extension_id="third@example.test", name="Third extension", icon_key=None)
+            update_summary = dict(summary, extensions=[first, second, current])
+            reply("installedExtensions", **update_summary)
+            assert script("return !document.querySelector('#update-controls').hidden;")
+            assert script("return document.querySelector('#update-all').textContent;") == "Update All (2)"
+            assert script("return document.querySelectorAll('#installed .update-hint').length;") == 2
+            first_entry = '[data-extension="first@example.test"]'
+            available = script("return document.querySelector(arguments[0] + ' .update-available').textContent;", first_entry)
+            assert available == "Version 1.1 is available"
+            assert script(
+                "const b = document.querySelector(arguments[0] + ' [data-control=update]');"
+                "return b.textContent === 'Update to 1.1' && b.classList.contains('primary-button');",
+                first_entry,
+            )
+            third_update = '[data-extension="third@example.test"] [data-control=update]'
+            assert script("return document.querySelector(arguments[0]).textContent;", third_update) == "Check for Update"
+            assert script("""
+                const hint = document.querySelector('#installed .update-hint').getBoundingClientRect();
+                const icon = document.querySelector('#installed .extension-icon').getBoundingClientRect();
+                return hint.right > icon.right - 4 && hint.top < icon.top + 4 && hint.width === 14;
+            """)
+            assert script("return document.documentElement.scrollWidth <= innerWidth;")
+            script("document.querySelector('#installed-heading').scrollIntoView();")
+            screenshot("updates-available")
+
+            click("#check-updates")
+            assert sent() == ["checkForUpdates", {}]
+            assert script("return document.querySelector('#update-all').ariaDisabled;") == "true"
+            reply("updatesChecked", checked=2, failed=["Third extension"], summary=update_summary)
+            assert script("return document.querySelector('#notice').textContent;") == (
+                "2 updates are available.\nCouldn’t check Third extension."
+            )
+            assert script("return document.querySelector('#update-all').ariaDisabled;") is None
+
+            click("#update-all")
+            assert sent() == ["stageUpdates", {"extension_ids": ["first@example.test", "second@example.test"]}]
+            request_count = script("return requests.length;")
+            click("#update-all")
+            assert script("return requests.length;") == request_count
+            staged_first = dict(
+                staged, token="first-token", name="First extension", version="1.1", previous_version="1.0"
+            )
+            staged_first["newly_requested_permissions"] = []
+            staged_second = dict(
+                staged, token="second-token", name="Second extension", version="3.0", previous_version="1.0"
+            )
+            staged_second.update(icon_key=None, newly_requested_permissions=["tabs"])
+            unverified = dict(staged, token="unverified-token", name="Unverified", verified_signature=False)
+            unverified["newly_requested_permissions"] = []
+            staged_reply = {
+                "updates": [staged_first, staged_second, unverified],
+                "errors": [{"name": "Fourth extension", "error": "Download failed"}],
+                "summary": update_summary,
+            }
+            reply("updatesStaged", **staged_reply)
+            assert sent() == ["cancelUpdates", {"tokens": ["unverified-token"]}]
+            assert script("return document.querySelector('#review').open;")
+            assert script("return document.querySelector('#review-title').textContent;") == "Review 2 updates"
+            assert script("return document.querySelector('#confirm').textContent;") == "Update All"
+            review = script("return document.querySelector('#review').innerText;")
+            for value in (
+                "Version 1.0 → 1.1",
+                "Version 1.0 → 3.0",
+                "New permissions",
+                "tabs",
+                "Fourth extension: Download failed",
+                "Unverified: The package could not be verified for installation.",
+            ):
+                assert value in review, value
+            assert script("return document.querySelectorAll('#review .update-list > li').length;") == 2
+            assert script(
+                "return document.querySelector('#review').scrollWidth <= document.querySelector('#review').clientWidth;"
+            )
+            screenshot("bulk-review")
+            click("#cancel")
+            assert sent() == ["cancelUpdates", {"tokens": ["first-token", "second-token"]}]
+            assert script("return document.activeElement.id;") == "update-all"
+            reply("updatesCancelled")
+
+            click("#update-all")
+            reply("updatesStaged", **staged_reply)
+            click("#confirm")
+            assert sent() == ["approveUpdates", {"tokens": ["first-token", "second-token"], "consented": True}]
+            updated_first = dict(first, version="1.1")
+            del updated_first["update_version"]
+            reply(
+                "updatesCompleted",
+                updated=["First extension"],
+                errors=[{"name": "Second extension", "error": "Installed extension changed. Check for updates again."}],
+                summary=dict(summary, extensions=[updated_first, second, current]),
+            )
+            assert script("return document.querySelector('#notice.error').textContent;") == (
+                "Updated First extension.\nSecond extension: Installed extension changed. Check for updates again."
+            )
+            assert script("return document.querySelector('#update-all').textContent;") == "Update"
+            assert script("return document.querySelectorAll('#installed .update-hint').length;") == 1
+
+            reply("installedExtensions", **summary)
             click('[data-control="remove"]')
             click("#confirm")
             assert sent() == ["removeExtension", {"extension_id": ext["extension_id"]}]

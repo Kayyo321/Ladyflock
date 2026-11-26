@@ -42,12 +42,23 @@ private:
     void send_extension_icon(String const& key, Optional<String> data_url = {});
     void pick_local_xpi(JsonValue const&);
     void stage_catalog_install(JsonValue const&);
-    void stage_catalog_package(String const& extension_id, bool is_update);
+    // Downloads and stages a Mozilla Add-ons package. An update that is no longer newer than the installed version
+    // completes with up_to_date set and nothing staged.
+    using StageCompletion = Function<void(ErrorOr<Extensions::StagedInstall>, Extensions::InstallDiagnostic const&, bool up_to_date)>;
+    void stage_catalog_package(String const& extension_id, bool is_update, StageCompletion);
     void send_staged_install(ErrorOr<Extensions::StagedInstall>, bool is_update, Extensions::InstallDiagnostic const& = {});
+    JsonObject staged_install_json(Extensions::StagedInstall const&);
     void approve_install(JsonValue const&);
     void cancel_install(JsonValue const&);
     void stage_manual_update(JsonValue const&);
     void approve_update(JsonValue const&);
+    void check_for_updates(JsonValue const&);
+    void stage_updates(JsonValue const&);
+    struct BulkUpdateStaging;
+    void stage_next_update(NonnullRefPtr<BulkUpdateStaging>);
+    void send_update_error(String const& message_name, StringView error);
+    void approve_updates(JsonValue const&);
+    void cancel_updates(JsonValue const&);
     void open_extension_options(JsonValue const&);
     void get_support_matrix(JsonValue const&);
 
@@ -58,6 +69,7 @@ private:
     Optional<u64> m_icon_decoder_generation;
     u64 m_catalog_search_generation { 0 };
     bool m_picker_open { false };
+    bool m_checking_for_updates { false };
 };
 
 }

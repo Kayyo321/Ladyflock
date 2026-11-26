@@ -94,8 +94,84 @@ h3,
     margin: 10px 0;
 }
 
-#notice.error {
+#notice {
     white-space: pre-line;
+}
+
+/* The section heading shares its line with the update actions, which wrap beneath it on narrow pages. */
+.card-title {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.card-title h2 {
+    margin: 0;
+    font: inherit;
+}
+
+#update-controls button[aria-disabled="true"] {
+    cursor: progress;
+    opacity: 0.6;
+}
+
+.extension-icon-frame {
+    position: relative;
+    display: flex;
+    flex: none;
+}
+
+/* Matches the toolbar's update hint: an up arrow in an accent circle, cut out of the card behind it. */
+.update-hint {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 14px;
+    height: 14px;
+    overflow: visible;
+}
+
+.update-hint circle {
+    fill: var(--accent);
+    stroke: var(--card-background-color);
+    stroke-width: 2px;
+}
+
+dialog .update-hint circle {
+    stroke: var(--surface);
+}
+
+.update-hint path {
+    fill: none;
+    stroke: white;
+    stroke-width: 1.8px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.update-available {
+    margin-top: 4px;
+    color: var(--link);
+    font-weight: 500;
+}
+
+.update-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.update-list > li + li {
+    border-top: 1px solid var(--separator-color);
+    margin-top: 12px;
+    padding-top: 12px;
+}
+
+.update-list .description {
+    margin: 4px 0 0 42px;
+}
+
+.update-list .permission-group {
+    margin-inline-start: 42px;
 }
 
 #notice.error,

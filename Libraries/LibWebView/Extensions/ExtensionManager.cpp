@@ -961,8 +961,77 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_update(StringView token, b
     broadcast_world_revocation(ext_id, old_entry.grant_generation + 1);
     m_web_request_coordinator.remove_all_for_extension(ext_id);
     register_extension_entry(next.release_value());
+    if (auto available = m_available_updates.get(ext_id); available.has_value() && compare_versions(*available, m_extensions_by_id.get(ext_id)->manifest.version()) <= 0)
+        m_available_updates.remove(ext_id);
+    notify_chrome_changed();
     dispatch_installed_event(*m_extensions_by_id.get(ext_id), old_entry.manifest.version());
     return *m_extensions_by_id.get(ext_id);
+}
+
+int ExtensionManager::compare_versions(StringView left, StringView right)
+{
+    // The installer refuses an update that isn't newer by the same rule, so an offered update can always install.
+    return compare_extension_versions(left, right);
+}
+
+bool ExtensionManager::can_check_for_update(InstalledExtension const& extension) const
+{
+    return extension.from_catalog && m_catalog_client.enable_public_amo_catalog();
+}
+
+Optional<String> ExtensionManager::available_update_version(StringView extension_id) const
+{
+    return m_available_updates.get(extension_id).copy();
+}
+
+bool ExtensionManager::record_listed_version(StringView extension_id, StringView listed_version)
+{
+    auto installed = m_extensions_by_id.get(extension_id);
+    if (!installed.has_value())
+        return false;
+    bool is_newer = compare_versions(listed_version, installed->manifest.version()) > 0;
+    auto previous = m_available_updates.get(extension_id).copy();
+    if (is_newer)
+        m_available_updates.set(installed->extension_id, MUST(String::from_utf8(listed_version)));
+    else
+        m_available_updates.remove(extension_id);
+    if (previous != m_available_updates.get(extension_id).copy())
+        notify_chrome_changed();
+    return is_newer;
+}
+
+void ExtensionManager::check_for_updates(Function<void(UpdateCheckResult)> on_complete)
+{
+    Vector<String> ids;
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (can_check_for_update(extension))
+            ids.append(id);
+    }
+    struct PendingCheck : public RefCounted<PendingCheck> {
+        size_t remaining { 0 };
+        UpdateCheckResult result;
+        Function<void(UpdateCheckResult)> on_complete;
+    };
+    auto pending = make_ref_counted<PendingCheck>();
+    pending->remaining = ids.size();
+    pending->on_complete = move(on_complete);
+    if (ids.is_empty()) {
+        pending->on_complete(move(pending->result));
+        return;
+    }
+    for (auto const& id : ids) {
+        m_catalog_client.lookup(id, [weak = make_weak_ptr<ExtensionManager>(), pending, id](ErrorOr<CatalogEntry> listing) {
+            auto* self = weak.ptr();
+            if (self && !listing.is_error() && listing.value().addon_id == id) {
+                self->record_listed_version(id, listing.value().version);
+                ++pending->result.checked;
+            } else {
+                pending->result.failed_extension_ids.append(id);
+            }
+            if (--pending->remaining == 0)
+                pending->on_complete(move(pending->result));
+        });
+    }
 }
 
 ErrorOr<void> ExtensionManager::set_extension_enabled(StringView extension_id, bool enabled)
@@ -1105,6 +1174,7 @@ ErrorOr<void> ExtensionManager::remove_extension(StringView extension_id)
     m_content_script_session_storage_access.remove(extension_id);
     m_id_by_uuid.remove(ext->uuid);
     m_persisted_uuid_by_id.remove(extension_id);
+    m_available_updates.remove(extension_id);
 
     if (ext->source == Web::Extensions::InstallSource::SignedXpi)
         m_installer.remove_installed_package(ext->install_directory);
@@ -4042,7 +4112,9 @@ JsonObject ExtensionManager::summary_json() const
         item.set("allow_all_sites"sv, ext.allow_all_sites);
         item.set("verified_signature"sv, ext.verified_signature);
         item.set("has_options"sv, ext.enabled && ext.manifest.options_ui().has_value());
-        item.set("can_check_update"sv, ext.from_catalog && m_catalog_client.enable_public_amo_catalog());
+        item.set("can_check_update"sv, can_check_for_update(ext));
+        if (auto version = m_available_updates.get(id); version.has_value())
+            item.set("update_version"sv, *version);
         HashTable<String> requested_hosts;
         for (auto const& pattern : ext.manifest.host_permissions())
             requested_hosts.set(pattern.raw());

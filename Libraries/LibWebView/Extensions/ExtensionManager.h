@@ -18,6 +18,7 @@
 #include <AK/OwnPtr.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <AK/Weakable.h>
 #include <LibCore/Timer.h>
 #include <LibDatabase/Forward.h>
 #include <LibURL/Origin.h>
@@ -88,7 +89,7 @@ struct WEBVIEW_API InstalledExtension {
 
 // Central Hub authority for extensions within one ordinary BrowsingSession.
 // Never created for private browsing sessions.
-class WEBVIEW_API ExtensionManager {
+class WEBVIEW_API ExtensionManager : public Weakable<ExtensionManager> {
     AK_MAKE_NONCOPYABLE(ExtensionManager);
 
 public:
@@ -128,6 +129,20 @@ public:
     ErrorOr<void> cancel_install(StringView token);
     ErrorOr<StagedInstall> stage_update(StringView addon_id, ByteString const& xpi_path, InstallDiagnostic* = nullptr);
     ErrorOr<InstalledExtension> approve_update(StringView token, bool user_consented);
+
+    // Update availability. Ladyflock checks Mozilla Add-ons only when the user asks it to, and remembers what it found
+    // for this session, so the toolbar and Add-ons page can show which extensions have a newer version.
+    struct UpdateCheckResult {
+        size_t checked { 0 };
+        Vector<String> failed_extension_ids;
+    };
+    // Compares Firefox extension versions: negative if left is older than right, zero if equal, positive if newer.
+    static int compare_versions(StringView left, StringView right);
+    bool can_check_for_update(InstalledExtension const&) const;
+    Optional<String> available_update_version(StringView extension_id) const;
+    // Records the version Mozilla Add-ons lists for an extension. Returns whether it is newer than the installed one.
+    bool record_listed_version(StringView extension_id, StringView listed_version);
+    void check_for_updates(Function<void(UpdateCheckResult)> on_complete);
 
     ErrorOr<void> set_extension_enabled(StringView extension_id, bool enabled);
     ErrorOr<void> set_site_access(StringView extension_id, bool allow_all_sites, Optional<String> toggle_host = {}, bool grant_host = true);
@@ -305,6 +320,8 @@ private:
     ExtensionSidebarController m_sidebar_controller;
     RevocationList m_revocation_list;
     CatalogClient m_catalog_client;
+    // The newer version Mozilla Add-ons listed for an extension at the last check this session, by extension ID.
+    HashMap<String, String> m_available_updates;
     ExtensionInstaller m_installer;
     WebRequestCoordinator m_web_request_coordinator;
 

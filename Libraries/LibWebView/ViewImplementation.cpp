@@ -2032,8 +2032,22 @@ static void send_force_dark(WebContentPage const& page)
     page.async_set_force_dark_settings(settings.enable_force_dark, settings.force_dark_per_host);
 }
 
+void ViewImplementation::set_sizes_to_content(bool sizes_to_content)
+{
+    if (m_sizes_to_content == sizes_to_content)
+        return;
+    m_sizes_to_content = sizes_to_content;
+    // NB: The view may not have a document yet. Each page applies this only while it hosts the top-level document, so a
+    //     page embedding a cross-site frame leaves that frame's layout alone.
+    traversable().for_each_hosting_page([&](WebContentPage& page) {
+        page.async_set_sizes_to_content(sizes_to_content);
+    });
+}
+
 void ViewImplementation::send_preferences_to_page(WebContentPage& page)
 {
+    if (m_sizes_to_content)
+        page.async_set_sizes_to_content(true);
     send_system_theme_to_page(page);
     page.async_set_preferred_color_scheme(preferred_color_scheme_for_page(page));
     page.async_set_preferred_contrast(contrast_for_pages(m_preferred_contrast));

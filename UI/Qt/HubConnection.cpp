@@ -1107,6 +1107,12 @@ void HubConnection::view_resize_window(u64 view_id, Gfx::IntSize size)
         view->on_resize_window(move(size));
 }
 
+void HubConnection::view_preferred_size_changed(u64 view_id, Gfx::IntSize size)
+{
+    if (auto* view = RemoteView::find(view_id); view && view->on_preferred_size_change)
+        view->on_preferred_size_change(size);
+}
+
 void HubConnection::view_maximize_window(u64 view_id)
 {
     if (auto* view = RemoteView::find(view_id); view && view->on_maximize_window)

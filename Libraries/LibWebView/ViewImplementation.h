@@ -196,6 +196,11 @@ public:
     // A view that shows a page on behalf of another view, such as a Picture-in-Picture window, is part of that view's
     // tab rather than a tab or window of its own.
     Optional<u64> owner_view_id() const { return m_owner_view_id; }
+
+    // Lays out the view's document at its preferred size and reports it through on_preferred_size_change, as an
+    // extension popup does.
+    bool sizes_to_content() const { return m_sizes_to_content; }
+    void set_sizes_to_content(bool);
     // The view whose tab this view is part of, which is none for a view whose owner is gone or that has left its tab.
     Optional<ViewImplementation&> tab_view();
     // The owner's document that this view acts for, which limits what the view is allowed, until it leaves the tab.
@@ -778,6 +783,8 @@ public:
     Function<void(JsonValue)> on_reference_test_metadata;
     Function<void(size_t current_match_index, Optional<size_t> const& total_match_count)> on_find_in_page;
     Function<void(Gfx::Color)> on_theme_color_change;
+    // The size, in CSS pixels, that the document of a view that sizes to its content needs.
+    Function<void(Gfx::IntSize)> on_preferred_size_change;
     Function<void(Gfx::Color)> on_page_background_color_change;
     Function<void(Web::ScreenWakeLockState)> on_screen_wake_lock_state_changed;
     enum class WebContentCrashReason {
@@ -1354,6 +1361,7 @@ protected:
     //        is required to be globally unique for Firefox DevTools.
     u64 m_view_id { 0 };
     Optional<u64> m_owner_view_id;
+    bool m_sizes_to_content { false };
     // NB: Counted so that whether this view owns another is known without looking at every view.
     size_t m_owned_view_count { 0 };
     bool m_counts_as_owned_view { false };

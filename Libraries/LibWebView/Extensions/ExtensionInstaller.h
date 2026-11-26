@@ -23,6 +23,9 @@
 
 namespace WebView::Extensions {
 
+// Orders two extension versions as Firefox does: negative, zero or positive as the first is older, the same or newer.
+WEBVIEW_API int compare_extension_versions(StringView, StringView);
+
 struct WEBVIEW_API InstallDiagnostic {
     String verification_error;
     Vector<String> compatibility_reasons;

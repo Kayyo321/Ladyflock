@@ -272,6 +272,8 @@ struct Hub::ExtensionItem {
     String sidebar_title;
     Optional<Gfx::ShareableBitmap> sidebar_icon;
     Optional<URL::URL> sidebar_url;
+    // A newer version that the user's last update check found on Mozilla Add-ons.
+    Optional<String> update_version;
 }
 
 endpoint HubClient
@@ -419,6 +421,7 @@ endpoint HubClient
     view_restore_window(u64 view_id) =|
     view_reposition_window(u64 view_id, Gfx::IntPoint position) =|
     view_resize_window(u64 view_id, Gfx::IntSize size) =|
+    view_preferred_size_changed(u64 view_id, Gfx::IntSize size) =|
     view_maximize_window(u64 view_id) =|
     view_minimize_window(u64 view_id) =|
     view_fullscreen_window(u64 view_id) =|

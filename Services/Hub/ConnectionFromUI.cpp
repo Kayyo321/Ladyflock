@@ -799,6 +799,7 @@ void ConnectionFromUI::send_extension_state(View& view)
             .sidebar_title = sidebar.title,
             .sidebar_icon = move(sidebar_icon),
             .sidebar_url = move(sidebar_url),
+            .update_version = manager->available_update_version(ext->extension_id),
         });
     }
     async_view_extension_state(tab_id, true, move(items), manager->sidebar_controller().window_state(window_id).width_px);
@@ -881,6 +882,14 @@ void ConnectionFromUI::view_set_extension_sidebar_width(u64 view_id, u32 width)
     if (auto* manager = extension_manager_for_tab(view); manager && view->is_current_tab_of_window())
         if (auto result = manager->set_sidebar_width(view->extension_window_id(), width); result.is_error())
             warnln("Could not save extension sidebar width: {}", result.error());
+}
+
+void ConnectionFromUI::view_set_sizes_to_content(u64 view_id, bool sizes_to_content)
+{
+    // A tab fills its window. Only a view that the UI floats over the window, such as an extension popup, takes its
+    // size from its document.
+    if (auto* view = find_view(view_id); view && !view->is_tab())
+        view->set_sizes_to_content(sizes_to_content);
 }
 
 void ConnectionFromUI::view_open_extension_options(u64 view_id, String id)

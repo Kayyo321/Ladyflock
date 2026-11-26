@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+/* A common pattern: the page fills the popup's height, and the body keeps its default 8px margin. */
+:root { color-scheme: light dark; font: 13px system-ui, sans-serif; }
+html, body { height: 100%; }
+body { width: 260px; background: Canvas; display: flex; flex-direction: column; }
+main { flex: 1; }
+footer { border-top: 1px solid GrayText; padding-top: 6px; }
+</style>
+<main>
+<h1 style="font-size: 15px; margin: 0 0 8px">height: 100%</h1>
+<p>The root is as tall as the popup, and the body's margins overflow it by 16px whatever that height is.</p>
+</main>
+<footer>The popup must settle at one height instead of growing step by step to 600px.</footer>
