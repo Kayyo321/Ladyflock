@@ -1,6 +1,6 @@
 # Mandatory Proxy Route and Stream Isolation (Milestone 3)
 
-This document describes the first slice of Ladyflock's **Milestone 3 (Proxy and Tor routing)**: one mandatory proxy route per session, SOCKS5 stream isolation per identity and top-level site, and Tor-routed identities that never connect directly. See [NetworkEnforcement.md](NetworkEnforcement.md) for Milestones 0 and 1 and [IdentitiesAndStorage.md](IdentitiesAndStorage.md) for Milestone 2.
+This document describes the first slice of Ladyflock's **Milestone 3 (Proxy and Tor routing)**: one mandatory proxy route per session, SOCKS5 stream isolation per identity and top-level site, and Tor-routed identities that never connect directly. See [NetworkEnforcement.md](NetworkEnforcement.md) for Milestones 0 and 1 and [IdentitiesAndStorage.md](IdentitiesAndStorage.md) for Milestone 2. See [SiteControls.md](SiteControls.md) for the first Milestone 4 increments.
 
 **Scope.** Ladyflock does not start, supervise or bundle a Tor daemon or Arti. It sends a Tor-routed identity's traffic to a SOCKS endpoint that the user runs and names. Bridges, pluggable transports, DoH/ODoH, named proxy endpoints and per-site circuit renewal are not part of this slice.
 
