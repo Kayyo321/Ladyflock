@@ -9,6 +9,7 @@ set(TEST_SOURCES
     TestDiskCacheWaiters.cpp
     TestExportImport.cpp
     TestNetworkUsage.cpp
+    TestPrivacyNetworkGate.cpp
     TestProxyHostResolution.cpp
     TestRequestTimingInfo.cpp
     TestSiteBinding.cpp

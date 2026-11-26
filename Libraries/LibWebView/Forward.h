@@ -56,6 +56,7 @@ class PageTranslation;
 class PictureInPictureManager;
 class RecordingNotificationBackend;
 class PictureInPictureWindow;
+class PrivacyPolicyCoordinator;
 class ProcessManager;
 class RequestServerInstance;
 class RequestServerManager;

@@ -76,6 +76,7 @@ public:
     // Lets a bound client make requests for documents of frame_site under a top-level document of top_level_site. A
     // frame site of nothing stands for documents with opaque origins.
     void bind_to_site(Badge<ControlConnectionFromClient>, Utf16String const& top_level_site, Optional<Utf16String> const& frame_site);
+    void quiesce_for_policy_tightening(Badge<ControlConnectionFromClient>);
 
     void start_revalidation_request(Badge<Request>, HTTP::NetworkIsolationKey, ByteString method, URL::URL, NonnullRefPtr<HTTP::HeaderList> request_headers, ByteBuffer request_body, HTTP::Cookie::IncludeCredentials, HTTP::Cookie::SameSiteContext);
     void request_complete(Badge<Request>, Request const&);
@@ -143,6 +144,7 @@ private:
         Optional<MonotonicTime> timer_due_at;
     };
     void set_up_curl_multi(CurlMulti&);
+    void reset_curl_multi_handles();
 
     CurlMulti m_fetch_curl;
     CurlMulti m_websocket_curl;

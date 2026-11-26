@@ -175,6 +175,7 @@ if (NOT WIN32)
         TestPictureInPictureUserActivation.cpp
         TestPictureInPictureWindowControls.cpp
         TestPictureInPictureWindowLifetime.cpp
+        TestPrivacyMilestone0.cpp
         TestRendererAttentionClaims.cpp
         TestRendererClipboardFormats.cpp
         TestRendererCookieAccess.cpp

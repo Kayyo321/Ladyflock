@@ -18,12 +18,14 @@
 #include <LibHTTP/Cookie/ParsedCookie.h>
 #include <LibHTTP/HSTS/ParsedHSTSPolicy.h>
 #include <LibHTTP/Status.h>
+#include <LibPrivacy/Hooks/RequestServerHooks.h>
 #include <LibTextCodec/Decoder.h>
 #include <RequestServer/AIA.h>
 #include <RequestServer/CURL.h>
 #include <RequestServer/CertificateExceptions.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/ControlConnectionFromClient.h>
+#include <RequestServer/PrivacyPolicy.h>
 #include <RequestServer/Request.h>
 #include <RequestServer/Resolver.h>
 #include <RequestServer/ResourceSubstitutionMap.h>
@@ -529,6 +531,8 @@ Request::Request(
     if (m_disk_cache.has_value() && !process_keeps_responses_under(m_network_isolation_key->top_level_site))
         m_disk_cache.clear();
 
+    m_policy_epoch = privacy_network_gate().committed_epoch();
+
     if constexpr (REQUESTSERVER_WIRE_DEBUG)
         wire_stats().ensure(this).created_at = MonotonicTime::now();
 }
@@ -548,6 +552,8 @@ Request::Request(
     , m_request_headers(HTTP::HeaderList::create())
     , m_response_headers(HTTP::HeaderList::create())
 {
+    m_policy_epoch = privacy_network_gate().committed_epoch();
+
     if constexpr (REQUESTSERVER_WIRE_DEBUG)
         wire_stats().ensure(this).created_at = MonotonicTime::now();
 }
@@ -637,6 +643,9 @@ bool Request::notify_retrieved_http_cookie(Badge<ControlConnectionFromClient>, u
         m_request_headers->append({ "Cookie"sv, cookie });
         m_appended_cookie_header = true;
     }
+
+    if (fail_if_blocked_by_privacy_policy())
+        return true;
 
     transition_to_state(State::Fetch);
     return true;
@@ -756,6 +765,8 @@ void Request::handle_fetch_complete(int result_code)
     // Furthermore, if the connection to the alternative service fails or is unresponsive, the client MAY fall back to
     // using the origin or another alternative service.
     if (should_retry_without_alternative_service(result_code)) {
+        if (fail_if_blocked_by_privacy_policy())
+            return;
         AlternativeServiceCache::the().mark_broken(m_client->is_private(), m_url, *m_alternative_service, UnixDateTime::now());
         m_alternative_services_disabled = true;
         m_alternative_service.clear();
@@ -790,6 +801,8 @@ void Request::handle_fetch_complete(int result_code)
             return;
 
         MUST(free_curl_structs());
+        if (fail_if_blocked_by_privacy_policy())
+            return;
 
         m_content_decoding_disabled = true;
         reset_for_retry();
@@ -933,6 +946,8 @@ bool Request::should_retry_after_fetching_aia_intermediate(int curl_result_code)
 
 void Request::start_aia_fetch_and_retry()
 {
+    if (fail_if_blocked_by_privacy_policy())
+        return;
     ++m_aia_fetch_count;
     auto url = m_aia_collector->pending_urls.take_first();
     m_aia_collector->attempted_urls.set(url);
@@ -957,7 +972,39 @@ void Request::retry_after_aia(Badge<ConnectionFromClient>)
         m_aia_collector->pending_urls.clear();
         m_aia_collector->rejected_self_signed_certificate_fingerprint.clear();
     }
+    if (fail_if_blocked_by_privacy_policy())
+        return;
     transition_to_state(State::Fetch);
+}
+
+bool Request::fail_if_blocked_by_privacy_policy(bool is_speculative)
+{
+    auto const& gate = privacy_network_gate();
+    if (!gate.is_epoch_current(m_policy_epoch)
+        || Privacy::Hooks::on_before_request(gate, m_url, is_revalidation_request(), is_speculative).is_denied()) {
+        m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+        transition_to_state(State::Error);
+        return true;
+    }
+    return false;
+}
+
+void Request::abort_for_privacy_policy(Badge<ConnectionFromClient>)
+{
+    if (is_complete())
+        return;
+
+    if (m_state == State::ReadCache && Privacy::Hooks::on_before_fresh_cache_read(privacy_network_gate()).is_allowed())
+        return;
+
+    if (m_wait_for_cache_timer) {
+        m_wait_for_cache_timer->stop();
+        m_wait_for_cache_timer = nullptr;
+    }
+
+    MUST(free_curl_structs());
+    m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+    transition_to_state(State::Error);
 }
 
 void Request::transition_to_state(State state)
@@ -1024,6 +1071,13 @@ void Request::process()
 
 void Request::handle_initial_state()
 {
+    if (privacy_network_gate().state() != Privacy::NetworkGate::State::Active) {
+        m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+        transition_to_state(State::Error);
+        return;
+    }
+    m_policy_epoch = privacy_network_gate().committed_epoch();
+
     // Evaluate extension webRequest.onBeforeRequest BEFORE substitutions, disk cache, DNS, or network.
     if (m_extension_request_check == Requests::ExtensionRequestCheck::MainFrame) {
         if (auto control = ControlConnectionFromClient::the(); control.has_value() && control->should_check_web_request(m_url)) {
@@ -1062,13 +1116,19 @@ void Request::handle_initial_state()
                     m_cache_entry_reader = cache_entry_reader;
 
                     if (m_cache_entry_reader.has_value()) {
-                        if (m_cache_entry_reader->revalidation_type() == HTTP::CacheEntryReader::RevalidationType::StaleWhileRevalidate)
+                        if (m_cache_entry_reader->revalidation_type() == HTTP::CacheEntryReader::RevalidationType::StaleWhileRevalidate
+                            && Privacy::Hooks::on_before_request(privacy_network_gate(), m_url, true, false).is_allowed())
                             m_client->start_revalidation_request({}, *m_network_isolation_key, m_method, m_url, m_request_headers, m_request_body, m_include_credentials, m_same_site_context);
 
-                        if (is_revalidation_request())
-                            transition_to_state(State::DNSLookup);
-                        else
+                        if (is_revalidation_request()) {
+                            if (!fail_if_blocked_by_privacy_policy())
+                                transition_to_state(State::DNSLookup);
+                        } else if (Privacy::Hooks::on_before_fresh_cache_read(privacy_network_gate()).is_allowed()) {
                             transition_to_state(State::ReadCache);
+                        } else {
+                            m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+                            transition_to_state(State::Error);
+                        }
                     } else if (m_type == RequestType::BackgroundRevalidation) {
                         // If we were not able to open a cache entry reader for revalidation requests, there's no point
                         // in issuing a request over the network.
@@ -1088,6 +1148,9 @@ void Request::handle_initial_state()
             return;
         }
 
+        if (fail_if_blocked_by_privacy_policy())
+            return;
+
         m_disk_cache->create_entry(*this, *m_disk_cache_partition, m_url, m_method, m_request_headers, m_request_start_time)
             .visit(
                 [&](Optional<HTTP::CacheEntryWriter&> cache_entry_writer) {
@@ -1106,6 +1169,9 @@ void Request::handle_initial_state()
         if (m_state != State::Init)
             return;
     }
+
+    if (fail_if_blocked_by_privacy_policy())
+        return;
 
     transition_to_state(State::DNSLookup);
 }
@@ -1162,6 +1228,9 @@ void Request::wait_for_cache_timed_out()
     // Fetch over the network without reading from or writing to the disk cache. We remain in the cache's list of
     // waiting requests, and notify_request_unblocked() ignores the notification when it eventually arrives.
     m_cache_status = CacheStatus::NotCached;
+    if (fail_if_blocked_by_privacy_policy())
+        return;
+
     transition_to_state(State::DNSLookup);
 }
 
@@ -1308,6 +1377,9 @@ void Request::handle_serve_substitution_state()
 
 void Request::handle_dns_lookup_state()
 {
+    if (fail_if_blocked_by_privacy_policy(m_type == RequestType::Connect))
+        return;
+
     if (!m_url.host().has_value() || !can_pin_host_in_curl_resolve_list(m_url.serialized_host())) {
         m_network_error = Requests::NetworkError::UnableToResolveHost;
         transition_to_state(State::Error);
@@ -1318,6 +1390,8 @@ void Request::handle_dns_lookup_state()
     // The proxy configuration can change while a lookup is pending, so resolve again for a different proxy.
     if (!m_proxy_host_resolved || m_resolved_proxy != m_proxy) {
         resolve_proxy_host(m_proxy, weak_callback(*this, [proxy = m_proxy](auto& self, ErrorOr<void> result) {
+            if (self.fail_if_blocked_by_privacy_policy(self.m_type == RequestType::Connect))
+                return;
             if (result.is_error()) {
                 dbgln("Request::handle_dns_lookup_state: Proxy lookup failed: {}", result.error());
                 self.m_network_error = Requests::NetworkError::UnableToResolveProxy;
@@ -1352,17 +1426,31 @@ void Request::handle_dns_lookup_state()
     auto host = connect_host().to_byte_string();
     auto const& dns_info = DNSInfo::the();
 
+    if (Privacy::Hooks::on_before_dns_lookup(privacy_network_gate(), host, !dns_info.uses_configured_dns_server()).is_denied()) {
+        m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+        transition_to_state(State::Error);
+        return;
+    }
+
     mark_lifecycle_event(this, &WireStats::dns_started_at);
 
     m_resolver->dns.lookup(host, DNS::Messages::Class::IN, { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA }, { .validate_dnssec_locally = dns_info.validate_dnssec_locally })
         ->when_rejected(weak_callback(*this, [host](auto& self, auto const& error) {
             mark_lifecycle_event(&self, &WireStats::dns_completed_at);
+            if (self.is_complete())
+                return;
+            if (self.fail_if_blocked_by_privacy_policy(self.m_type == RequestType::Connect))
+                return;
             dbgln("Request::handle_dns_lookup_state: DNS lookup failed for '{}': {}", host, error);
             self.m_network_error = Requests::NetworkError::UnableToResolveHost;
             self.transition_to_state(State::Error);
         }))
         .when_resolved(weak_callback(*this, [host](auto& self, NonnullRefPtr<DNS::LookupResult const> dns_result) {
             mark_lifecycle_event(&self, &WireStats::dns_completed_at);
+            if (self.is_complete())
+                return;
+            if (self.fail_if_blocked_by_privacy_policy(self.m_type == RequestType::Connect))
+                return;
             if (dns_result->is_empty() || !dns_result->has_cached_addresses()) {
                 dbgln("Request::handle_dns_lookup_state: DNS lookup failed for '{}'", host);
                 self.m_network_error = Requests::NetworkError::UnableToResolveHost;
@@ -1417,6 +1505,9 @@ void Request::continue_after_dns_lookup()
 
 void Request::handle_retrieve_cookie_state()
 {
+    if (fail_if_blocked_by_privacy_policy())
+        return;
+
     if (m_include_credentials == HTTP::Cookie::IncludeCredentials::No) {
         transition_to_state(State::Fetch);
         return;
@@ -1458,6 +1549,9 @@ bool Request::configure_certificate_verification()
 
 void Request::handle_connect_state()
 {
+    if (fail_if_blocked_by_privacy_policy(true))
+        return;
+
     m_curl_easy_handle = curl_easy_init();
     if (!m_curl_easy_handle) {
         dbgln("Request::handle_connect_state: Failed to initialize curl easy handle");
@@ -1496,6 +1590,9 @@ void Request::handle_connect_state()
 
 void Request::handle_fetch_state()
 {
+    if (fail_if_blocked_by_privacy_policy())
+        return;
+
     dbgln_if(REQUESTSERVER_DEBUG, "RequestServer: DNS lookup successful");
 
     m_curl_easy_handle = curl_easy_init();

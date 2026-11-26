@@ -2,6 +2,7 @@
 #include <LibHTTP/Cache/DiskCacheSettings.h>
 #include <LibHTTP/Proxy.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibPrivacy/Policy/Types.h>
 #include <LibURL/URL.h>
 #include <RequestServer/IsPrivate.h>
 #include <RequestServer/RequestType.h>
@@ -49,4 +50,8 @@ endpoint RequestServerControl
     // Extension webRequest.onBeforeRequest filter and decision (independent of ContentBlocker).
     set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts) =|
     did_check_web_request_before_request(u64 check_id, bool cancel) =|
+
+    // Installs a compiled, session-bound privacy policy snapshot. Synchronous so Hub confirms enforcement before
+    // admitting requests or advertising a policy transition as active.
+    install_privacy_policy(Privacy::PolicySnapshot snapshot) => (Privacy::PolicyInstallAck ack)
 }

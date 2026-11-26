@@ -10,6 +10,7 @@
 #include <RequestServer/AlternativeServices.h>
 #include <RequestServer/CertificateExceptions.h>
 #include <RequestServer/ControlConnectionFromClient.h>
+#include <RequestServer/PrivacyPolicy.h>
 #include <RequestServer/Request.h>
 #include <RequestServer/Resolver.h>
 
@@ -28,6 +29,7 @@ ControlConnectionFromClient::ControlConnectionFromClient(NonnullOwnPtr<IPC::Tran
 {
     VERIFY(s_control_connection == nullptr);
     s_control_connection = this;
+    reset_privacy_network_gate();
 #if defined(AK_OS_LINUX)
     // The Linux sandbox denies RequestServer the files that the system resolver reads, like /etc/resolv.conf.
     Resolver::resolve_system_names_remotely();
@@ -75,10 +77,8 @@ void ControlConnectionFromClient::die()
     if (s_control_connection == this)
         s_control_connection = nullptr;
 
-    // No answer comes for a lookup that's still waiting on the process that launched RequestServer.
-    auto pending_system_resolutions = move(m_pending_system_resolutions);
-    for (auto& [resolution_id, on_resolved] : pending_system_resolutions)
-        on_resolved(Error::from_string_literal("The system resolver's process is gone"));
+    privacy_network_gate().mark_coordinator_lost();
+    quiesce_active_network_work();
 
     auto pending_web_request_checks = move(m_pending_web_request_checks);
     for (auto& [check_id, callback] : pending_web_request_checks)
@@ -86,6 +86,30 @@ void ControlConnectionFromClient::die()
 
     if (m_connections.is_empty())
         Core::EventLoop::current().quit(0);
+}
+
+void ControlConnectionFromClient::quiesce_active_network_work()
+{
+    auto pending_system_resolutions = move(m_pending_system_resolutions);
+    for (auto& [resolution_id, on_resolved] : pending_system_resolutions)
+        on_resolved(Error::from_string_literal("Blocked by privacy policy"));
+
+    Resolver::reset_connections();
+
+    Vector<NonnullRefPtr<RequestServer::ConnectionFromClient>> connections;
+    connections.ensure_capacity(m_connections.size());
+    for (auto& entry : m_connections)
+        connections.unchecked_append(entry.value);
+    for (auto& connection : connections)
+        connection->quiesce_for_policy_tightening({});
+}
+
+Messages::RequestServerControl::InstallPrivacyPolicyResponse ControlConnectionFromClient::install_privacy_policy(Privacy::PolicySnapshot snapshot)
+{
+    auto outcome = privacy_network_gate().install(snapshot);
+    if (outcome.ack.accepted && outcome.requires_quiesce)
+        quiesce_active_network_work();
+    return outcome.ack;
 }
 
 ErrorOr<ControlConnectionFromClient::ClientSocket> ControlConnectionFromClient::create_client_socket(IsPrivate is_private, SiteBinding site_binding)

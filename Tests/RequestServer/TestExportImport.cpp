@@ -17,6 +17,7 @@
 #include <LibURL/Origin.h>
 #include <LibURL/Parser.h>
 #include <LibURL/Site.h>
+#include "TestPrivacyHelper.h"
 #include <RequestServer/CURL.h>
 #include <RequestServer/CertificateExceptions.h>
 #include <RequestServer/ConnectionFromClient.h>
@@ -80,6 +81,7 @@ public:
         m_connection = RequestServer::ConnectionFromClient::construct(
             move(pair.local), RequestServer::IsPrivate::No, site_binding,
             server.connections, server.request_transfer_leases, server.disk_cache);
+        RequestServerTest::install_allow_privacy_policy();
     }
 
     ~TestConnection()
@@ -93,7 +95,7 @@ public:
 
     void start_request(u64 request_id, URL::URL url, HTTP::NetworkIsolationKey network_isolation_key, bool create_transfer_lease)
     {
-        auto message = make<Messages::RequestServer::StartRequest>(request_id, ByteString { "GET" }, move(url), cacheable_request_headers(), ByteBuffer {}, HTTP::CacheMode::Default, move(network_isolation_key), HTTP::Cookie::IncludeCredentials::No, create_transfer_lease, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {});
+        auto message = make<Messages::RequestServer::StartRequest>(request_id, ByteString { "GET" }, move(url), cacheable_request_headers(), ByteBuffer {}, HTTP::CacheMode::Default, move(network_isolation_key), HTTP::Cookie::IncludeCredentials::No, create_transfer_lease, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {}, Requests::ExtensionRequestCheck::NotApplicable);
         VERIFY(!dispatch(move(message)));
     }
 

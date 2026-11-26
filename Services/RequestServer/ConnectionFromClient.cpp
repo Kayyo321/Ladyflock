@@ -24,11 +24,13 @@
 #include <LibURL/Site.h>
 #include <LibWebSocket/ConnectionInfo.h>
 #include <LibWebSocket/Message.h>
+#include <LibPrivacy/Hooks/RequestServerHooks.h>
 #include <RequestServer/AIA.h>
 #include <RequestServer/AlternativeServices.h>
 #include <RequestServer/CURL.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/ControlConnectionFromClient.h>
+#include <RequestServer/PrivacyPolicy.h>
 #include <RequestServer/Request.h>
 #include <RequestServer/Resolver.h>
 #include <RequestServer/WebSocketImplCurl.h>
@@ -239,6 +241,79 @@ void ConnectionFromClient::bind_to_site(Badge<ControlConnectionFromClient>, Utf1
         m_bound_sites.set({ top_level_site, *frame_site });
 }
 
+void ConnectionFromClient::reset_curl_multi_handles()
+{
+    m_read_notifiers.clear();
+    m_write_notifiers.clear();
+
+    if (m_fetch_curl.timer)
+        m_fetch_curl.timer->stop();
+    m_fetch_curl.timer_due_at = {};
+    if (m_fetch_curl.handle) {
+        curl_multi_cleanup(m_fetch_curl.handle);
+        m_fetch_curl.handle = nullptr;
+    }
+
+    if (m_websocket_curl.timer)
+        m_websocket_curl.timer->stop();
+    m_websocket_curl.timer_due_at = {};
+    if (m_websocket_curl.handle) {
+        curl_multi_cleanup(m_websocket_curl.handle);
+        m_websocket_curl.handle = nullptr;
+    }
+
+    set_up_curl_multi(m_fetch_curl);
+    auto result = curl_multi_setopt(m_fetch_curl.handle, CURLMOPT_MAX_HOST_CONNECTIONS, 6L);
+    VERIFY(result == CURLM_OK);
+    set_up_curl_multi(m_websocket_curl);
+}
+
+void ConnectionFromClient::quiesce_for_policy_tightening(Badge<ControlConnectionFromClient>)
+{
+    auto abort_requests = [](HashMap<u64, NonnullOwnPtr<Request>>& requests) {
+        Vector<u64> request_ids;
+        request_ids.ensure_capacity(requests.size());
+        for (auto const& entry : requests)
+            request_ids.unchecked_append(entry.key);
+        for (auto request_id : request_ids) {
+            if (auto request = requests.get(request_id); request.has_value())
+                (*request)->abort_for_privacy_policy({});
+        }
+    };
+    abort_requests(m_active_requests);
+    abort_requests(m_active_revalidation_requests);
+
+    auto pending_websockets = move(m_pending_websockets);
+    m_websocket_cookie_requests.clear();
+    for (auto websocket_id : pending_websockets)
+        fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+
+    auto active_websockets = move(m_websockets);
+    for (auto& [websocket_id, websocket] : active_websockets) {
+        websocket->on_open = nullptr;
+        websocket->on_message = nullptr;
+        websocket->on_message_bytes_transmitted = nullptr;
+        websocket->on_error = nullptr;
+        websocket->on_close = nullptr;
+        websocket->on_ready_state_change = nullptr;
+        websocket->close(to_underlying(WebSocket::CloseStatusCode::AbnormalClosure), "Blocked by privacy policy"sv);
+        fail_websocket(websocket_id, Requests::WebSocket::Error::CouldNotEstablishConnection);
+    }
+    active_websockets.clear();
+
+    for (auto& fetch : m_aia_fetches) {
+        curl_multi_remove_handle(m_fetch_curl.handle, fetch.key);
+        curl_easy_cleanup(fetch.key);
+        if (fetch.value->resolve_list)
+            curl_slist_free_all(fetch.value->resolve_list);
+    }
+    m_aia_fetches.clear();
+    m_pending_aia_lookups.clear();
+
+    // Recreate curl multi handles so no idle keep-alive TCP/TLS sockets remain pooled.
+    reset_curl_multi_handles();
+}
+
 // A bound client may use only the network isolation keys of the documents that the UI process has its process host, so a
 // compromised process cannot reach the cache entries of another site.
 bool ConnectionFromClient::may_use_network_isolation_key(HTTP::NetworkIsolationKey const& key, URL::URL const* request_url) const
@@ -333,6 +408,11 @@ void ConnectionFromClient::start_request(u64 request_id, ByteString method, URL:
     // Validate again at the boundary that grants network access.
     if (!is_fetchable_url(url)) {
         async_request_finished(request_id, 0, {}, Requests::NetworkError::MalformedUrl);
+        return;
+    }
+
+    if (privacy_network_gate().state() != Privacy::NetworkGate::State::Active) {
+        async_request_finished(request_id, 0, {}, Requests::NetworkError::BlockedByPrivacyPolicy);
         return;
     }
 
@@ -914,6 +994,9 @@ void ConnectionFromClient::ensure_connection(u64 request_id, URL::URL url, ::Req
     }
 
     if (!is_fetchable_url(url))
+        return;
+
+    if (Privacy::Hooks::on_before_request(privacy_network_gate(), url, false, true).is_denied())
         return;
 
     auto request = Request::connect(request_id, *this, m_fetch_curl.handle, m_resolver, move(url), cache_level);

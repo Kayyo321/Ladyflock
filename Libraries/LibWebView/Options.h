@@ -13,6 +13,7 @@
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibHTTP/Proxy.h>
+#include <LibPrivacy/Policy/Types.h>
 #include <LibURL/URL.h>
 #include <LibWebView/ProcessType.h>
 
@@ -116,6 +117,7 @@ struct BrowserOptions {
     bool enable_extensions { false };
     bool enable_amo_catalog { false };
     Vector<ByteString> load_extension_paths {};
+    Privacy::NetworkMode privacy_network_mode { Privacy::NetworkMode::Allow };
     // How much memory a WebContent process may use before it is ended. Zero means that there is no limit, and no value
     // means the default limit for this machine.
     Optional<u64> web_content_memory_limit_in_bytes {};

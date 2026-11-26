@@ -12,6 +12,7 @@
 #include <LibTest/TemporaryDirectory.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
+#include "TestPrivacyHelper.h"
 #include <RequestServer/CURL.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/ControlConnectionFromClient.h>
@@ -52,6 +53,7 @@ struct TestServer {
         control_remote_transport = MUST(control_pair.remote_handle.create_transport());
         control_connection = RequestServer::ControlConnectionFromClient::construct(
             move(control_pair.local), connections, request_transfer_leases, Optional<HTTP::DiskCache&> {});
+        RequestServerTest::install_allow_privacy_policy();
 
         auto pair = MUST(IPC::Transport::create_paired());
         remote_transport = MUST(pair.remote_handle.create_transport());
@@ -80,7 +82,7 @@ struct TestServer {
     {
         auto message = make<Messages::RequestServer::StartRequest>(
             request_id, ByteString { "GET" }, URL::Parser::basic_parse(url).release_value(), Vector<HTTP::Header> {}, ByteBuffer {},
-            HTTP::CacheMode::NoStore, network_isolation_key, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {});
+            HTTP::CacheMode::NoStore, network_isolation_key, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {}, Requests::ExtensionRequestCheck::NotApplicable);
         VERIFY(!MUST(static_cast<RequestServerEndpoint::Stub&>(*connection).handle(move(message))));
     }
 

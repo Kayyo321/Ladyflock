@@ -12,6 +12,7 @@
 #include <LibIPC/Transport.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
+#include "TestPrivacyHelper.h"
 #include <RequestServer/CURL.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/ResourceSubstitutionMap.h>
@@ -101,11 +102,12 @@ TEST_CASE(content_coding_retry_keeps_client_supplied_cookie_header)
     auto remote_transport = MUST(pair.remote_handle.create_transport());
     auto connection = RequestServer::ConnectionFromClient::construct(
         move(pair.local), RequestServer::IsPrivate::No, RequestServer::SiteBinding::Unrestricted, connections, request_transfer_leases, Optional<HTTP::DiskCache&> {});
+    RequestServerTest::install_allow_privacy_policy();
 
     UnsupportedCodingServer server;
     auto message = make<Messages::RequestServer::StartRequest>(
         0, ByteString { "GET" }, server.url(), Vector<HTTP::Header> { { "Cookie", "supplied=by-the-client" } }, ByteBuffer {},
-        HTTP::CacheMode::NoStore, Optional<HTTP::NetworkIsolationKey> {}, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {});
+        HTTP::CacheMode::NoStore, Optional<HTTP::NetworkIsolationKey> {}, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {}, Requests::ExtensionRequestCheck::NotApplicable);
     VERIFY(!MUST(static_cast<RequestServerEndpoint::Stub&>(*connection).handle(move(message))));
 
     event_loop.spin_until([&] { return server.request_heads().size() >= 2; });

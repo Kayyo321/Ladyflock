@@ -132,6 +132,7 @@ public:
     virtual Web::CSS::PreferredColorScheme interface_color_scheme() const;
 
     static RequestServerManager& request_server_manager() { return *the().m_request_server_manager; }
+    static PrivacyPolicyCoordinator& privacy_policy_coordinator() { return *the().m_privacy_policy_coordinator; }
     static ImageDecoderManager& image_decoder_manager() { return *the().m_image_decoder_manager; }
     // The UI process's own client of the session's RequestServer with no site.
     static ErrorOr<NonnullRefPtr<Requests::RequestClient>> request_server_client(IsPrivate = IsPrivate::No);
@@ -189,6 +190,8 @@ public:
     Web::NavigatorCompatibilityMode navigator_compatibility_mode() const;
 
     void background_networking_settings_changed(Badge<ApplicationSettingsObserver>);
+    void cancel_background_networking_for_privacy_policy();
+    void retire_unrestricted_webrtc_helpers_for_session(BrowsingSession const&);
 
     // True unless the user has turned location off, or there's no way to find it.
     bool sites_can_ask_for_location() const;
@@ -671,6 +674,7 @@ private:
     bool m_webdriver_browser_connection_failed { false };
     WebDriverSessionConfig m_webdriver_session_config;
 
+    OwnPtr<PrivacyPolicyCoordinator> m_privacy_policy_coordinator;
     OwnPtr<RequestServerManager> m_request_server_manager;
     OwnPtr<ImageDecoderManager> m_image_decoder_manager;
     RefPtr<CompositorClient> m_compositor_client;

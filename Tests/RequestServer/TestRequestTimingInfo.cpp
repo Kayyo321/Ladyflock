@@ -17,6 +17,7 @@
 #include <LibRequests/RequestTimingInfo.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
+#include "TestPrivacyHelper.h"
 #include <RequestServer/CURL.h>
 #include <RequestServer/ConnectionFromClient.h>
 #include <RequestServer/ResourceSubstitutionMap.h>
@@ -126,6 +127,7 @@ public:
         m_connection = RequestServer::ConnectionFromClient::construct(
             move(pair.local), RequestServer::IsPrivate::No, RequestServer::SiteBinding::Unrestricted,
             m_server.connections, m_server.request_transfer_leases, Optional<HTTP::DiskCache&> {});
+        RequestServerTest::install_allow_privacy_policy();
     }
 
     ~TestConnection()
@@ -139,7 +141,7 @@ public:
         auto started_at = MonotonicTime::now();
         m_started_at.set(request_id, started_at);
 
-        auto message = make<Messages::RequestServer::StartRequest>(request_id, ByteString { "GET" }, move(url), Vector<HTTP::Header> {}, ByteBuffer {}, HTTP::CacheMode::Default, Optional<HTTP::NetworkIsolationKey> {}, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {});
+        auto message = make<Messages::RequestServer::StartRequest>(request_id, ByteString { "GET" }, move(url), Vector<HTTP::Header> {}, ByteBuffer {}, HTTP::CacheMode::Default, Optional<HTTP::NetworkIsolationKey> {}, HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {}, Requests::ExtensionRequestCheck::NotApplicable);
         auto response = MUST(static_cast<RequestServerEndpoint::Stub&>(*m_connection).handle(move(message)));
         VERIFY(!response);
 

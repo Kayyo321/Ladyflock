@@ -19,6 +19,7 @@
 #include <LibTest/TemporaryDirectory.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
+#include "TestPrivacyHelper.h"
 #include <RequestServer/CURL.h>
 #include <RequestServer/CertificateExceptions.h>
 #include <RequestServer/ConnectionFromClient.h>
@@ -235,6 +236,7 @@ public:
         m_connection = RequestServer::ConnectionFromClient::construct(
             move(pair.local), RequestServer::IsPrivate::No, RequestServer::SiteBinding::Unrestricted,
             m_server.connections, m_server.request_transfer_leases, disk_cache);
+        RequestServerTest::install_allow_privacy_policy();
     }
 
     ~TestConnection()
@@ -250,7 +252,7 @@ public:
             { ByteString { HTTP::TEST_CACHE_ENABLED_HEADER }, "1"sv },
         };
 
-        auto message = make<Messages::RequestServer::StartRequest>(request_id, move(method), move(url), move(request_headers), ByteBuffer {}, HTTP::CacheMode::Default, test_network_isolation_key(), HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {});
+        auto message = make<Messages::RequestServer::StartRequest>(request_id, move(method), move(url), move(request_headers), ByteBuffer {}, HTTP::CacheMode::Default, test_network_isolation_key(), HTTP::Cookie::IncludeCredentials::No, false, Optional<u32> {}, false, 0, HTTP::Cookie::SameSiteContext {}, Requests::ExtensionRequestCheck::NotApplicable);
         auto response = MUST(static_cast<RequestServerEndpoint::Stub&>(*m_connection).handle(move(message)));
         VERIFY(!response);
     }

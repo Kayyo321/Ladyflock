@@ -23,4 +23,5 @@ compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/RequestServer/RequestServerControlCl
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/RequestServer/RequestServerControl.ipc ${CMAKE_BINARY_DIR}/Services/RequestServer/RequestServerControlEndpoint.h)
 
 ladybird_lib(LibRequests requests)
+target_link_libraries(LibRequests PUBLIC LibPrivacy)
 target_link_libraries(LibRequests PRIVATE LibCore LibHTTP LibIPC LibThreading LibURL)

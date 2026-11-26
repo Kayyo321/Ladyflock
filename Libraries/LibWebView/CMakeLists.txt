@@ -70,6 +70,7 @@ set(SOURCES
     PictureInPictureWindow.cpp
     PermissionManager.cpp
     PlatformFeatureDecisions.cpp
+    PrivacyPolicyCoordinator.cpp
     Process.cpp
     ProcessManager.cpp
     ProcessSnapshot.cpp
@@ -197,7 +198,7 @@ if (LADYBIRD_ENABLE_UPDATE_CHECK)
     target_compile_definitions(LibWebView PUBLIC LADYBIRD_HAS_UPDATE_CHECK)
 endif()
 
-target_link_libraries(LibWebView PUBLIC LibCompositing LibPlatformFeatures LibSandbox LibWebCommon)
+target_link_libraries(LibWebView PUBLIC LibCompositing LibPlatformFeatures LibPrivacy LibSandbox LibWebCommon)
 target_link_libraries(LibWebView PRIVATE LibCore LibCrypto LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibMedia LibMediaClient LibUnicode LibURL LibTextCodec LibThreading OpenSSL::Crypto)
 
 if (LINUX)

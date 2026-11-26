@@ -47,6 +47,7 @@ public:
     HashTable<int> const& client_ids() const { return m_client_ids; }
     bool is_retired() const { return m_retired; }
     bool has_client(int client_id) const { return m_client_ids.contains(client_id); }
+    bool network_sandbox_denied() const { return m_network_sandbox_denied; }
 
 private:
     friend class RequestServerManager;
@@ -63,6 +64,7 @@ private:
     HashTable<int> m_client_ids_retiring_without_delay;
     RefPtr<Core::Timer> m_idle_timer;
     bool m_retired { false };
+    bool m_network_sandbox_denied { false };
 
     // As last reported by the RequestServer.
     u64 m_disk_cache_size { 0 };
@@ -103,6 +105,7 @@ public:
 
     void disk_cache_settings_changed();
     void dns_settings_changed();
+    void restart_network_sandboxed_instances_for_session(BrowsingSession&);
 
     NonnullRefPtr<Core::Promise<Requests::CacheSizes>> estimate_cache_size_accessed_since(UnixDateTime since);
     NonnullRefPtr<Core::Promise<Empty>> clear_cache(UnixDateTime since);

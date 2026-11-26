@@ -73,6 +73,10 @@ private:
     virtual void set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts) override;
     virtual void did_check_web_request_before_request(u64 check_id, bool cancel) override;
 
+    virtual Messages::RequestServerControl::InstallPrivacyPolicyResponse install_privacy_policy(Privacy::PolicySnapshot snapshot) override;
+
+    void quiesce_active_network_work();
+
     struct ClientSocket {
         IPC::TransportHandle handle;
         int client_id { -1 };

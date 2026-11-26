@@ -65,6 +65,9 @@ public:
     Optional<u64> owner_child_id() const { return m_owner_child_id; }
     void set_owner_child_id(u64 child_id) { m_owner_child_id = child_id; }
 
+    bool network_access_allowed() const { return m_network_access_allowed; }
+    void set_network_access_allowed(bool allowed) { m_network_access_allowed = allowed; }
+
     template<typename ConnectionFromClient>
     RefPtr<ConnectionFromClient> client()
     {
@@ -128,6 +131,7 @@ private:
     Optional<Utf16String> m_title;
     Optional<URL::URL> m_site_url;
     Optional<u64> m_owner_child_id;
+    bool m_network_access_allowed { true };
     WeakPtr<IPC::ConnectionBase> m_connection;
     ProcessOutputCapture m_output_capture;
 };

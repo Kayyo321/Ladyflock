@@ -69,6 +69,7 @@
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/PictureInPictureManager.h>
 #include <LibWebView/PictureInPictureWindow.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/ProcessType.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/SiteCompatibility.h>
@@ -373,6 +374,8 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool force_video_decoder_server = false;
     bool enable_extensions = false;
     bool enable_amo_catalog = false;
+    bool start_offline = false;
+    Optional<Privacy::NetworkMode> privacy_network_mode;
     Vector<ByteString> content_blocker_list_paths;
     Vector<ByteString> load_extension_paths;
     Optional<StringView> resource_substitution_map_path;
@@ -506,6 +509,22 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     });
     args_parser.add_option(enable_extensions, "Enable WebExtensions support", "enable-extensions");
     args_parser.add_option(enable_amo_catalog, "Enable experimental Mozilla Add-ons catalog search and installation", "enable-amo-catalog");
+    args_parser.add_option(start_offline, "Start in Offline privacy mode (deny all browser IP egress and DNS)", "offline");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Set initial privacy network mode ('allow' or 'offline')",
+        .long_name = "privacy-network-mode",
+        .value_name = "mode",
+        .accept_value = [&](StringView value) {
+            auto parsed = Privacy::network_mode_from_string(value);
+            if (!parsed.has_value()) {
+                warnln("Unknown privacy network mode '{}': expected 'allow' or 'offline'", value);
+                return false;
+            }
+            privacy_network_mode = *parsed;
+            return true;
+        },
+    });
     args_parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
         .help_string = "Load an unpacked WebExtension from a directory. May be specified multiple times.",
@@ -633,6 +652,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .enable_extensions = enable_extensions || !load_extension_paths.is_empty(),
         .enable_amo_catalog = enable_amo_catalog,
         .load_extension_paths = move(load_extension_paths),
+        .privacy_network_mode = start_offline ? Privacy::NetworkMode::Offline : privacy_network_mode.value_or(Privacy::NetworkMode::Allow),
     };
 
     if (web_content_memory_limit_in_mebibytes.has_value()) {
@@ -787,6 +807,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     m_font_service_host = FontServiceHost::create(*m_font_service);
     if (m_stats_log)
         m_stats_log->start_sampling();
+    m_privacy_policy_coordinator = make<PrivacyPolicyCoordinator>(m_browser_options.privacy_network_mode);
     TRY(launch_services());
 
     if (m_browser_options.enable_content_blocker == EnableContentBlocker::Yes) {
@@ -2486,6 +2507,42 @@ ErrorOr<void> Application::launch_request_server()
         m_settings->set_dns_settings(m_browser_options.dns_settings.value(), true);
 
     return {};
+}
+
+void Application::cancel_background_networking_for_privacy_policy()
+{
+    m_pending_content_blocker_list_updates.clear();
+    if (m_content_blocker_list_update_request) {
+        m_content_blocker_list_update_cancelled = true;
+        m_content_blocker_list_update_request->stop();
+        m_content_blocker_list_update_request = nullptr;
+        m_active_content_blocker_list_update.clear();
+        m_content_blocker_list_update_payload.clear();
+        m_content_blocker_list_update_response_ok = false;
+    }
+}
+
+void Application::retire_unrestricted_webrtc_helpers_for_session(BrowsingSession const& session)
+{
+    HashTable<u64> session_web_content_ids;
+    WebContentClient::for_each_client([&](WebContentClient& client) {
+        if (&client.session() == &session)
+            session_web_content_ids.set(client.child_id());
+        return IterationDecision::Continue;
+    });
+
+    Vector<u64> helpers_to_terminate;
+    m_process_manager->for_each_process([&](Process& process) {
+        if (process.type() != ProcessType::WebRTCClient)
+            return;
+        if (!process.network_access_allowed())
+            return;
+        if (process.owner_child_id().has_value() && session_web_content_ids.contains(*process.owner_child_id()))
+            helpers_to_terminate.append(process.child_id());
+    });
+
+    for (auto child_id : helpers_to_terminate)
+        (void)m_process_manager->terminate_child(child_id, Core::Process::TerminationMode::Forceful);
 }
 
 void Application::configure_request_server_control_client(Requests::RequestControlClient& control_client)

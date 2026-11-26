@@ -18,6 +18,7 @@
 #include <LibWebView/Application.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/HelperProcess.h>
+#include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/RequestServerSiteBindings.h>
 #include <LibWebView/WebContentClient.h>
@@ -158,6 +159,13 @@ ErrorOr<void> RequestServerManager::launch_process(RequestServerInstance& instan
             the().did_reject_self_signed_certificate(instance->session(), { .host = host, .port = port, .fingerprint = fingerprint });
     };
     Application::the().configure_request_server_control_client(*control_client);
+
+    // Install the session's trusted, epoch-bound privacy policy synchronously BEFORE connecting any data clients.
+    // RequestServer remains default-closed until this acknowledgement succeeds.
+    if (auto result = Application::privacy_policy_coordinator().install_policy_on_request_server(instance.session(), *control_client); result.is_error()) {
+        end_unresponsive_helper(*control_client);
+        return result.release_error();
+    }
 
     for (auto const& exception : instance.session().trusted_certificates)
         control_client->async_trust_certificate(exception.host, exception.port, exception.fingerprint);
@@ -350,6 +358,21 @@ void RequestServerManager::dns_settings_changed()
 {
     for (auto& instance : m_instances)
         apply_dns_settings(instance->control_client());
+}
+
+void RequestServerManager::restart_network_sandboxed_instances_for_session(BrowsingSession& session)
+{
+    Vector<NonnullRefPtr<RequestServerInstance>> instances_to_restart;
+    for (auto& instance : m_instances) {
+        if (&instance->session() == &session && instance->network_sandbox_denied())
+            instances_to_restart.append(instance);
+    }
+
+    for (auto& instance : instances_to_restart) {
+        if (instance->m_control_client)
+            end_unresponsive_helper(*instance->m_control_client);
+        did_lose_process(*instance);
+    }
 }
 
 ByteString RequestServerManager::sites_directory() const

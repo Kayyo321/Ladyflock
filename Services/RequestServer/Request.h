@@ -136,6 +136,7 @@ public:
     // Tells the client how much of the request body has been sent.
     void did_send_request_body_bytes(u64 bytes_sent);
     void retry_after_aia(Badge<ConnectionFromClient>);
+    void abort_for_privacy_policy(Badge<ConnectionFromClient>);
     AIACollector* aia_collector() const { return m_aia_collector.ptr(); }
 
 private:
@@ -257,6 +258,7 @@ private:
     void importer_went_away();
     void handle_complete_state();
     void handle_error_state();
+    bool fail_if_blocked_by_privacy_policy(bool is_speculative = false);
 
     static size_t on_header_received(void* buffer, size_t size, size_t nmemb, void* user_data);
     static size_t on_data_received(void* buffer, size_t size, size_t nmemb, void* user_data);
@@ -395,6 +397,7 @@ private:
     size_t m_bytes_transferred_to_client { 0 };
 
     Optional<Requests::NetworkError> m_network_error;
+    u64 m_policy_epoch { 0 };
     bool m_content_decoding_disabled { false };
 
     Optional<u32> m_address_selection_hint;
