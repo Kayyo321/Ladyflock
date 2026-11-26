@@ -117,6 +117,7 @@ Regression suites on the same build:
 
 - `TestLibWebView`: `TestPrivacyMilestone0` 2/2, `TestPrivacyOffline` 5/5, `TestPrivacyMilestone2` 5/5, `TestBackgroundNetworking` 5/5, `TestRequestServerClientSessions` 2/2, `TestRequestServerDiskCaches` 2/2, `TestFavicon` 1/1, `TestExtensionCore` 11/11 and `TestOmnibox` 79/79.
 - `TestUIQt` (offscreen): no failures.
+- Full `TestLibWebView`, run from `Tests/LibWebView`: exit 0, with no failed test. Its log contains the deliberate renderer crashes of the crash-recovery tests.
 
 ### Failures not caused by this milestone
 
