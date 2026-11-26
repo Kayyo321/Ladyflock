@@ -29,6 +29,7 @@
 #include <LibWebView/ProcessManager.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Utilities.h>
+#include <RequestServer/CacheLevel.h>
 
 #include <stdlib.h>
 
@@ -126,6 +127,41 @@ static bool spin_until(Function<bool()> condition, AK::Duration timeout = AK::Du
     return !timed_out;
 }
 
+static void spin_for(AK::Duration duration)
+{
+    bool done = false;
+    auto timer = Core::Timer::create_single_shot(duration, [&] { done = true; });
+    timer->start();
+    Core::EventLoop::current().spin_until([&] { return done; });
+}
+
+static Optional<Vector<ByteString>> resolve(Requests::RequestClient& client, ByteString const& host)
+{
+    Optional<Vector<ByteString>> resolved;
+    client.resolve_host(host, [&](Vector<ByteString> addresses) { resolved = move(addresses); });
+    if (!spin_until([&] { return resolved.has_value(); }))
+        return {};
+    return resolved;
+}
+
+// Opens a WebSocket from a page and reports how it ended. The mock proxy answers the upgrade with a plain response, so
+// a routed WebSocket fails its handshake; what matters is where it went.
+static ByteString run_page_websocket_probe(WebView::HeadlessWebView& view, StringView target_url)
+{
+    static size_t s_probe_count = 0;
+    auto token = ByteString::formatted("ws-probe-{}:", ++s_probe_count);
+    auto html = ByteString::formatted(R"HTML(<!doctype html>
+<script>
+const socket = new WebSocket("{}");
+socket.onopen = () => {{ document.title = "{}open"; }};
+socket.onerror = () => {{ document.title = "{}error"; }};
+</script>)HTML",
+        target_url, token, token);
+    view.load_html(html);
+    VERIFY(spin_until([&] { return view.title().to_byte_string().starts_with(token); }, AK::Duration::from_seconds(20)));
+    return view.title().to_byte_string().substring(token.length());
+}
+
 static void kill_request_servers_and_wait_for_replacement()
 {
     NonnullRefPtr<Requests::RequestControlClient> old_control = WebView::Application::request_server_control_client();
@@ -177,6 +213,12 @@ TEST_CASE(proxy_route_survives_bypass_lists_redirects_helper_restarts_and_proxy_
     auto app = TRY_OR_FAIL(environment.create_application<ProxyRouteApplication>(arguments));
     auto view = WebView::HeadlessWebView::create(load_theme(), { 800, 600 });
 
+    // Positive control: Hub did load the environment's proxy and bypass list that the route has to override.
+    auto const& environment_proxies = WebView::Application::request_server_options().proxy_configuration;
+    VERIFY(environment_proxies.http_proxy().has_value());
+    EXPECT_EQ(environment_proxies.http_proxy()->port, trap.port());
+    EXPECT(environment_proxies.no_proxy().contains_slow("fixture.example"sv));
+
     EXPECT_EQ(WebView::Application::privacy_policy_coordinator().network_mode(WebView::Application::default_session()), Privacy::NetworkMode::ProxyOnly);
     EXPECT(!WebView::Application::privacy_policy_coordinator().allows_dns_resolution(WebView::Application::default_session()));
     EXPECT(!WebView::Application::privacy_policy_coordinator().allows_webrtc_network(WebView::Application::default_session()));
@@ -202,6 +244,25 @@ TEST_CASE(proxy_route_survives_bypass_lists_redirects_helper_restarts_and_proxy_
     auto loopback = fetch(browser_instance->ui_client(), ByteString::formatted("http://localhost:{}/loopback", trap.port()));
     EXPECT(!loopback.error.has_value());
     EXPECT_EQ(loopback.body, "via-socks:localhost"sv);
+
+    // A page's WebSocket takes the route as well.
+    auto streams_before_websocket = proxy.streams().size();
+    auto websocket_url = ByteString::formatted("ws://fixture.example:{}/socket", trap.port());
+    EXPECT_EQ(run_page_websocket_probe(*view, websocket_url), "error"sv);
+    auto websocket_streams = proxy.streams();
+    EXPECT(websocket_streams.size() > streams_before_websocket);
+    EXPECT_EQ(websocket_streams.last().address_type, 3);
+    EXPECT_EQ(websocket_streams.last().host, "fixture.example"sv);
+
+    // Name lookups and speculative connections that a renderer asks for go nowhere.
+    auto resolved = resolve(browser_instance->ui_client(), "fixture.example"sv);
+    VERIFY(resolved.has_value());
+    EXPECT(resolved->is_empty());
+    auto streams_before_preconnect = proxy.streams().size();
+    browser_instance->ui_client().ensure_connection(URL::Parser::basic_parse(target).release_value(), RequestServer::CacheLevel::CreateConnection);
+    browser_instance->ui_client().ensure_connection(URL::Parser::basic_parse(target).release_value(), RequestServer::CacheLevel::ResolveOnly);
+    spin_for(AK::Duration::from_milliseconds(300));
+    EXPECT_EQ(proxy.streams().size(), streams_before_preconnect);
 
     EXPECT_EQ(dns_observer.query_count(), 0u);
     EXPECT_EQ(trap.connection_count(), 0u);
@@ -234,10 +295,11 @@ TEST_CASE(proxy_route_survives_bypass_lists_redirects_helper_restarts_and_proxy_
     EXPECT_EQ(trap.request_count(), 0u);
 }
 
-TEST_CASE(switching_to_the_route_closes_pooled_direct_connections)
+TEST_CASE(switching_to_the_route_closes_pooled_and_in_flight_direct_connections)
 {
     PrivacyTest::IndependentDNSObserver dns_observer;
     PrivacyTest::MockRouteServer origin(PrivacyTest::MockRouteServer::Mode::DirectHTTP);
+    PrivacyTest::IndependentStreamingHTTPServer stream_server;
     PrivacyTest::MockRouteServer proxy(PrivacyTest::MockRouteServer::Mode::SOCKS5);
 
     auto dns_port = ByteString::number(dns_observer.port());
@@ -267,14 +329,36 @@ TEST_CASE(switching_to_the_route_closes_pooled_direct_connections)
     EXPECT_EQ(origin.connection_count(), 1u);
     EXPECT_EQ(origin.client_closed_count(), 0u);
     EXPECT(dns_observer.query_count() >= 1u);
+
+    // A direct response that is still streaming when the route is installed.
+    auto stream_url = ByteString::formatted("http://stream.example:{}/slow", stream_server.port());
+    auto stream = instance->ui_client().start_request("GET"sv, URL::Parser::basic_parse(stream_url).release_value(), {}, *HTTP::HeaderList::create(), {},
+        HTTP::CacheMode::NoStore, HTTP::Cookie::IncludeCredentials::No);
+    VERIFY(stream);
+    bool got_chunk = false;
+    bool stream_finished = false;
+    Optional<Requests::NetworkError> stream_error;
+    stream->set_unbuffered_request_callbacks(
+        [](NonnullRefPtr<HTTP::HeaderList>, Optional<u32>, Optional<String> const&, Requests::CacheState) { },
+        [&](Requests::ResponseData data) { got_chunk |= !data.bytes().is_empty(); },
+        [&](Core::ImmutableBytes data) { got_chunk |= !data.bytes().is_empty(); },
+        [&](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> error) {
+            stream_error = error;
+            stream_finished = true;
+        });
+    VERIFY(spin_until([&] { return got_chunk; }));
+    EXPECT(!stream_finished);
     auto queries_before_switch = dns_observer.query_count();
 
     auto transition = WebView::Application::privacy_policy_coordinator().set_network_mode(session, Privacy::NetworkMode::ProxyOnly);
     EXPECT(transition.committed);
     EXPECT_EQ(WebView::Application::privacy_policy_coordinator().network_mode(session), Privacy::NetworkMode::ProxyOnly);
 
-    // The switch closes the pooled direct connection rather than leaving it for the next request to reuse.
+    // The switch closes the pooled direct connection rather than leaving it for the next request to reuse, and cuts the
+    // direct stream that was still open.
     EXPECT(spin_until([&] { return origin.client_closed_count() >= 1; }));
+    EXPECT(spin_until([&] { return stream_finished && stream_server.client_disconnect_count() >= 1; }));
+    EXPECT(stream_error == Requests::NetworkError::BlockedByPrivacyPolicy);
 
     auto routed = fetch(instance->ui_client(), url);
     EXPECT(!routed.error.has_value());
