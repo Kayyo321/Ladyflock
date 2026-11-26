@@ -49,6 +49,7 @@ Proxy-only mode without `--privacy-proxy` has no network. `PrivacyPolicyCoordina
 - **Alt-Svc and HTTP/3**. Both stay off on the routed path, as they already were for any proxied request.
 - **`CURLOPT_NOPROXY`**. It is set to an empty list on every routed handle. This is defence in depth: helper processes get an allowlisted environment (`Process::helper_process_environment`) without proxy variables, so curl has no `no_proxy` to read today.
 - **Proxy loss**. A request whose proxy is unreachable fails with a network error, with no direct retry.
+- **Stale continuations**. `proxy_satisfies_mandatory_route()` checks the proxy at each point where a connection is handed to curl: `Request`'s connect and fetch states, the AIA fetch, and `open_websocket`. Under a route, a connection whose proxy is not the route's endpoint fails closed. This catches work that chose a direct connection before a live switch. Requests and WebSockets also fail on the changed policy epoch, but the AIA lookup records no epoch.
 
 ### 2.3 Hub coordinator (`Libraries/LibWebView/PrivacyPolicyCoordinator.{h,cpp}`)
 
@@ -73,7 +74,7 @@ Both values are 32 lowercase hex characters, so they need no escaping in the pro
 
 ## 4. Recorded verification results
 
-- **Git revision verified**: `c8ec6e20248` (branch `privacy-milestone-3`, based on `ladyflock` `72aa25e024a`)
+- **Git revision verified**: `23cea028fdb` (branch `privacy-milestone-3`, based on `ladyflock` `72aa25e024a`)
 - **Host platform**: macOS 26.3.1, Darwin 25.3.0, `arm64`
 - **Build configuration**: `Build/ladyflock` (Release preset, `LADYBIRD_ENABLE_UPDATE_CHECK=OFF`, sandboxing enabled)
 
@@ -97,10 +98,13 @@ Build/ladyflock/bin/TestLibPrivacy
 
 It checks these cases:
 
-1. **Bypass lists.** The environment names the trap as `http_proxy` and exempts every destination (`no_proxy=fixture.example,excluded.example,localhost,127.0.0.1`). A page subresource still reaches the proxy as a domain-name (`ATYP 3`) destination. So do a redirect to an exempt host and a `localhost` URL.
+1. **Bypass lists.** The environment names the trap as `http_proxy` and exempts every destination (`no_proxy=fixture.example,excluded.example,localhost,127.0.0.1`). A positive control asserts that Hub loaded both. A page subresource still reaches the proxy as a domain-name (`ATYP 3`) destination. So do a redirect to an exempt host, a `localhost` URL and a page's WebSocket. `resolve_host` answers nothing, and `ensure_connection` (connect and resolve-only) opens no stream.
 2. **Helper restart.** After `SIGKILL` of every RequestServer, the replacement uses the route. So does a newly launched site-specific RequestServer.
 3. **Proxy loss.** With the proxy stopped, page fetches and direct requests (including through a redirect) fail visibly.
-4. **Reused connection.** In allow mode, two requests share one keep-alive direct connection (positive control). A live `set_network_mode(ProxyOnly)` closes that pooled connection, and the next request goes through the proxy with no new DNS query.
+4. **Reused and in-flight connections.** In allow mode, two requests share one keep-alive direct connection (positive control), and a third response is still streaming. A live `set_network_mode(ProxyOnly)` does three things:
+   - it closes the pooled connection;
+   - it cuts the stream with `BlockedByPrivacyPolicy`, and the server sees EOF;
+   - it sends the next request through the proxy with no new DNS query.
 5. **Stream isolation.**
    - Sites `a` and `b` and browser-initiated work share the identity's username but have distinct passwords and separate streams.
    - Every later stream of site `a` carries site `a`'s credentials.
@@ -111,7 +115,11 @@ It checks these cases:
 
 Across cases 1–3, 5 and 6, the DNS observer records **zero** queries and the trap records **zero** connections while a route (or a closed Tor identity) is in force.
 
-Mutation checks: removing the route-generation tightening makes case 5's renewal assertion fail. Disabling `CURLOPT_NOPROXY` leaves every test passing, which is consistent with section 2.2: proxy variables never reach RequestServer.
+Mutation checks:
+
+- Letting the environment's proxy configuration win over the route makes case 1 fail.
+- Removing the route-generation tightening makes case 5's renewal assertion fail.
+- Disabling `CURLOPT_NOPROXY` leaves every test passing, which is consistent with section 2.2: proxy variables never reach RequestServer.
 
 Regression suites on the same build:
 
@@ -121,16 +129,18 @@ Regression suites on the same build:
 
 ### Failures not caused by this milestone
 
-- **`TestRequestServer --suite TestProxyHostResolution`**. `proxy_given_by_name_is_pinned_to_the_addresses_found` fails and then crashes. Milestone 1 (`4e8635bfa3e`) added a privacy-gate check to `resolve_proxy_host`, and the unit test never installs a policy, so its lookup is denied.
-- **`TestRequestServer --suite TestPrivacyNetworkGate`**. It failed with "Unable to connect" in a full `TestRequestServer` run. It passed 4 of 4 times when run alone. The allow-mode connection path it uses is unchanged by this milestone.
+Both failures also occur in full `TestRequestServer` runs at `49f8e6982ed`, the tree before this milestone.
+
+- **`TestRequestServer --suite TestProxyHostResolution`**. `proxy_given_by_name_is_pinned_to_the_addresses_found` fails and then crashes, in 2 of 2 baseline runs. Milestone 1 (`4e8635bfa3e`) added a privacy-gate check to `resolve_proxy_host`, and the unit test never installs a policy, so its lookup is denied.
+- **`TestRequestServer --suite TestPrivacyNetworkGate`**. It is intermittent in a full `TestRequestServer` run: "Unable to connect" in 1 of 2 baseline runs. It passes when run alone, both on the baseline and with this milestone.
 
 ## 5. Not verified, and deferred
 
 - **Real Tor circuit sharing.** No `tor` or `arti` binary is installed on this host, and checking circuit separation needs the live Tor network. Not run. Treat the isolation guarantee as "distinct SOCKS credentials per identity and site" until a run against the selected backend confirms distinct circuits.
-- **Route types and transports.** Only `socks5h` and plain HTTP destinations were exercised end to end. These parameters are parsed and unit-tested but have no observer fixture:
+- **Route types and transports.** Only `socks5h` routes with plain HTTP and `ws:` destinations were exercised end to end. These parameters are parsed and unit-tested but have no observer fixture:
   - `http://`, `https://` and `socks4a://` routes;
-  - HTTPS destinations tunnelled through the route;
-  - WebSockets and AIA fetches over the route.
+  - HTTPS and `wss:` destinations tunnelled through the route;
+  - AIA fetches over the route.
 - **Kernel enforcement.** Enforcement is in userspace only. RequestServer's macOS and Linux sandboxes still allow general network access in proxy-only mode; they do not limit it to the proxy endpoint.
 - **Per-site renewal.** `renew_route_isolation` renews a whole identity. Renewing a single site's token and closing only that site's connections is not implemented.
 - **Out of scope.** Named proxy endpoints and DNS bootstrap, PAC evaluation (still unsupported; PAC never yields a direct route here), supervised Tor or Arti, bridges, and a settings UI for routes (command line only).
