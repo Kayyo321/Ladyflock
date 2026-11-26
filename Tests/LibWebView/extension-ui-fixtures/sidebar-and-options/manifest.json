@@ -1,0 +1,21 @@
+{
+    "manifest_version": 2,
+    "name": "Fixture: Sidebar & Options",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "sidebar-and-options@ui-fixtures.ladyflock.test"
+        }
+    },
+    "icons": {
+        "48": "missing.png"
+    },
+    "sidebar_action": {
+        "default_title": "Fixture sidebar",
+        "default_panel": "sidebar.html"
+    },
+    "options_ui": {
+        "page": "options.html",
+        "open_in_tab": false
+    }
+}

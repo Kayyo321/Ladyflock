@@ -1,0 +1,21 @@
+{
+    "manifest_version": 2,
+    "name": "Fixture: Resizing Popup",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "resizing-popup@ui-fixtures.ladyflock.test"
+        }
+    },
+    "browser_action": {
+        "default_title": "Resizing popup",
+        "default_popup": "popup.html",
+        "theme_icons": [
+            {
+                "light": "light.svg",
+                "dark": "dark.svg",
+                "size": 32
+            }
+        ]
+    }
+}

@@ -1,0 +1,14 @@
+{
+    "manifest_version": 3,
+    "name": "Fixture: Tall Popup With A Deliberately Long Extension Name To Test Elision",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "tall-popup@ui-fixtures.ladyflock.test"
+        }
+    },
+    "action": {
+        "default_title": "Tall popup",
+        "default_popup": "popup.html"
+    }
+}

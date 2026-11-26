@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+:root { font: 13px system-ui, sans-serif; }
+body { margin: 0; }
+#panes { display: flex; flex-direction: row-reverse; }
+#main { min-width: 16em; padding: 12px; }
+#side { display: none; width: 220px; padding: 12px; border-inline-end: 1px solid #8886; }
+body.more #side { display: block; }
+#status { font-size: 24px; text-align: center; margin: 8px 0; }
+</style>
+<div id="panes">
+<div id="main">
+<div id="status">⏻</div>
+<p>Blocked on this page: 0</p>
+<button id="toggle">More</button>
+</div>
+<div id="side"><p>Side pane, shown by More.</p><p>The popup should grow to the left.</p></div>
+</div>
+<script src="popup.js"></script>
