@@ -130,34 +130,84 @@ static ErrorOr<ByteBuffer> read_extension_file(ByteString const& path, size_t ma
     return contents;
 }
 
-static Optional<Vector<u64>> numeric_extension_version(StringView value)
+// Firefox's toolkit version format: dot-separated parts, each a number, a string, a number and a string. A missing
+// number is 0 and a missing string sorts after any other, so 1.0pre1 < 1.0. See Mozilla's nsVersionComparator.
+int compare_extension_versions(StringView left, StringView right)
 {
-    auto parts = value.split_view('.', SplitBehavior::KeepEmpty);
-    Vector<u64> version;
-    for (auto part : parts) {
-        auto component = part.to_number<u64>();
-        if (!component.has_value())
-            return {};
-        version.append(*component);
-    }
-    if (version.is_empty())
-        return {};
-    return version;
-}
+    struct Part {
+        i64 number_a { 0 };
+        Optional<StringView> string_b;
+        i64 number_c { 0 };
+        Optional<StringView> string_d;
+    };
+    // Like strtol: an optional sign and digits, or nothing at all. Large numbers saturate as they do in Firefox.
+    auto parse_number = [](StringView& text) -> i64 {
+        size_t length = 0;
+        bool negative = false;
+        if (!text.is_empty() && (text[0] == '+' || text[0] == '-')) {
+            negative = text[0] == '-';
+            ++length;
+        }
+        size_t digits_start = length;
+        i64 value = 0;
+        while (length < text.length() && is_ascii_digit(text[length])) {
+            value = min<i64>(value * 10 + parse_ascii_digit(text[length]), NumericLimits<i32>::max());
+            ++length;
+        }
+        if (length == digits_start)
+            return 0;
+        text = text.substring_view(length);
+        return negative ? -value : value;
+    };
+    auto parse_part = [&](StringView text) {
+        Part part;
+        if (text == "*"sv) {
+            part.number_a = NumericLimits<i32>::max();
+            return part;
+        }
+        part.number_a = parse_number(text);
+        if (text.is_empty())
+            return part;
+        // "+" means the next prerelease: 1.0+ is 1.1pre.
+        if (text[0] == '+') {
+            ++part.number_a;
+            part.string_b = "pre"sv;
+            return part;
+        }
+        auto number_start = text.find_any_of("0123456789+-"sv);
+        if (!number_start.has_value()) {
+            part.string_b = text;
+            return part;
+        }
+        part.string_b = text.substring_view(0, *number_start);
+        text = text.substring_view(*number_start);
+        part.number_c = parse_number(text);
+        if (!text.is_empty())
+            part.string_d = text;
+        return part;
+    };
+    auto compare_strings = [](Optional<StringView> a, Optional<StringView> b) {
+        if (!a.has_value() || !b.has_value())
+            return a.has_value() == b.has_value() ? 0 : (a.has_value() ? -1 : 1);
+        return *a < *b ? -1 : (*a == *b ? 0 : 1);
+    };
+    auto compare_numbers = [](i64 a, i64 b) { return a < b ? -1 : (a == b ? 0 : 1); };
 
-static bool is_newer_version(StringView next, StringView current)
-{
-    auto next_version = numeric_extension_version(next);
-    auto current_version = numeric_extension_version(current);
-    if (!next_version.has_value() || !current_version.has_value())
-        return false;
-    for (size_t i = 0; i < max(next_version->size(), current_version->size()); ++i) {
-        auto left = i < next_version->size() ? (*next_version)[i] : 0;
-        auto right = i < current_version->size() ? (*current_version)[i] : 0;
-        if (left != right)
-            return left > right;
+    auto left_parts = left.split_view('.', SplitBehavior::KeepEmpty);
+    auto right_parts = right.split_view('.', SplitBehavior::KeepEmpty);
+    for (size_t i = 0; i < max(left_parts.size(), right_parts.size()); ++i) {
+        auto a = parse_part(i < left_parts.size() ? left_parts[i] : StringView {});
+        auto b = parse_part(i < right_parts.size() ? right_parts[i] : StringView {});
+        if (auto result = compare_numbers(a.number_a, b.number_a); result != 0)
+            return result;
+        if (auto result = compare_strings(a.string_b, b.string_b); result != 0)
+            return result;
+        if (auto result = compare_numbers(a.number_c, b.number_c); result != 0)
+            return result;
+        if (auto result = compare_strings(a.string_d, b.string_d); result != 0)
+            return result;
     }
-    return false;
+    return 0;
 }
 
 ErrorOr<StagedInstall> ExtensionInstaller::stage_xpi(
@@ -261,8 +311,8 @@ ErrorOr<StagedInstall> ExtensionInstaller::stage_package(
             diagnostic->compatibility_reasons.append(TRY(String::formatted("{}", error)));
         return error;
     }
-    if (current_manifest_for_update.has_value() && !is_newer_version(result.version, current_manifest_for_update->version()))
-        return Error::from_string_literal("Update needs a newer numeric extension version");
+    if (current_manifest_for_update.has_value() && compare_extension_versions(result.version, current_manifest_for_update->version()) <= 0)
+        return Error::from_string_literal("Update needs a newer extension version");
 
     auto payload_dir = LexicalPath::join(stage_dir, "payload"sv).string();
     TRY(Core::Directory::create(payload_dir, Core::Directory::CreateDirectories::Yes));

@@ -505,6 +505,43 @@ TEST_CASE(extension_versions_compare_like_firefox)
     EXPECT(ExtensionManager::compare_versions("1.0a"sv, "1.0b"sv) < 0);
     EXPECT(ExtensionManager::compare_versions("1.0b2"sv, "1.0b10"sv) < 0);
     EXPECT(ExtensionManager::compare_versions("1.0.1"sv, "1.0b"sv) > 0);
+
+    // Mozilla's own ordering, from its nsVersionComparator tests: each entry is older than the next, unless marked equal.
+    struct Step {
+        StringView version;
+        bool equals_previous { false };
+    };
+    Array const ordering {
+        Step { "1.0pre1"sv },
+        Step { "1.0pre2"sv },
+        Step { "1.0"sv },
+        Step { "1.0.0"sv, true },
+        Step { "1.0.0.0"sv, true },
+        Step { "1.1pre"sv },
+        Step { "1.1pre0"sv, true },
+        Step { "1.0+"sv, true },
+        Step { "1.1pre1a"sv },
+        Step { "1.1pre1"sv },
+        Step { "1.1pre10a"sv },
+        Step { "1.1pre10"sv },
+        Step { "1.1"sv },
+        Step { "1.1.0"sv, true },
+        Step { "1.1.00"sv, true },
+        Step { "1.10"sv },
+        Step { "1.*"sv },
+        Step { "1.*.1"sv },
+        Step { "2.0"sv },
+    };
+    for (size_t i = 1; i < ordering.size(); ++i) {
+        auto result = ExtensionManager::compare_versions(ordering[i - 1].version, ordering[i].version);
+        if (ordering[i].equals_previous)
+            EXPECT_EQ(result, 0);
+        else
+            EXPECT(result < 0);
+        EXPECT_EQ(ExtensionManager::compare_versions(ordering[i].version, ordering[i - 1].version), -result);
+    }
+    // Numbers too large for Firefox saturate rather than wrap around to zero.
+    EXPECT(ExtensionManager::compare_versions("1.99999999999999999999999"sv, "1.2"sv) > 0);
 }
 
 TEST_CASE(update_availability_tracks_only_newer_listed_versions)

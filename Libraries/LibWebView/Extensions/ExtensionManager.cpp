@@ -968,65 +968,10 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_update(StringView token, b
     return *m_extensions_by_id.get(ext_id);
 }
 
-// Firefox's toolkit version format: dot-separated parts, each a number, a string, a number and a string, where a
-// missing number is 0 and a missing string sorts after any other (so 1.0pre1 < 1.0). See Mozilla's nsVersionComparator.
 int ExtensionManager::compare_versions(StringView left, StringView right)
 {
-    struct Part {
-        u64 number_a { 0 };
-        StringView string_b;
-        u64 number_c { 0 };
-        StringView string_d;
-    };
-    auto parse_number = [](StringView& text) {
-        size_t length = 0;
-        while (length < text.length() && is_ascii_digit(text[length]))
-            ++length;
-        auto number = text.substring_view(0, length).to_number<u64>().value_or(0);
-        text = text.substring_view(length);
-        return number;
-    };
-    auto parse_string = [](StringView& text) {
-        size_t length = 0;
-        while (length < text.length() && !is_ascii_digit(text[length]))
-            ++length;
-        auto string = text.substring_view(0, length);
-        text = text.substring_view(length);
-        return string;
-    };
-    auto parse_part = [&](StringView text) {
-        Part part;
-        // "+" means the next prerelease: 1.0+ is 1.1pre.
-        if (text == "+"sv)
-            text = {};
-        part.number_a = parse_number(text);
-        part.string_b = parse_string(text);
-        part.number_c = parse_number(text);
-        part.string_d = text;
-        return part;
-    };
-    auto compare_strings = [](StringView a, StringView b) {
-        if (a.is_empty() || b.is_empty())
-            return a.is_empty() == b.is_empty() ? 0 : (a.is_empty() ? 1 : -1);
-        return a < b ? -1 : (a == b ? 0 : 1);
-    };
-    auto compare_numbers = [](u64 a, u64 b) { return a < b ? -1 : (a == b ? 0 : 1); };
-
-    auto left_parts = left.split_view('.', SplitBehavior::KeepEmpty);
-    auto right_parts = right.split_view('.', SplitBehavior::KeepEmpty);
-    for (size_t i = 0; i < max(left_parts.size(), right_parts.size()); ++i) {
-        auto a = parse_part(i < left_parts.size() ? left_parts[i] : StringView {});
-        auto b = parse_part(i < right_parts.size() ? right_parts[i] : StringView {});
-        if (auto result = compare_numbers(a.number_a, b.number_a); result != 0)
-            return result;
-        if (auto result = compare_strings(a.string_b, b.string_b); result != 0)
-            return result;
-        if (auto result = compare_numbers(a.number_c, b.number_c); result != 0)
-            return result;
-        if (auto result = compare_strings(a.string_d, b.string_d); result != 0)
-            return result;
-    }
-    return 0;
+    // The installer refuses an update that isn't newer by the same rule, so an offered update can always install.
+    return compare_extension_versions(left, right);
 }
 
 bool ExtensionManager::can_check_for_update(InstalledExtension const& extension) const
