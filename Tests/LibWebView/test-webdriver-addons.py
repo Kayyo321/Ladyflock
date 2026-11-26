@@ -358,17 +358,15 @@ def run_test(webdriver_binary, theme, width, screenshots):
             assert script("return document.querySelector('#update-all').textContent;") == "Update All (2)"
             assert script("return document.querySelectorAll('#installed .update-hint').length;") == 2
             first_entry = '[data-extension="first@example.test"]'
-            assert script("return document.querySelector(arguments[0] + ' .update-available').textContent;", first_entry) == (
-                "Version 1.1 is available"
-            )
+            available = script("return document.querySelector(arguments[0] + ' .update-available').textContent;", first_entry)
+            assert available == "Version 1.1 is available"
             assert script(
                 "const b = document.querySelector(arguments[0] + ' [data-control=update]');"
                 "return b.textContent === 'Update to 1.1' && b.classList.contains('primary-button');",
                 first_entry,
             )
-            assert script(
-                "return document.querySelector('[data-extension=\"third@example.test\"] [data-control=update]').textContent;"
-            ) == "Check for Update"
+            third_update = '[data-extension="third@example.test"] [data-control=update]'
+            assert script("return document.querySelector(arguments[0]).textContent;", third_update) == "Check for Update"
             assert script("""
                 const hint = document.querySelector('#installed .update-hint').getBoundingClientRect();
                 const icon = document.querySelector('#installed .extension-icon').getBoundingClientRect();

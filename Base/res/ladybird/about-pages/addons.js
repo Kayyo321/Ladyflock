@@ -187,13 +187,8 @@ function updatesStaged(data) {
         const row = element("li");
         const identity = extensionIdentity(update, update.name);
         row.append(identity);
-        row.append(
-            element(
-                "p",
-                (update.previous_version ? "Version " + update.previous_version + " → " : "Version ") + update.version,
-                "description"
-            )
-        );
+        const from = update.previous_version ? update.previous_version + " → " : "";
+        row.append(element("p", "Version " + from + update.version, "description"));
         if (update.newly_requested_permissions.length) {
             const permissions = element("section", undefined, "permission-group");
             permissions.append(
