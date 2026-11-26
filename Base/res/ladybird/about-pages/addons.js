@@ -27,6 +27,41 @@ function element(tag, text, className) {
     return node;
 }
 
+const iconRequests = new Map();
+
+function extensionIdentity(item, label) {
+    const identity = element("span", undefined, "extension-identity");
+    const icon = byId("extension-icon-template").content.firstElementChild.cloneNode(true);
+    identity.append(icon, element("span", label));
+    if (item.icon_key) {
+        icon.dataset.iconKey = item.icon_key;
+        if (!iconRequests.has(item.icon_key)) {
+            iconRequests.set(item.icon_key, null);
+            ladybird.sendMessage("getExtensionIcon", { icon_key: item.icon_key });
+        }
+        showExtensionIcon(icon, iconRequests.get(item.icon_key));
+    }
+    return identity;
+}
+
+function showExtensionIcon(icon, url) {
+    if (!url) return;
+    const image = element("img");
+    image.alt = "";
+    image.addEventListener("load", () => icon.replaceChildren(image), { once: true });
+    image.src = url;
+}
+
+function receivedIcon(data) {
+    if (!iconRequests.has(data.icon_key)) return;
+    const url = data.icon_data_url;
+    if (typeof url !== "string" || !url.startsWith("data:image/png;base64,")) return;
+    iconRequests.set(data.icon_key, url);
+    for (const icon of document.querySelectorAll(".extension-icon[data-icon-key]")) {
+        if (icon.dataset.iconKey === data.icon_key) showExtensionIcon(icon, url);
+    }
+}
+
 function button(text, onClick) {
     const node = element("button", text, "secondary-button");
     node.type = "button";
@@ -60,9 +95,18 @@ function textList(values) {
 
 const permissionDescriptions = new Map([
     ["activeTab", "Access the current tab when you invoke the extension"],
+    ["alarms", "Schedule extension tasks to run later or repeat"],
+    ["contextMenus", "Add commands to webpage context menus"],
+    ["declarativeNetRequest", "Apply extension rules to network requests"],
+    ["dns", "Look up network addresses for hostnames"],
+    ["menus", "Add commands to webpage context menus"],
+    ["privacy", "Read and change the browser’s network prediction setting"],
+    ["publicSuffix", "Find the public suffix and registrable domain of a hostname"],
     ["scripting", "Run scripts and change styles on permitted sites"],
     ["storage", "Save extension data in this profile"],
     ["tabs", "Read information about your tabs"],
+    ["unlimitedStorage", "Save more extension data than the usual local storage limit"],
+    ["webNavigation", "Read information about page and frame navigation in your tabs"],
     ["webRequest", "Observe requests to permitted sites"],
     ["webRequestBlocking", "Block requests to permitted sites"],
     ["<all_urls>", "All requested web addresses"],
@@ -105,7 +149,7 @@ function optionSwitch(title, checked, onChange) {
 
 function confirmAction(title, content, action, accept, cancel, trigger) {
     confirmation = { accept, cancel, trigger };
-    byId("review-title").textContent = title;
+    byId("review-title").replaceChildren(title);
     byId("review-body").replaceChildren(content);
     byId("confirm").textContent = action;
     review.showModal();
@@ -140,7 +184,8 @@ function installedEntry(ext) {
     entry.dataset.extension = ext.extension_id;
     const id = { extension_id: ext.extension_id };
     const header = element("div", undefined, "entry-header");
-    const title = element("h3", ext.name);
+    const title = element("h3");
+    title.append(extensionIdentity(ext, ext.name));
     title.dir = "auto";
     const enabled = optionSwitch(ext.enabled ? "Enabled" : "Disabled", ext.enabled, (value, input) => {
         sendAction("setExtensionEnabled", { ...id, enabled: value }, "Saving extension settings…", input);
@@ -245,7 +290,7 @@ function installedEntry(ext) {
         if (operation) return;
         const trigger = event.currentTarget;
         confirmAction(
-            "Remove " + ext.name + "?",
+            extensionIdentity(ext, "Remove " + ext.name + "?"),
             element("p", "This removes the extension and its saved data from this profile."),
             "Remove",
             () => sendAction("removeExtension", id, "Removing extension…", trigger),
@@ -305,7 +350,8 @@ function renderResults() {
     for (const ext of catalogEntries) {
         const entry = element("article", undefined, "entry");
         entry.dataset.addon = ext.addon_id;
-        const title = element("h3", ext.name);
+        const title = element("h3");
+        title.append(extensionIdentity(ext, ext.name));
         title.tabIndex = -1;
         title.dir = "auto";
         entry.append(title);
@@ -389,11 +435,13 @@ byId("pick-file").addEventListener("click", event => {
 });
 
 function staged(data, update) {
-    if (data.error || data.cancelled || data.up_to_date) {
-        finishAction(
-            data.error || (data.up_to_date ? "The installed version is up to date." : ""),
-            Boolean(data.error)
-        );
+    if (data.error) {
+        const reasons = Array.isArray(data.compatibility_reasons) ? data.compatibility_reasons : [];
+        finishAction([data.error, ...reasons].join("\n"), true);
+        return;
+    }
+    if (data.cancelled || data.up_to_date) {
+        finishAction(data.up_to_date ? "The installed version is up to date." : "");
         return;
     }
     const permitted = ["Tested in Ladyflock", "Manifest compatible · Untested"].includes(data.compatibility_status);
@@ -424,7 +472,9 @@ function staged(data, update) {
     }
     announce(notice, "");
     const content = element("div");
-    content.append(element("p", data.name + " · Version " + data.version));
+    const packageName = element("p");
+    packageName.append(extensionIdentity(data, data.name + " · Version " + data.version));
+    content.append(packageName);
     content.append(element("p", "Verified signature · " + data.compatibility_status, "description"));
     if (update) group(content, "New permissions in this update", data.newly_requested_permissions);
     group(content, "Required permissions", data.permissions);
@@ -469,7 +519,9 @@ const completionMessages = {
 
 document.addEventListener("WebUIMessage", event => {
     const { name, data } = event.detail;
-    if (name === "installedExtensions") {
+    if (name === "extensionIcon") {
+        receivedIcon(data);
+    } else if (name === "installedExtensions") {
         if (!Array.isArray(data.extensions)) {
             installed.replaceChildren(
                 element("p", data.error || "The extension manager is unavailable.", "description")

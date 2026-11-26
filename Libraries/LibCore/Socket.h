@@ -69,7 +69,7 @@ public:
 
     // FIXME: This will need to be updated when IPv6 socket arrives. Perhaps a
     //        base class for all address types is appropriate.
-    static ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> resolve_host(ByteString const&, SocketType, AddressFamily = AddressFamily::Unspecified);
+    static ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> resolve_host(ByteString const&, SocketType, AddressFamily = AddressFamily::Unspecified, Optional<ByteString>* canonical_name = nullptr);
 
     // Whether this host has a route to the IPv6 internet, from an address that can reach it.
     static bool is_ipv6_globally_reachable();

@@ -718,6 +718,20 @@ Optional<Gfx::ShareableBitmap> ConnectionFromUI::extension_icon(URL::URL const& 
     return {};
 }
 
+void ConnectionFromUI::populate_extension_menu_icons(Vector<WebView::ExtensionMenuItem>& items, WebView::Extensions::ExtensionManager& manager)
+{
+    for (auto& item : items) {
+        auto extension = manager.extension_by_id(item.extension_id);
+        if (!extension.has_value())
+            continue;
+        auto path = extension->manifest.package_icon_path();
+        if (!path.has_value())
+            continue;
+        if (auto url = manager.package_page_url(*extension, *path); url.has_value())
+            item.icon = extension_icon(*url, extension->manifest.version(), manager);
+    }
+}
+
 void ConnectionFromUI::send_extension_state(View& view)
 {
     auto* manager = extension_manager_for_tab(&view);
@@ -736,17 +750,25 @@ void ConnectionFromUI::send_extension_state(View& view)
         Optional<URL::URL> sidebar_url;
         if (sidebar.is_open && sidebar.panel_url.has_value())
             sidebar_url = manager->package_page_url(*ext, *sidebar.panel_url);
-        Optional<Gfx::ShareableBitmap> icon;
-        auto icon_path = ext->manifest.action().has_value() ? action.icon_path : sidebar.icon_path.value_or_lazy_evaluated_optional([&] { return action.icon_path; });
-        if (icon_path.has_value()) {
-            if (auto url = manager->package_page_url(*ext, *icon_path); url.has_value())
-                icon = extension_icon(*url, ext->manifest.version(), *manager);
+        auto resolve_icon = [&](Optional<String> const& path) -> Optional<Gfx::ShareableBitmap> {
+            if (path.has_value()) {
+                if (auto url = manager->package_page_url(*ext, *path); url.has_value())
+                    return extension_icon(*url, ext->manifest.version(), *manager);
+            }
+            return {};
+        };
+        auto const& config = ext->manifest.action();
+        auto icon_path = config.has_value() ? action.icon_path : sidebar.icon_path.value_or_lazy_evaluated_optional([&] { return action.icon_path; });
+        auto icon = resolve_icon(icon_path);
+        Optional<Gfx::ShareableBitmap> light_icon;
+        Optional<Gfx::ShareableBitmap> dark_icon;
+        if (config.has_value() && action.use_manifest_icon) {
+            light_icon = resolve_icon(config->light_icon);
+            dark_icon = resolve_icon(config->dark_icon);
         }
         Optional<Gfx::ShareableBitmap> sidebar_icon;
-        if (sidebar_url.has_value() && sidebar.icon_path.has_value()) {
-            if (auto url = manager->package_page_url(*ext, *sidebar.icon_path); url.has_value())
-                sidebar_icon = extension_icon(*url, ext->manifest.version(), *manager);
-        }
+        if (sidebar_url.has_value())
+            sidebar_icon = resolve_icon(sidebar.icon_path.value_or_lazy_evaluated_optional([&] { return ext->manifest.package_icon_path(); }));
         items.append({
             .id = ext->extension_id,
             .name = ext->manifest.name(),
@@ -754,6 +776,8 @@ void ConnectionFromUI::send_extension_state(View& view)
             .badge = action.badge_text,
             .badge_color = action.badge_background_color,
             .icon = move(icon),
+            .light_icon = move(light_icon),
+            .dark_icon = move(dark_icon),
             .has_action = ext->manifest.action().has_value(),
             .enabled = action.enabled,
             .pinned = action.pinned,
@@ -1438,6 +1462,12 @@ void ConnectionFromUI::view_download_url(u64 view_id, URL::URL url, bool prompt_
 {
     if (auto* view = find_view(view_id))
         view->download_url(url, prompt_for_path ? WebView::ViewImplementation::PromptForPath::Yes : WebView::ViewImplementation::PromptForPath::No, image_mime_type);
+}
+
+void ConnectionFromUI::view_activate_extension_menu_item(u64 view_id, u64 serial, u64 token)
+{
+    if (auto* view = find_view(view_id))
+        view->activate_extension_menu_item(serial, token);
 }
 
 void ConnectionFromUI::view_inspect_context_menu_element(u64 view_id)

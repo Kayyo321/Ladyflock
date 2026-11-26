@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Random.h>
 #include <LibURL/Site.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/BlobURLStore.h>
@@ -17,6 +18,13 @@
 #include <LibWebView/WebUI.h>
 
 namespace WebView {
+
+String const& CanonicalDocument::extension_document_id() const
+{
+    if (!m_extension_document_id.has_value())
+        m_extension_document_id = generate_random_uuid();
+    return *m_extension_document_id;
+}
 
 NonnullRefPtr<CanonicalDocument> CanonicalDocument::create(Web::HTML::CrossProcessId id, URL::URL creation_url, URL::Origin origin, NonnullRefPtr<CanonicalBrowsingContext> browsing_context, NonnullRefPtr<CanonicalWindow> relevant_global_object, Web::HTML::SandboxingFlagSet active_sandboxing_flag_set, IsInitialAboutBlank is_initial_about_blank)
 {

@@ -52,13 +52,20 @@ static String extract_localized_string(JsonValue const& value)
     return {};
 }
 
-static bool is_amo_url(URL::URL const& url, bool package)
+enum class CatalogResource { Metadata,
+    Package,
+    Icon };
+
+static bool is_amo_url(URL::URL const& url, CatalogResource resource)
 {
     if (url.scheme() != "https"sv || url.port().has_value() || url.includes_credentials() || url.fragment().has_value())
         return false;
     auto path = url.serialize_path();
-    if (!package)
+    if (resource == CatalogResource::Metadata)
         return url.serialized_host() == "addons.mozilla.org"sv && path.starts_with("/api/v5/addons/"sv);
+    if (resource == CatalogResource::Icon)
+        return (url.serialized_host() == "addons.mozilla.org"sv || url.serialized_host() == "addons.cdn.mozilla.net"sv)
+            && path.starts_with("/user-media/addon_icons/"sv) && path.ends_with(".png"sv);
     if (url.serialized_host() == "addons.mozilla.org"sv)
         return path.starts_with("/firefox/downloads/file/"sv) && path.ends_with(".xpi"sv);
     return url.serialized_host() == "addons.cdn.mozilla.net"sv && path.ends_with(".xpi"sv);
@@ -81,6 +88,11 @@ static CatalogEntry parse_entry(JsonObject const& obj)
     }
     if (auto authors = obj.get_array("authors"sv); authors.has_value() && !authors->is_empty() && authors->at(0).is_object())
         entry.author = authors->at(0).as_object().get_string("name"sv).value_or({});
+
+    if (auto icon = obj.get_string("icon_url"sv); icon.has_value() && icon->bytes().size() <= 2048) {
+        if (auto url = URL::Parser::basic_parse(*icon); url.has_value() && is_amo_url(*url, CatalogResource::Icon))
+            entry.icon_url = url->serialize();
+    }
 
     if (auto current_version = obj.get_object("current_version"sv); current_version.has_value()) {
         entry.version = current_version->get_string("version"sv).value_or({});
@@ -137,9 +149,9 @@ ErrorOr<Vector<CatalogEntry>> CatalogClient::parse_search_response(StringView js
     return TRY(parse_search(json_text)).entries;
 }
 
-static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_remaining, Function<void(ErrorOr<ByteBuffer>)> callback)
+static void fetch_amo(URL::URL const& url, CatalogResource resource, unsigned redirects_remaining, Function<void(ErrorOr<ByteBuffer>)> callback)
 {
-    if (!is_amo_url(url, package)) {
+    if (!is_amo_url(url, resource)) {
         callback(Error::from_string_literal("Mozilla Add-ons URL is outside the allowed provider"));
         return;
     }
@@ -152,8 +164,10 @@ static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_rema
 
     auto headers = HTTP::HeaderList::create();
     headers->set({ "User-Agent"sv, "Ladyflock"sv });
-    if (!package)
-        headers->set({ "Accept"sv, "application/json"sv });
+    auto accepted_type = resource == CatalogResource::Metadata ? "application/json"sv : resource == CatalogResource::Icon ? "image/png"sv
+                                                                                                                          : ""sv;
+    if (!accepted_type.is_empty())
+        headers->set({ "Accept"sv, accepted_type });
     auto request = client_or_error.value()->start_request("GET"sv, url, {}, *headers, {}, HTTP::CacheMode::NoStore, HTTP::Cookie::IncludeCredentials::No);
     if (!request) {
         callback(Error::from_string_literal("Failed to start AMO catalog request"));
@@ -166,11 +180,13 @@ static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_rema
         Optional<ByteString> location;
         Function<void(ErrorOr<ByteBuffer>)> callback;
         bool exceeds_limit { false };
-        bool is_json { false };
+        bool type_matches { false };
     };
     auto state = make_ref_counted<CatalogFetchState>();
     state->callback = move(callback);
-    auto append_data = [state, limit = package ? 64 * MiB : 2 * MiB](ReadonlyBytes bytes) {
+    auto limit = resource == CatalogResource::Package ? 64 * MiB : resource == CatalogResource::Icon ? 1 * MiB
+                                                                                                     : 2 * MiB;
+    auto append_data = [state, limit](ReadonlyBytes bytes) {
         // The response pipe can become readable before the headers IPC message.
         if (state->status_code.value_or(200u) != 200u || state->exceeds_limit)
             return;
@@ -179,18 +195,18 @@ static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_rema
     };
 
     request->set_unbuffered_request_callbacks(
-        [state](NonnullRefPtr<HTTP::HeaderList> headers, Optional<u32> status_code, Optional<String> const&, Requests::CacheState) {
+        [state, accepted_type](NonnullRefPtr<HTTP::HeaderList> headers, Optional<u32> status_code, Optional<String> const&, Requests::CacheState) {
             state->status_code = status_code;
             state->location = headers->get("Location"sv);
             if (auto content_type = headers->get("Content-Type"sv); content_type.has_value()) {
                 auto type = content_type->view();
                 type = type.substring_view(0, type.find(';').value_or(type.length())).trim_whitespace();
-                state->is_json = type.equals_ignoring_ascii_case("application/json"sv);
+                state->type_matches = type.equals_ignoring_ascii_case(accepted_type);
             }
         },
         [append_data](Requests::ResponseData data) { append_data(data.bytes()); },
         [](Core::ImmutableBytes) { },
-        [state, request, url, package, redirects_remaining](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> network_error) {
+        [state, request, url, resource, redirects_remaining](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> network_error) {
             if (network_error.has_value()) {
                 state->callback(Error::from_string_literal("Mozilla Add-ons request failed"));
                 return;
@@ -199,7 +215,7 @@ static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_rema
             if (status >= 300 && status < 400 && redirects_remaining > 0 && state->location.has_value()) {
                 auto redirect = URL::Parser::basic_parse(*state->location, url);
                 if (redirect.has_value()) {
-                    fetch_amo(*redirect, package, redirects_remaining - 1, move(state->callback));
+                    fetch_amo(*redirect, resource, redirects_remaining - 1, move(state->callback));
                     return;
                 }
             }
@@ -207,8 +223,8 @@ static void fetch_amo(URL::URL const& url, bool package, unsigned redirects_rema
                 state->callback(Error::from_string_literal("Mozilla Add-ons did not return the requested resource"));
                 return;
             }
-            if (!package && !state->is_json) {
-                state->callback(Error::from_string_literal("Mozilla Add-ons did not return a JSON response"));
+            if (resource != CatalogResource::Package && !state->type_matches) {
+                state->callback(Error::from_string_literal("Mozilla Add-ons returned an unexpected content type"));
                 return;
             }
             if (state->exceeds_limit) {
@@ -240,7 +256,7 @@ void CatalogClient::search(StringView query, u32 page, Function<void(ErrorOr<Cat
     auto url = URL::Parser::basic_parse(ByteString::formatted("{}/addons/search/?q={}&app=firefox&type=extension&page={}", m_api_base_url, url_encode_query(query), page));
     if (!url.has_value())
         return callback(Error::from_string_literal("Invalid Mozilla Add-ons API URL"));
-    fetch_amo(*url, false, 2, [callback = move(callback)](ErrorOr<ByteBuffer> response) {
+    fetch_amo(*url, CatalogResource::Metadata, 2, [callback = move(callback)](ErrorOr<ByteBuffer> response) {
         if (response.is_error())
             return callback(response.release_error());
         callback(parse_search(StringView { response.value().bytes() }));
@@ -257,7 +273,7 @@ void CatalogClient::lookup(StringView addon_id, Function<void(ErrorOr<CatalogEnt
     if (!url.has_value())
         return callback(Error::from_string_literal("Invalid Mozilla Add-ons API URL"));
     auto id = MUST(String::from_utf8(addon_id));
-    fetch_amo(*url, false, 2, [callback = move(callback), id = move(id)](ErrorOr<ByteBuffer> response) {
+    fetch_amo(*url, CatalogResource::Metadata, 2, [callback = move(callback), id = move(id)](ErrorOr<ByteBuffer> response) {
         if (response.is_error())
             return callback(response.release_error());
         auto parsed = JsonValue::from_string(StringView { response.value().bytes() });
@@ -280,7 +296,15 @@ void CatalogClient::download(CatalogEntry const& entry, Function<void(ErrorOr<By
     auto url = URL::Parser::basic_parse(*entry.download_url);
     if (!url.has_value())
         return callback(Error::from_string_literal("Invalid Mozilla Add-ons download URL"));
-    fetch_amo(*url, true, 3, move(callback));
+    fetch_amo(*url, CatalogResource::Package, 3, move(callback));
+}
+
+void CatalogClient::download_icon(StringView icon_url, Function<void(ErrorOr<ByteBuffer>)> callback) const
+{
+    auto url = URL::Parser::basic_parse(icon_url);
+    if ((!m_enable_public_amo_catalog && !m_offline_fixture_json.has_value()) || !url.has_value())
+        return callback(Error::from_string_literal("Mozilla Add-ons icon is unavailable"));
+    fetch_amo(*url, CatalogResource::Icon, 2, move(callback));
 }
 
 }

@@ -11,6 +11,7 @@
 #include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
 #include <LibCore/Directory.h>
+#include <LibCore/EventLoop.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibDatabase/Database.h>
@@ -20,6 +21,7 @@
 #include <LibWebCommon/Extensions/SupportMatrix.h>
 #include <LibWebView/Extensions/CatalogClient.h>
 #include <LibWebView/Extensions/ExtensionActionController.h>
+#include <LibWebView/Extensions/ExtensionAlarms.h>
 #include <LibWebView/Extensions/ExtensionSidebarController.h>
 #include <LibWebView/Extensions/ExtensionStorage.h>
 #include <LibWebView/Extensions/RevocationList.h>
@@ -87,14 +89,14 @@ TEST_CASE(extension_storage_sqlite_persistence_and_changes)
         JsonObject initial;
         initial.set("theme"sv, "dark"_string);
         initial.set("count"sv, 1);
-        auto changes = storage->set("ext@a"sv, initial);
+        auto changes = TRY_OR_FAIL(storage->set("ext@a"sv, initial));
         EXPECT(changes.has("theme"sv));
         EXPECT_EQ(changes.get_object("theme"sv)->get_string("newValue"sv), Optional<String> { "dark"_string });
         EXPECT(!changes.get_object("theme"sv)->has("oldValue"sv));
 
         JsonObject update;
         update.set("count"sv, 2);
-        auto update_changes = storage->set("ext@a"sv, update);
+        auto update_changes = TRY_OR_FAIL(storage->set("ext@a"sv, update));
         EXPECT_EQ(update_changes.get_object("count"sv)->get_i64("oldValue"sv), Optional<i64> { 1 });
         EXPECT_EQ(update_changes.get_object("count"sv)->get_i64("newValue"sv), Optional<i64> { 2 });
 
@@ -125,14 +127,118 @@ TEST_CASE(extension_storage_sqlite_persistence_and_changes)
     }
 }
 
+TEST_CASE(extension_storage_quota_is_atomic_and_uses_utf8_bytes)
+{
+    auto storage = ExtensionStorage::create();
+    JsonObject initial;
+    initial.set("é"sv, "é"_string);
+    initial.set("large"sv, TRY_OR_FAIL(String::repeated('a', ExtensionStorage::default_quota_bytes - 64)));
+    (void)TRY_OR_FAIL(storage->set("ordinary@extension"sv, initial));
+    (void)TRY_OR_FAIL(storage->set("unlimited@extension"sv, initial));
+    EXPECT_EQ(TRY_OR_FAIL(storage->get_bytes_in_use("ordinary@extension"sv, JsonValue { "é"_string })), 6u);
+
+    JsonArray keys;
+    keys.must_append("é"_string);
+    keys.must_append("é"_string);
+    keys.must_append("missing"_string);
+    EXPECT_EQ(TRY_OR_FAIL(storage->get_bytes_in_use("ordinary@extension"sv, JsonValue { move(keys) })), 6u);
+
+    JsonObject extra;
+    extra.set("é"sv, "replacement"_string);
+    extra.set("extra"sv, TRY_OR_FAIL(String::repeated('b', 100)));
+    EXPECT(storage->set("ordinary@extension"sv, extra).is_error());
+    EXPECT_EQ(storage->get("ordinary@extension"sv, JsonValue { "é"_string }).get_string("é"sv), Optional<String> { "é"_string });
+    EXPECT(!storage->get("ordinary@extension"sv, JsonValue { "extra"_string }).has("extra"sv));
+
+    (void)TRY_OR_FAIL(storage->set("unlimited@extension"sv, extra, ExtensionStorage::Quota::Unlimited));
+    auto oversized = TRY_OR_FAIL(storage->get_bytes_in_use("unlimited@extension"sv));
+    EXPECT(oversized > ExtensionStorage::default_quota_bytes);
+
+    JsonObject shrink;
+    shrink.set("é"sv, "é"_string);
+    (void)TRY_OR_FAIL(storage->set("unlimited@extension"sv, shrink));
+    EXPECT(TRY_OR_FAIL(storage->get_bytes_in_use("unlimited@extension"sv)) < oversized);
+}
+
+TEST_CASE(extension_alarms_are_scoped_and_clearable)
+{
+    Core::EventLoop loop;
+    Vector<JsonObject> fired;
+    ExtensionAlarms alarms([&](String const& extension_id, JsonObject alarm) {
+        EXPECT_EQ(extension_id, "first@extension"_string);
+        fired.append(move(alarm));
+    });
+
+    JsonObject future;
+    future.set("delayInMinutes"sv, 60);
+    JsonArray unnamed;
+    unnamed.must_append(future);
+    (void)TRY_OR_FAIL(alarms.invoke("second@extension"_string, "create"sv, unnamed));
+    EXPECT_EQ(TRY_OR_FAIL(alarms.invoke("second@extension"_string, "get"sv, {}))->as_object().get_string("name"sv), Optional<String> { ""_string });
+    EXPECT(!TRY_OR_FAIL(alarms.invoke("first@extension"_string, "get"sv, {})).has_value());
+
+    JsonArray name;
+    name.must_append("named"_string);
+    JsonArray named;
+    named.must_append("named"_string);
+    named.must_append(future);
+    (void)TRY_OR_FAIL(alarms.invoke("first@extension"_string, "create"sv, named));
+
+    JsonObject immediate;
+    immediate.set("delayInMinutes"sv, 0);
+    JsonArray replacement;
+    replacement.must_append("named"_string);
+    replacement.must_append(immediate);
+    (void)TRY_OR_FAIL(alarms.invoke("first@extension"_string, "create"sv, replacement));
+    EXPECT_EQ(TRY_OR_FAIL(alarms.invoke("first@extension"_string, "getAll"sv, {}))->as_array().size(), 1u);
+
+    bool timed_out = false;
+    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(2), [&] { timed_out = true; });
+    timeout->start();
+    loop.spin_until([&] { return timed_out || !fired.is_empty(); });
+    EXPECT(!timed_out);
+    EXPECT_EQ(fired.size(), 1u);
+    if (!fired.is_empty()) {
+        EXPECT_EQ(fired.first().get_string("name"sv), Optional<String> { "named"_string });
+        EXPECT(fired.first().get_i64("scheduledTime"sv).has_value());
+        EXPECT(!fired.first().has("periodInMinutes"sv));
+    }
+    EXPECT(!TRY_OR_FAIL(alarms.invoke("first@extension"_string, "get"sv, name)).has_value());
+    EXPECT(TRY_OR_FAIL(alarms.invoke("second@extension"_string, "clear"sv, {}))->as_bool());
+    EXPECT(!TRY_OR_FAIL(alarms.invoke("second@extension"_string, "clear"sv, {}))->as_bool());
+
+    JsonObject periodic;
+    periodic.set("periodInMinutes"sv, 0.0005);
+    JsonArray repeat;
+    repeat.must_append("named"_string);
+    repeat.must_append(move(periodic));
+    auto prior_size = fired.size();
+    (void)TRY_OR_FAIL(alarms.invoke("first@extension"_string, "create"sv, repeat));
+    timeout->restart();
+    loop.spin_until([&] { return timed_out || fired.size() >= prior_size + 2; });
+    EXPECT(!timed_out);
+    if (!timed_out) {
+        EXPECT(fired.at(prior_size).has("periodInMinutes"sv));
+        EXPECT(fired.at(prior_size + 1).get_i64("scheduledTime"sv).value_or(0) > fired.at(prior_size).get_i64("scheduledTime"sv).value_or(0));
+    }
+    EXPECT(!TRY_OR_FAIL(alarms.invoke("first@extension"_string, "clearAll"sv, {})).has_value());
+    EXPECT(TRY_OR_FAIL(alarms.invoke("first@extension"_string, "getAll"sv, {}))->as_array().is_empty());
+}
+
 TEST_CASE(extension_action_controller_precedence_and_invoke)
 {
     auto manifest = Web::Extensions::ExtensionManifest::parse(R"({
         "manifest_version": 2,
         "name": "Action Test",
+        "icons": { "48": "logo.svg" },
         "version": "1.0",
         "browser_action": {
             "default_title": "Global Title",
+            "default_icon": "plain.png",
+            "theme_icons": [
+                { "size": 16, "light": "small-light.png", "dark": "small-dark.png" },
+                { "size": 48, "light": "light.png", "dark": "dark.png" }
+            ],
             "default_popup": "popup.html"
         }
     })"sv)
@@ -142,6 +248,19 @@ TEST_CASE(extension_action_controller_precedence_and_invoke)
     ctrl.configure_from_manifest("act@test"_string, manifest);
     EXPECT_EQ(ctrl.get_title("act@test"sv), "Global Title"_string);
     EXPECT_EQ(ctrl.get_popup("act@test"sv, 10, 1), Optional<String> { "popup.html"_string });
+
+    EXPECT_EQ(manifest.package_icon_path(), Optional<String> { "plain.png"_string });
+    EXPECT_EQ(manifest.action()->light_icon, Optional<String> { "light.png"_string });
+    EXPECT_EQ(manifest.action()->dark_icon, Optional<String> { "dark.png"_string });
+    ctrl.set_icon("act@test"_string, "custom.png"_string, 10, 1);
+    EXPECT(!ctrl.resolved_state("act@test"sv, 10, 1).use_manifest_icon);
+    EXPECT(ctrl.resolved_state("act@test"sv, 11, 1).use_manifest_icon);
+    ctrl.set_icon("act@test"_string, {}, 10, 1);
+    EXPECT(ctrl.resolved_state("act@test"sv, 10, 1).use_manifest_icon);
+    ctrl.set_icon("act@test"_string, "global.png"_string);
+    EXPECT(!ctrl.resolved_state("act@test"sv, 10, 1).use_manifest_icon);
+    ctrl.set_icon("act@test"_string, {});
+    EXPECT_EQ(ctrl.resolved_state("act@test"sv, 10, 1).icon_path, Optional<String> { "plain.png"_string });
 
     // Window overrides global; tab overrides window.
     ctrl.set_title("act@test"_string, "Window Title"_string, {}, 1);
@@ -259,7 +378,7 @@ TEST_CASE(catalog_client_gating_and_offline_amo_fixture)
                     "file": {
                         "url": "https://example.invalid/bad.xpi",
                         "hash": "sha256:0000",
-                        "permissions": ["webNavigation"]
+                        "permissions": ["bookmarks"]
                     }
                 }
             }

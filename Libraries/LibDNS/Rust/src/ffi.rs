@@ -298,6 +298,8 @@ pub unsafe extern "C" fn dns_resolver_lookup(
     type_count: usize,
     validate_dnssec_locally: bool,
     query_aaaa_without_global_ipv6: bool,
+    bypass_cache: bool,
+    cache_only: bool,
     now_ms: u64,
 ) -> u64 {
     abort_on_panic(|| {
@@ -311,6 +313,8 @@ pub unsafe extern "C" fn dns_resolver_lookup(
         let options = LookupOptions {
             validate_dnssec_locally,
             query_aaaa_without_global_ipv6,
+            bypass_cache,
+            cache_only,
         };
         let now = resolver.instant(now_ms);
         resolver.resolver.lookup(&name, Class(class), &types, options, now)
@@ -375,6 +379,7 @@ pub unsafe extern "C" fn dns_resolver_on_system_resolved(
     succeeded: bool,
     addresses: *const FfiAddress,
     count: usize,
+    canonical_name: FfiBytes,
     now_ms: u64,
 ) {
     abort_on_panic(|| {
@@ -389,7 +394,10 @@ pub unsafe extern "C" fn dns_resolver_on_system_resolved(
             Err("The system resolver failed".to_owned())
         };
         let now = resolver.instant(now_ms);
-        resolver.resolver.on_system_resolved(request, result, now);
+        let canonical_name = unsafe { canonical_name.to_string_lossy() };
+        resolver
+            .resolver
+            .on_system_resolved(request, result, &canonical_name, now);
     });
 }
 

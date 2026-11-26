@@ -36,6 +36,7 @@ struct WEBVIEW_API StagedInstall {
     String sha256_hex;
     String manifest_json;
     ByteString staged_directory;
+    Optional<String> icon_path;
     Web::Extensions::ExtensionPermissionSummary permissions;
     Web::Extensions::CompatibilityStatus compatibility_status { Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested };
     Vector<String> compatibility_reasons;

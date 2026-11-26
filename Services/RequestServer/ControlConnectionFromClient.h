@@ -68,7 +68,7 @@ private:
     virtual void retrieved_http_cookie(int client_id, u64 request_id, RequestType request_type, u64 cookie_request_id, String cookie) override;
     virtual void stored_response_cookies_and_hsts_policy(int client_id, u64 request_id, u64 store_request_id) override;
 
-    virtual void resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses) override;
+    virtual void resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses, Optional<ByteString> canonical_name) override;
 
     virtual void set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts) override;
     virtual void did_check_web_request_before_request(u64 check_id, bool cancel) override;

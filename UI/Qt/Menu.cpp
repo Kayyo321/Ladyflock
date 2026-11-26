@@ -49,8 +49,12 @@ public:
 
     virtual void on_text_changed(Action& action) override
     {
-        if (m_action)
-            m_action->setText(qstring_from_ak_string(action.text()));
+        if (!m_action)
+            return;
+        auto text = qstring_from_ak_string(action.text());
+        if (action.id() == ActionID::ExtensionPageMenuItem)
+            text = text.simplified().replace('&', "&&");
+        m_action->setText(text);
     }
 
     virtual void on_tooltip_changed(Action& action) override
@@ -371,11 +375,12 @@ static Action::Observer& initialize_native_control(Action& action, QAction& qact
         if (include_action_icon == IncludeActionIcon::Yes)
             qaction.setIcon(create_translate_icon(palette, action.engaged()));
         break;
+    case ActionID::ExtensionPageMenuItem:
     case ActionID::BookmarkItem:
         if (auto icon = action.png_icon(); icon.has_value())
             qaction.setIcon(favicon_from_png(icon->bytes(), MENU_ICON_SIZE));
         else
-            qaction.setIcon(create_chrome_icon(ChromeIcon::Globe, palette));
+            qaction.setIcon(create_chrome_icon(action.id() == ActionID::ExtensionPageMenuItem ? ChromeIcon::Extensions : ChromeIcon::Globe, palette));
         break;
     default:
         break;

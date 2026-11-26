@@ -48,7 +48,7 @@ void RequestClient::die()
 
     auto host_lookups = move(m_host_lookups);
     for (auto& [id, on_resolved] : host_lookups)
-        on_resolved({});
+        on_resolved({}, {});
 
     for (auto& [id, websocket] : websockets) {
         auto ready_state = websocket->ready_state();
@@ -152,15 +152,26 @@ void RequestClient::ensure_connection(URL::URL const& url, RequestServer::CacheL
 
 void RequestClient::resolve_host(ByteString const& host, Function<void(Vector<ByteString>)> on_resolved)
 {
-    auto lookup_id = m_next_host_lookup_id++;
-    m_host_lookups.set(lookup_id, move(on_resolved));
-    async_resolve_host(lookup_id, host);
+    resolve_host(host, HostLookupFlag::None, [on_resolved = move(on_resolved)](auto addresses, auto) {
+        on_resolved(move(addresses));
+    });
 }
 
-void RequestClient::host_resolved(u64 lookup_id, Vector<ByteString> addresses)
+void RequestClient::resolve_host(ByteString const& host, HostLookupFlag flags, Function<void(Vector<ByteString>, Optional<ByteString>)> on_resolved)
+{
+    if (!is_open() || m_host_lookups.size() >= 256) {
+        on_resolved({}, {});
+        return;
+    }
+    auto lookup_id = m_next_host_lookup_id++;
+    m_host_lookups.set(lookup_id, move(on_resolved));
+    async_resolve_host(lookup_id, host, to_underlying(flags));
+}
+
+void RequestClient::host_resolved(u64 lookup_id, Vector<ByteString> addresses, Optional<ByteString> canonical_name)
 {
     if (auto on_resolved = m_host_lookups.take(lookup_id); on_resolved.has_value())
-        (*on_resolved)(move(addresses));
+        (*on_resolved)(move(addresses), move(canonical_name));
 }
 
 void RequestClient::request_requires_network(u64 request_id)

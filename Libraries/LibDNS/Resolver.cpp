@@ -181,7 +181,7 @@ NonnullRefPtr<Resolver::ResultPromise> Resolver::lookup(ByteString name, Message
         types.append(to_underlying(type));
 
     auto promise = ResultPromise::construct();
-    auto id = FFI::dns_resolver_lookup(m_resolver, ffi_bytes(name), to_underlying(class_), types.data(), types.size(), options.validate_dnssec_locally, options.query_aaaa_without_global_ipv6, now_ms());
+    auto id = FFI::dns_resolver_lookup(m_resolver, ffi_bytes(name), to_underlying(class_), types.data(), types.size(), options.validate_dnssec_locally, options.query_aaaa_without_global_ipv6, options.bypass_cache, options.cache_only, now_ms());
     m_lookups.set(id, promise);
 
     // A lookup the resolver can answer at once, from the cache or because the name needs no lookup, settles before
@@ -423,11 +423,13 @@ void Resolver::resolve_with_system_resolver(u64 request, ByteString name, bool i
         if (!m_system_requests.remove(request))
             return;
         Vector<FFI::FfiAddress> addresses;
+        ByteString canonical_name;
         if (!resolution.is_error()) {
-            for (auto const& address : resolution.value())
+            for (auto const& address : resolution.value().addresses)
                 addresses.append(ffi_address(address));
+            canonical_name = resolution.value().canonical_name.value_or({});
         }
-        FFI::dns_resolver_on_system_resolved(m_resolver, request, !resolution.is_error(), addresses.data(), addresses.size(), now_ms());
+        FFI::dns_resolver_on_system_resolved(m_resolver, request, !resolution.is_error(), addresses.data(), addresses.size(), ffi_bytes(canonical_name), now_ms());
         run_actions();
     };
 
@@ -446,12 +448,16 @@ void Resolver::resolve_with_system_resolver(u64 request, ByteString name, bool i
         // A lookup given up on while it waited in the queue is not made, so the worker goes on to the next one.
         if (abandoned->value.load())
             return;
-        auto resolution = Core::Socket::resolve_host(name, Core::Socket::SocketType::Stream, family);
+        Optional<ByteString> canonical_name;
+        auto resolution = Core::Socket::resolve_host(name, Core::Socket::SocketType::Stream, family, &canonical_name);
         auto origin_event_loop = event_loop->take();
         if (!origin_event_loop.is_alive())
             return;
-        origin_event_loop->deferred_invoke([answer = move(answer), resolution = move(resolution)] mutable {
-            answer(move(resolution));
+        origin_event_loop->deferred_invoke([answer = move(answer), resolution = move(resolution), canonical_name = move(canonical_name)] mutable {
+            if (resolution.is_error())
+                answer(resolution.release_error());
+            else
+                answer(ResolvedSystemHost { resolution.release_value(), move(canonical_name) });
         });
     });
 }

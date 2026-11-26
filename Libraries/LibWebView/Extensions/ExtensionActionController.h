@@ -70,6 +70,7 @@ private:
 
     struct ExtensionEntry {
         Web::Extensions::ExtensionActionState global_state;
+        Optional<String> default_icon;
         HashMap<u64, StateOverride> window_overrides;
         HashMap<u64, StateOverride> tab_overrides;
     };

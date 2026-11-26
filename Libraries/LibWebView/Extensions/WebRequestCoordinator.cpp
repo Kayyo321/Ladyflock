@@ -72,6 +72,14 @@ void WebRequestCoordinator::rebuild_snapshot()
         m_on_snapshot_changed(m_snapshot);
 }
 
+void WebRequestCoordinator::set_has_declarative_rules(bool enabled)
+{
+    if (m_snapshot.has_declarative_rules == enabled)
+        return;
+    m_snapshot.has_declarative_rules = enabled;
+    rebuild_snapshot();
+}
+
 static bool entry_matches(Web::Extensions::WebRequestWatchEntry const& entry, URL::URL const& url, Web::Extensions::WebRequestResourceType type)
 {
     if (!entry.types.is_empty() && !entry.types.contains_slow(type))
@@ -143,6 +151,12 @@ void WebRequestCoordinator::evaluate_before_request(
     auto initiator_url = details.document_url.has_value() ? details.document_url : details.initiator_origin;
     if (initiator_url.has_value())
         initiator = URL::Parser::basic_parse(*initiator_url);
+
+    auto request_origin = details.initiator_origin.has_value() ? URL::Parser::basic_parse(*details.initiator_origin) : initiator;
+    if (m_snapshot.has_declarative_rules && m_declarative_block && m_declarative_block(details, request_origin)) {
+        callback({ .cancel = true });
+        return;
+    }
 
     for (auto const& entry : m_entries) {
         if (!entry_matches(entry, details.url, details.type))

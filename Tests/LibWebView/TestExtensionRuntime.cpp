@@ -31,6 +31,7 @@
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/RequestServerManager.h>
+#include <LibWebView/Settings.h>
 #include <LibWebView/Utilities.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -569,6 +570,219 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
     EXPECT_EQ(server.hits("/blocked-nav"sv), 0u);
 }
 
+TEST_CASE(web_navigation_reports_active_child_frames_and_document_replacement)
+{
+    Test::HeadlessTestEnvironment env { "TestWebNavigation"sv, 45 };
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv, "--allow-popups"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](ByteString const& path) -> HttpResponseSpec {
+        if (path == "/parent"sv)
+            return { .body = "<!doctype html><iframe src='/child'></iframe>" };
+        return { .body = "<!doctype html><title>Child</title><script>onmessage = () => window.open('/popup')</script>" };
+    });
+    auto dir = LexicalPath::join(env.directory(), "navigation-ext"sv).string();
+    write_ext_file(dir, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Frame fixture", "version": "1",
+        "permissions": ["webNavigation", "storage"],
+        "background": { "scripts": ["bg.js"] }
+    })"sv);
+    write_ext_file(dir, "bg.js"sv, R"(
+        browser.webNavigation.onCreatedNavigationTarget.addListener(d => browser.storage.local.set({target:d}));
+        browser.webNavigation.onErrorOccurred.addListener(d => browser.storage.local.set({failed:d}));
+        const timeline = new Map();
+        for (const event of ["onBeforeNavigate", "onCommitted", "onDOMContentLoaded"]) {
+            browser.webNavigation[event].addListener(details => {
+                const events = timeline.get(details.url) || [];
+                events.push(event);
+                timeline.set(details.url, events);
+            }, {url: [{schemes: ["http"], hostEquals: "127.0.0.1", pathEquals: "/child"}, {pathEquals: "/second"}]});
+        }
+        browser.webNavigation.onHistoryStateUpdated.addListener(d => browser.storage.local.set({history: d.url}));
+        browser.webNavigation.onReferenceFragmentUpdated.addListener(d => browser.storage.local.set({fragment: d.url}));
+        browser.webNavigation.onCompleted.addListener(async details => {
+            const path = new URL(details.url).pathname;
+            if (path !== "/child" && path !== "/second") return;
+            const frames = await browser.webNavigation.getAllFrames({tabId: details.tabId});
+            const child = await browser.webNavigation.getFrame({tabId: details.tabId, frameId: details.frameId});
+            const byDocument = await browser.webNavigation.getFrame({documentId: child.documentId});
+            const parent = frames.find(frame => frame.frameId === 0);
+            if (parent && byDocument.url === details.url && parent.parentFrameId === -1 && child.parentFrameId === 0 &&
+                !child.errorOccurred && child.documentId === details.documentId && child.parentDocumentId === parent.documentId)
+                await browser.storage.local.set({[path]: child, [path + "Events"]: timeline.get(details.url).join(",")});
+        });
+        browser.storage.local.set({ready: true});
+    )"sv);
+    auto& manager = *app->default_session().extension_manager;
+    auto const& ext = TRY_OR_FAIL(manager.load_unpacked(dir, true));
+    auto state = [&] { return manager.storage().get(ext.extension_id, JsonValue {}); };
+    Core::EventLoop::current().spin_until([&] { return state().get_bool("ready"sv) == true; });
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    auto parent_url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/parent", server.port()))).release_value();
+    view->load_from_browser_ui(parent_url);
+    Core::EventLoop::current().spin_until([&] { return state().has("/child"sv); });
+    auto first = state();
+    view->run_javascript("document.querySelector('iframe').src = '/second';"_string);
+    Core::EventLoop::current().spin_until([&] { return state().has("/second"sv); });
+    auto second = state();
+    EXPECT_EQ(second.get_string("/childEvents"sv), Optional<String> { "onBeforeNavigate,onCommitted,onDOMContentLoaded"_string });
+    EXPECT_EQ(second.get_string("/secondEvents"sv), Optional<String> { "onBeforeNavigate,onCommitted,onDOMContentLoaded"_string });
+    view->run_javascript("history.pushState({}, '', '/pushed'); location.hash = 'fragment';"_string);
+    Core::EventLoop::current().spin_until([&] { return state().has("fragment"sv); });
+    auto updated = state();
+    auto history_url = updated.get_string("history"sv);
+    auto fragment_url = updated.get_string("fragment"sv);
+    EXPECT(history_url.has_value() && history_url->bytes_as_string_view().ends_with("/pushed"sv));
+    EXPECT(fragment_url.has_value() && fragment_url->bytes_as_string_view().ends_with("/pushed#fragment"sv));
+    auto first_frame = first.get_object("/child"sv);
+    auto second_frame = second.get_object("/second"sv);
+    VERIFY(first_frame.has_value() && second_frame.has_value());
+    EXPECT(first_frame->get_i64("frameId"sv).value_or(0) > 0);
+    EXPECT_EQ(first_frame->get_i64("frameId"sv), second_frame->get_i64("frameId"sv));
+    EXPECT_NE(first_frame->get_string("documentId"sv), second_frame->get_string("documentId"sv));
+    EXPECT_EQ(first_frame->get_string("parentDocumentId"sv), second_frame->get_string("parentDocumentId"sv));
+    view->run_javascript(R"JS(frames[0].postMessage("open","*"))JS"_string);
+    Core::EventLoop::current().spin_until([&] { return state().has("target"sv); });
+    auto stored = state();
+    auto target = stored.get_object("target"sv);
+    VERIFY(target.has_value());
+    EXPECT_EQ(target->get_u64("sourceTabId"sv), view->view_id());
+    EXPECT_EQ(target->get_i64("sourceFrameId"sv), second_frame->get_i64("frameId"sv));
+    EXPECT(target->get_u64("tabId"sv) != view->view_id());
+    auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/popup", server.port()))).release_value();
+    EXPECT_EQ(target->get_string("url"sv), url.serialize());
+    view->load_from_browser_ui(URL::Parser::basic_parse("http://127.0.0.1:1/error"sv).release_value());
+    Core::EventLoop::current().spin_until([&] { return state().has("failed"sv); });
+
+}
+
+TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
+{
+    Test::HeadlessTestEnvironment env { "TestExtDeclarativeRules"sv, 90 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    auto wait_for = [&](StringView operation, Function<bool()> condition) {
+        bool expired = false;
+        auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(5), [&] { expired = true; });
+        timer->start();
+        Core::EventLoop::current().spin_until([&] { return expired || condition(); });
+        timer->stop();
+        EXPECT(!expired);
+        if (expired)
+            warnln("Timed out waiting for {}", operation);
+        return !expired;
+    };
+    LoopbackHttpServer server([](ByteString const& path) -> HttpResponseSpec {
+        if (path == "/dnr-redirect"sv)
+            return { .status_code = 302, .status_text = "Found", .extra_headers = "Location: /dnr-block-redirect-target\r\n", .body = "redirect" };
+        if (path.starts_with("/dnr-block"sv))
+            return { .extra_headers = "Cache-Control: public, max-age=3600\r\n", .body = "<!DOCTYPE html><title>Block target</title>" };
+        return { .body = "<!DOCTYPE html><title>Test document</title>" };
+    });
+    auto url = [&](StringView path) {
+        return URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}{}", server.port(), path))).release_value();
+    };
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    size_t loads = 0;
+    Utf16String title;
+    view->on_load_finish = [&](auto const&) { ++loads; };
+    view->on_title_change = [&](auto const& value) { title = value; };
+    if (!wait_for("the initial tab"sv, [&] { return loads > 0; }))
+        return;
+    auto navigate = [&](URL::URL const& target) {
+        auto expected_load = loads + 1;
+        view->load_from_browser_ui(target);
+        return wait_for(target.serialize(), [&] { return loads >= expected_load; });
+    };
+    if (!navigate(url("/dnr-block-cached"sv)))
+        return;
+    EXPECT_EQ(server.hits("/dnr-block-cached"sv), 1u);
+
+    auto rules_directory = LexicalPath::join(env.directory(), "dnr-extension"sv).string();
+    write_ext_file(rules_directory, "manifest.json"sv, R"({
+        "manifest_version": 3,
+        "name": "Declarative Request Test",
+        "version": "1.0",
+        "permissions": ["declarativeNetRequest", "storage"],
+        "background": { "scripts": ["background.js"] },
+        "declarative_net_request": { "rule_resources": [
+            { "id": "blocking", "enabled": true, "path": "rules.json" }
+        ] }
+    })"sv);
+    write_ext_file(rules_directory, "rules.json"sv, R"([
+        { "id": 1, "action": { "type": "block" },
+          "condition": { "urlFilter": "/dnr-block", "resourceTypes": ["main_frame", "xmlhttprequest"], "requestDomains": ["127.0.0.1"] } },
+        { "id": 2, "action": { "type": "allow" },
+          "condition": { "urlFilter": "/dnr-block-exception", "resourceTypes": ["xmlhttprequest"] } }
+    ])"sv);
+    write_ext_file(rules_directory, "background.js"sv, R"(
+        browser.runtime.onInstalled.addListener(async () => {
+            const api = browser.declarativeNetRequest;
+            try {
+                await api.updateEnabledRulesets({ disableRulesetIds: ['blocking'], enableRulesetIds: ['missing'] });
+                await browser.storage.local.set({ rulesets: 'unexpected success' });
+            } catch {
+                const enabled = await api.getEnabledRulesets();
+                await api.updateEnabledRulesets({ disableRulesetIds: ['blocking'] });
+                const disabled = await api.getEnabledRulesets();
+                await api.updateEnabledRulesets({ enableRulesetIds: ['blocking'] });
+                await browser.storage.local.set({ rulesets: [enabled, disabled, await api.getEnabledRulesets()] });
+            }
+        });
+    )"sv);
+    auto& manager = *app->default_session().extension_manager;
+    auto extension = TRY_OR_FAIL(manager.load_unpacked(rules_directory));
+    auto read_ruleset_result = [&]() -> Optional<String> {
+        auto values = manager.storage().get(extension.extension_id, JsonValue("rulesets"_string));
+        if (auto result = values.get("rulesets"sv); result.has_value())
+            return result->serialized();
+        return {};
+    };
+    if (!wait_for("the background ruleset API result"sv, [&] { return read_ruleset_result().has_value(); }))
+        return;
+    EXPECT_EQ(*read_ruleset_result(), R"([["blocking"],[],["blocking"]])"sv);
+
+    title = {};
+    if (!navigate(url("/dnr-block-cached"sv)))
+        return;
+    EXPECT_NE(title, "Block target"_utf16);
+    EXPECT_EQ(server.hits("/dnr-block-cached"sv), 1u);
+    if (!navigate(url("/dnr-block-new"sv)))
+        return;
+    EXPECT_EQ(server.hits("/dnr-block-new"sv), 0u);
+    if (!navigate(url("/dnr-test"sv)))
+        return;
+    auto fetch_and_wait = [&](StringView path, StringView wanted) {
+        view->run_javascript(MUST(String::formatted("fetch('{}').then(() => document.title = 'allowed:{}', () => document.title = 'blocked:{}')", path, path, path)));
+        auto allowed = Utf16String::formatted("allowed:{}", path);
+        auto blocked = Utf16String::formatted("blocked:{}", path);
+        if (!wait_for(path, [&] { return title == allowed || title == blocked; }))
+            return;
+        EXPECT_EQ(title, wanted == "allowed"sv ? allowed : blocked);
+    };
+    fetch_and_wait("/dnr-block-fetch"sv, "blocked"sv);
+    EXPECT_EQ(server.hits("/dnr-block-fetch"sv), 0u);
+    fetch_and_wait("/dnr-redirect"sv, "blocked"sv);
+    EXPECT_EQ(server.hits("/dnr-redirect"sv), 1u);
+    EXPECT_EQ(server.hits("/dnr-block-redirect-target"sv), 0u);
+    fetch_and_wait("/dnr-block-exception"sv, "allowed"sv);
+    EXPECT_EQ(server.hits("/dnr-block-exception"sv), 1u);
+
+    auto private_view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::Yes);
+    size_t private_loads = 0;
+    private_view->on_load_finish = [&](auto const&) { ++private_loads; };
+    if (!wait_for("the initial private tab"sv, [&] { return private_loads > 0; }))
+        return;
+    private_view->load_from_browser_ui(url("/dnr-block-private"sv));
+    if (!wait_for("the private navigation"sv, [&] { return private_loads > 1; }))
+        return;
+    EXPECT_EQ(server.hits("/dnr-block-private"sv), 1u);
+
+    TRY_OR_FAIL(manager.set_extension_enabled(extension.extension_id, false));
+    fetch_and_wait("/dnr-block-after-disable"sv, "allowed"sv);
+    EXPECT_EQ(server.hits("/dnr-block-after-disable"sv), 1u);
+}
+
 TEST_CASE(real_signed_amo_toolbar_action)
 {
     auto public_xpi = Core::Environment::get("LADYFLOCK_TEST_AMO_SCROLL_TO_TOP_XPI"sv);
@@ -604,4 +818,367 @@ TEST_CASE(real_signed_amo_toolbar_action)
     EXPECT_EQ(manager.invoke_action_for_tab(extension.extension_id, view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
     Core::EventLoop::current().spin_until([&] { return scrolled; });
     EXPECT(scrolled);
+}
+
+TEST_CASE(alarms_wake_event_pages_and_unlimited_storage_exceeds_default_quota)
+{
+    Test::HeadlessTestEnvironment env { "TestExtAlarms"sv, 30 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    auto extension_dir = LexicalPath::join(env.directory(), "alarms-extension"sv).string();
+    write_ext_file(extension_dir, "manifest.json"sv, R"({
+        "manifest_version": 2,
+        "name": "Alarm Fixture",
+        "version": "1.0",
+        "browser_specific_settings": { "gecko": { "id": "alarms@ladyflock.example" } },
+        "permissions": ["alarms", "storage", "unlimitedStorage"],
+        "background": { "scripts": ["bg.js"], "persistent": false },
+        "browser_action": { "default_title": "Schedule alarm" }
+    })"sv);
+    write_ext_file(extension_dir, "bg.js"sv, R"(
+        browser.alarms.onAlarm.addListener(async alarm => {
+            const cleared = (await browser.alarms.get(alarm.name)) === undefined;
+            await browser.storage.local.set({ alarmFired: cleared ? alarm.name : 'still scheduled' });
+        });
+        browser.browserAction.onClicked.addListener(async () => {
+            try {
+                await browser.storage.local.set({ overflow: 'b'.repeat(100) });
+                await browser.alarms.create('wakeup', { delayInMinutes: 0.015 });
+                const alarm = await browser.alarms.get('wakeup');
+                const all = await browser.alarms.getAll();
+                await browser.storage.local.set({ status: alarm.name === 'wakeup' && all.length === 1 ? 'ready' : 'invalid' });
+            } catch (error) {
+                await browser.storage.local.set({ status: String(error) });
+            }
+        });
+    )"sv);
+
+    auto& manager = *app->default_session().extension_manager;
+    manager.set_event_page_idle_timeout_ms(100);
+    auto extension_id = TRY_OR_FAIL(manager.load_unpacked(extension_dir, true)).extension_id;
+    JsonObject near_quota;
+    near_quota.set("seed"sv, TRY_OR_FAIL(String::repeated('a', WebView::Extensions::ExtensionStorage::default_quota_bytes - 32)));
+    (void)TRY_OR_FAIL(manager.storage().set(extension_id, near_quota));
+
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    bool loaded = false;
+    view->on_load_finish = [&](auto const&) { loaded = true; };
+    bool timed_out = false;
+    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(8), [&] { timed_out = true; });
+    timeout->start();
+    auto& loop = Core::EventLoop::current();
+    loop.spin_until([&] { return timed_out || loaded; });
+    EXPECT(loaded);
+    if (!loaded)
+        return;
+
+    EXPECT_EQ(manager.invoke_action_for_tab(extension_id, view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
+    Optional<String> status;
+    loop.spin_until([&] {
+        auto value = manager.storage().get(extension_id, JsonValue { "status"_string });
+        status = value.get_string("status"sv).map([](String const& text) { return String { text }; });
+        return timed_out || status.has_value();
+    });
+    EXPECT_EQ(status, Optional<String> { "ready"_string });
+    if (status != "ready"_string)
+        return;
+
+    EXPECT(TRY_OR_FAIL(manager.storage().get_bytes_in_use(extension_id)) > WebView::Extensions::ExtensionStorage::default_quota_bytes);
+    loop.spin_until([&] { return timed_out || !manager.is_background_running(extension_id); });
+    auto fired = [&] { return manager.storage().get(extension_id, JsonValue { "alarmFired"_string }); };
+    EXPECT(!fired().has("alarmFired"sv));
+    loop.spin_until([&] { return timed_out || fired().has("alarmFired"sv); });
+    EXPECT(!timed_out);
+    EXPECT_EQ(fired().get_string("alarmFired"sv), Optional<String> { "wakeup"_string });
+}
+
+TEST_CASE(extension_privacy_controls_prefetch_only_in_its_profile)
+{
+    Test::HeadlessTestEnvironment env { "TestExtensionPrivacy"sv, 30 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    auto& manager = *app->default_session().extension_manager;
+
+    LoopbackHttpServer server([](ByteString const& path) -> HttpResponseSpec {
+        if (path != "/privacy"sv)
+            return { .content_type = "text/plain"sv, .body = "ok"sv };
+        return { .body = R"(<!doctype html><title>Privacy test</title>
+            <script>
+                function issuePrefetch(path) {
+                    const link = document.createElement('link');
+                    link.rel = 'prefetch';
+                    link.href = path;
+                    link.onload = () => { document.title = path; };
+                    document.head.append(link);
+                }
+            </script>)" };
+    });
+    auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/privacy", server.port()))).release_value();
+    auto normal_view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    auto private_view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::Yes);
+    bool normal_loaded = false;
+    bool private_loaded = false;
+    Utf16String normal_title;
+    Utf16String private_title;
+    normal_view->on_load_finish = [&](auto const& loaded_url) { normal_loaded |= loaded_url == url; };
+    private_view->on_load_finish = [&](auto const& loaded_url) { private_loaded |= loaded_url == url; };
+    normal_view->on_title_change = [&](auto const& title) { normal_title = title; };
+    private_view->on_title_change = [&](auto const& title) { private_title = title; };
+    normal_view->load_from_browser_ui(url);
+    private_view->load_from_browser_ui(url);
+
+    auto& loop = Core::EventLoop::current();
+    auto wait_for = [&](Function<bool()> condition) {
+        bool timed_out = false;
+        auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(5), [&] { timed_out = true; });
+        timeout->start();
+        loop.spin_until([&] { return timed_out || condition(); });
+        EXPECT(!timed_out);
+        return !timed_out;
+    };
+    if (!wait_for([&] { return normal_loaded && private_loaded; }))
+        return;
+    normal_view->run_javascript("issuePrefetch('/normal-before')"_string);
+    if (!wait_for([&] { return normal_title == "/normal-before"_utf16; }))
+        return;
+    EXPECT_EQ(server.hits("/normal-before"sv), 1u);
+
+    auto extension_dir = LexicalPath::join(env.directory(), "privacy-extension"sv).string();
+    write_ext_file(extension_dir, "manifest.json"sv, R"({
+        "manifest_version": 2,
+        "name": "Privacy Fixture",
+        "version": "1.0",
+        "browser_specific_settings": { "gecko": { "id": "privacy@ladyflock.example" } },
+        "permissions": ["privacy", "storage"],
+        "background": { "scripts": ["bg.js"] },
+        "browser_action": { "default_title": "Disable prefetch" }
+    })"sv);
+    write_ext_file(extension_dir, "bg.js"sv, R"(
+        const prediction = browser.privacy.network.networkPredictionEnabled;
+        const gpc = browser.privacy.network.globalPrivacyControl;
+        prediction.onChange.addListener(({ value }) => browser.storage.local.set({ predictionEvent: value }));
+        gpc.onChange.addListener(({ value }) => browser.storage.local.set({ gpcEvent: value }));
+        browser.browserAction.onClicked.addListener(async () => {
+            try {
+                const changed = await prediction.set({ value: false, scope: 'regular' });
+                const regular = await prediction.get({});
+                const privateSetting = await prediction.get({ incognito: true });
+                const auditing = browser.privacy.websites.hyperlinkAuditingEnabled;
+                const unsupported = await auditing.set({ value: true });
+                const currentAuditing = await auditing.get({});
+                const currentGpc = await gpc.get({});
+                const correct = changed && regular.value === false
+                    && regular.levelOfControl === 'controlled_by_this_extension'
+                    && privateSetting.value === true && privateSetting.levelOfControl === 'not_controllable'
+                    && unsupported === false && currentAuditing.value === false
+                    && currentGpc.levelOfControl === 'not_controllable';
+                await browser.storage.local.set({ status: correct ? 'applied' : 'incorrect' });
+            } catch (error) {
+                await browser.storage.local.set({ status: String(error) });
+            }
+        });
+    )"sv);
+    auto extension_id = TRY_OR_FAIL(manager.load_unpacked(extension_dir, true)).extension_id;
+    EXPECT_EQ(manager.invoke_action_for_tab(extension_id, normal_view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
+    auto storage_value = [&](String const& key) {
+        return manager.storage().get(extension_id, JsonValue { key });
+    };
+    if (!wait_for([&] { return storage_value("status"_string).has("status"sv); }))
+        return;
+    EXPECT_EQ(storage_value("status"_string).get_string("status"sv), Optional<String> { "applied"_string });
+    EXPECT(!manager.network_prediction_enabled());
+    if (!wait_for([&] { return storage_value("predictionEvent"_string).get_bool("predictionEvent"sv) == false; }))
+        return;
+    WebView::Application::settings().set_global_privacy_control(WebView::GlobalPrivacyControl::Yes);
+    if (!wait_for([&] { return storage_value("gpcEvent"_string).get_bool("gpcEvent"sv) == true; }))
+        return;
+
+    normal_view->run_javascript("issuePrefetch('/normal-blocked'); fetch('/barrier').then(() => { document.title = 'barrier'; });"_string);
+    private_view->run_javascript("issuePrefetch('/private-allowed')"_string);
+    if (!wait_for([&] { return normal_title == "barrier"_utf16 && private_title == "/private-allowed"_utf16; }))
+        return;
+    EXPECT_EQ(server.hits("/normal-blocked"sv), 0u);
+    EXPECT_EQ(server.hits("/private-allowed"sv), 1u);
+
+    TRY_OR_FAIL(manager.set_extension_enabled(extension_id, false));
+    EXPECT(manager.network_prediction_enabled());
+    normal_view->run_javascript("issuePrefetch('/normal-after')"_string);
+    if (wait_for([&] { return normal_title == "/normal-after"_utf16; })) {
+        EXPECT_EQ(server.hits("/normal-after"sv), 1u);
+        EXPECT_EQ(server.hits("/normal-blocked"sv), 0u);
+    }
+}
+
+TEST_CASE(extension_page_menu_registration_click_and_revocation)
+{
+    Test::HeadlessTestEnvironment env { "TestExtensionPageMenus"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](auto const& path) -> HttpResponseSpec {
+        if (path == "/frame"sv)
+            return { .body = "<!DOCTYPE html><title>Menu frame</title>" };
+        return { .body = "<!DOCTYPE html><title>Page menu test</title><iframe src='/frame'></iframe>" };
+    });
+    auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/menu", server.port()))).release_value();
+    auto ext_dir = LexicalPath::join(env.directory(), "menu-extension"sv).string();
+    write_ext_file(ext_dir, "manifest.json"sv, R"({
+        "manifest_version": 2,
+        "name": "Example extension",
+        "version": "1.0",
+        "browser_specific_settings": {"gecko": {"id": "menus@example.test"}},
+        "permissions": ["menus", "storage"],
+        "background": {"scripts": ["menu.js"]}
+    })"sv);
+    write_ext_file(ext_dir, "menu.js"sv, R"(
+        let clicks = 0;
+        browser.menus.onClicked.addListener(async (info, tab) => {
+            await browser.storage.local.set({click: info.menuItemId, count: ++clicks, url: info.pageUrl, tab: tab.id,
+                link: info.linkUrl || "", frame: info.frameId, frameUrl: info.frameUrl || ""});
+            await browser.menus.remove(info.menuItemId);
+        });
+        browser.menus.create({id: "unsupported", title: "Tab", contexts: ["tab"]}, () => {
+            browser.storage.local.set({unsupported: !!browser.runtime.lastError});
+        });
+        browser.menus.create({id: "subscribe", title: "Subscribe", contexts: ["link"],
+            targetUrlPatterns: ["abp:*", "https://subscribe.example.test/*"]});
+        browser.menus.create({id: "resource", title: "Resource", contexts: ["audio", "frame", "image", "video"],
+            documentUrlPatterns: ["http://*/*", "https://*/*"]});
+        browser.menus.create({id: "different-site", title: "Elsewhere", contexts: ["all"],
+            documentUrlPatterns: ["https://elsewhere.example.test/*"]});
+        const id = browser.menus.create({id: "inspect", title: "First title", contexts: ["all"]}, async () => {
+            if (browser.runtime.lastError) return;
+            await browser.menus.update("inspect", {title: "Updated title"});
+            await browser.storage.local.set({created: id === "inspect"});
+        });
+    )"sv);
+    auto& manager = *app->default_session().extension_manager;
+    auto extension = TRY_OR_FAIL(manager.load_unpacked(ext_dir));
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    view->load_from_browser_ui(url);
+    auto wait_until = [](auto condition) {
+        bool expired = false;
+        auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(8), [&] { expired = true; });
+        timer->start();
+        Core::EventLoop::current().spin_until([&] { return expired || condition(); });
+        timer->stop();
+        EXPECT(!expired);
+        return !expired;
+    };
+    auto storage = [&] { return manager.storage().get(extension.extension_id, JsonValue {}); };
+    if (!wait_until([&] {
+            return view->has_traversable() && view->url() == url && storage().get_bool("created"sv) == true;
+        }))
+        return;
+    EXPECT_EQ(storage().get_bool("unsupported"sv), true);
+    auto document = view->traversable().active_document().id();
+    auto menu = manager.page_menu_items(*view, document);
+    EXPECT_EQ(menu.size(), 1u);
+    if (menu.size() != 1)
+        return;
+    EXPECT_EQ(menu[0].title, "Example extension — Updated title"sv);
+    EXPECT(manager.page_menu_items(*view, {}).is_empty());
+    manager.activate_page_menu_item(*view, {}, menu[0].token);
+    WebView::ExtensionMenuTarget link;
+    link.link_url = URL::Parser::basic_parse("https://elsewhere.example.test/ignored"sv);
+    EXPECT_EQ(manager.page_menu_items(*view, document, link).size(), 1u);
+    link.link_url = URL::Parser::basic_parse("abp:subscribe?location=test"sv);
+    EXPECT_EQ(manager.page_menu_items(*view, document, link).size(), 2u);
+    WebView::ExtensionMenuTarget image;
+    image.media_type = "image"_string;
+    EXPECT_EQ(manager.page_menu_items(*view, document, image).size(), 2u);
+    Web::HTML::CrossProcessId subdocument {};
+    if (!wait_until([&] {
+            view->traversable().for_each_in_inclusive_subtree([&](WebView::CanonicalNavigable const& frame) {
+                if (frame.parent() && frame.active_document_url().serialize().bytes_as_string_view().ends_with("/frame"sv))
+                    subdocument = frame.active_document().id();
+                return IterationDecision::Continue;
+            });
+            return subdocument != Web::HTML::CrossProcessId {};
+        }))
+        return;
+    EXPECT_EQ(manager.page_menu_items(*view, subdocument, link).size(), 3u);
+    manager.activate_page_menu_item(*view, subdocument, menu[0].token, link);
+    if (!wait_until([&] { return manager.page_menu_items(*view, document).is_empty(); }))
+        return;
+    auto result = storage();
+    EXPECT_EQ(result.get_string("click"sv).value_or(String {}), "inspect"sv);
+    EXPECT_EQ(result.get_string("url"sv).value_or(String {}), url.serialize());
+    EXPECT_EQ(result.get_u64("tab"sv), view->view_id());
+    EXPECT_EQ(result.get_u64("count"sv), 1u);
+    EXPECT(result.get_i64("frame"sv).value_or(0) > 0);
+    auto frame_url = result.get_string("frameUrl"sv);
+    EXPECT(frame_url.has_value() && frame_url->bytes_as_string_view().ends_with("/frame"sv));
+    EXPECT_EQ(result.get_string("link"sv).value_or(String {}), link.link_url->serialize());
+}
+
+TEST_CASE(extension_dns_resolves_localhost_with_permission)
+{
+    Test::HeadlessTestEnvironment env { "TestExtensionDNS"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "dns-allowed"sv).string();
+    write_ext_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "DNS fixture", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "dns@example.test"}},
+        "permissions": ["dns", "storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_ext_file(directory, "background.js"sv, R"(
+        async function rejects(host, flags) {
+            try { await browser.dns.resolve(host, flags); return false; } catch { return true; }
+        }
+        (async () => {
+            const v4 = await browser.dns.resolve("localhost", ["disable_ipv6", "canonical_name"]);
+            const v6 = await browser.dns.resolve("localhost", ["disable_ipv4"]);
+            const invalid = await rejects("bad/name", []);
+            const missing = await rejects("uncached-dns-fixture.invalid", ["offline"]);
+            const disabled = await rejects("localhost", ["disable_ipv4", "disable_ipv6"]);
+            await browser.storage.local.set({v4, v6, invalid, missing, disabled, done: true});
+        })().catch(error => browser.storage.local.set({error: String(error), done: true}));
+    )"sv);
+    auto allowed = TRY_OR_FAIL(manager.load_unpacked(directory));
+
+    auto denied_directory = LexicalPath::join(env.directory(), "dns-denied"sv).string();
+    write_ext_file(denied_directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Unprivileged DNS fixture", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "no-dns@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_ext_file(denied_directory, "background.js"sv, R"(
+        browser.storage.local.set({hidden: typeof browser.dns === "undefined", done: true});
+    )"sv);
+    auto denied = TRY_OR_FAIL(manager.load_unpacked(denied_directory));
+
+    bool expired = false;
+    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [&] { expired = true; });
+    timer->start();
+    Core::EventLoop::current().spin_until([&] {
+        return expired || (manager.storage().get(allowed.extension_id, "done"_string).has("done"sv) && manager.storage().get(denied.extension_id, "done"_string).has("done"sv));
+    });
+    timer->stop();
+    EXPECT(!expired);
+    auto result = manager.storage().get(allowed.extension_id, JsonValue {});
+    if (auto error = result.get_string("error"sv); error.has_value())
+        warnln("dns.resolve: {}", *error);
+    EXPECT(result.get_bool("invalid"sv) == true);
+    EXPECT(result.get_bool("missing"sv) == true);
+    EXPECT(result.get_bool("disabled"sv) == true);
+    auto v4 = result.get_object("v4"sv);
+    auto v6 = result.get_object("v6"sv);
+    EXPECT(v4.has_value() && v6.has_value());
+    if (!v4.has_value() || !v6.has_value())
+        return;
+    EXPECT_EQ(v4->get_string("canonicalName"sv).value_or(String {}), "localhost"sv);
+    EXPECT(v4->get_bool("isTRR"sv) == false);
+    EXPECT(!v6->has("canonicalName"sv));
+    auto addresses4 = v4->get_array("addresses"sv);
+    auto addresses6 = v6->get_array("addresses"sv);
+    EXPECT(addresses4.has_value() && addresses6.has_value());
+    if (addresses4.has_value() && addresses6.has_value()) {
+        EXPECT_EQ(addresses4->serialized(), R"(["127.0.0.1"])"sv);
+        EXPECT_EQ(addresses6->serialized(), R"(["::1"])"sv);
+    }
+    EXPECT(manager.storage().get(denied.extension_id, "hidden"_string).get_bool("hidden"sv) == true);
 }

@@ -8,6 +8,8 @@
 #include <UI/Qt/Menu.h>
 
 #include <QAction>
+#include <QBuffer>
+#include <QImage>
 #include <QMenu>
 #include <QPushButton>
 
@@ -50,4 +52,28 @@ TEST_CASE(zoom_percentage_updates_while_menu_is_open)
 
     confirmed_zoom->set_visible(false);
     EXPECT(percentage->text() == QStringLiteral("100%"));
+}
+
+TEST_CASE(extension_page_menu_shows_artwork_or_fallback_and_preserves_literal_labels)
+{
+    QMenu menu;
+    bool clicked = false;
+    auto action = Ladybird::Action::create("Example — Tools & settings"sv, Ladybird::ActionID::ExtensionPageMenuItem, [&] { clicked = true; });
+    auto* fallback = Ladybird::create_application_action(menu, *action);
+    EXPECT(!fallback->icon().isNull());
+    EXPECT(fallback->text() == QStringLiteral("Example — Tools && settings"));
+    fallback->trigger();
+    EXPECT(clicked);
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::red);
+    QByteArray png;
+    QBuffer buffer(&png);
+    VERIFY(buffer.open(QIODevice::WriteOnly));
+    VERIFY(image.save(&buffer, "PNG"));
+    action->set_png_icon(MUST(ByteBuffer::copy(png.constData(), png.size())));
+    auto* with_artwork = Ladybird::create_application_action(menu, *action);
+    auto icon = with_artwork->icon().pixmap(16, 16).toImage();
+    EXPECT(!icon.isNull());
+    EXPECT(icon.pixelColor(icon.width() / 2, icon.height() / 2) == QColor(Qt::red));
 }

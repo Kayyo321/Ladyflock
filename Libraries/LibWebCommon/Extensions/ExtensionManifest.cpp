@@ -114,13 +114,21 @@ ErrorOr<HashMap<String, String>> ExtensionManifest::parse_icon_map(JsonValue con
 
 Optional<String> ExtensionManifest::preferred_icon(HashMap<String, String> const& icons)
 {
-    if (auto path = icons.get("default"sv); path.has_value())
+    // The isolated image decoder accepts bitmap formats. Some packages declare SVG for their
+    // listing and provide alternate bitmap artwork for actions or sidebars.
+    auto decodable_path = [](String const& path) {
+        auto name = path.bytes_as_string_view();
+        return !name.ends_with(".svg"sv, CaseSensitivity::CaseInsensitive) && !name.ends_with(".svgz"sv, CaseSensitivity::CaseInsensitive);
+    };
+    if (auto path = icons.get("default"sv); path.has_value() && decodable_path(*path))
         return *path;
     // Choose the smallest icon at least as large as the HiDPI toolbar glyph, otherwise the largest available.
     constexpr unsigned desired_size = 48;
     Optional<unsigned> best_size;
     Optional<String> best_path;
     for (auto const& [key, path] : icons) {
+        if (!decodable_path(path))
+            continue;
         auto size = key.bytes_as_string_view().to_number<unsigned>();
         if (!size.has_value() || !*size)
             continue;
@@ -130,6 +138,19 @@ Optional<String> ExtensionManifest::preferred_icon(HashMap<String, String> const
         }
     }
     return best_path;
+}
+
+Optional<String> ExtensionManifest::package_icon_path() const
+{
+    if (auto icon = preferred_icon(icons()); icon.has_value())
+        return icon;
+    if (action().has_value()) {
+        if (auto icon = preferred_icon(action()->default_icons); icon.has_value())
+            return icon;
+    }
+    if (sidebar_action().has_value())
+        return preferred_icon(sidebar_action()->default_icons);
+    return {};
 }
 
 static ErrorOr<Vector<String>> parse_string_array(JsonArray const& array)
@@ -325,6 +346,28 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
             cfg.default_title = *title;
         if (auto icon = obj.get("default_icon"sv); icon.has_value())
             cfg.default_icons = TRY(parse_icon_map(*icon));
+        if (obj.has("theme_icons"sv)) {
+            auto variants = obj.get_array("theme_icons"sv);
+            if (!variants.has_value())
+                return Error::from_string_literal("theme_icons must be an array");
+            HashMap<String, String> light_icons;
+            HashMap<String, String> dark_icons;
+            for (auto const& variant : variants->values()) {
+                if (!variant.is_object())
+                    return Error::from_string_literal("Invalid theme icon");
+                auto const& entry = variant.as_object();
+                auto size = entry.get_u32("size"sv);
+                auto light = entry.get_string("light"sv);
+                auto dark = entry.get_string("dark"sv);
+                if (!size.has_value() || *size == 0 || !light.has_value() || !dark.has_value())
+                    return Error::from_string_literal("Theme icon requires size, light and dark");
+                auto key = String::number(*size);
+                light_icons.set(key, TRY(normalize_package_relative_path(*light)));
+                dark_icons.set(key, TRY(normalize_package_relative_path(*dark)));
+            }
+            cfg.light_icon = preferred_icon(light_icons);
+            cfg.dark_icon = preferred_icon(dark_icons);
+        }
         return cfg;
     };
     if (auto action_obj = root.get_object("action"sv); action_obj.has_value())

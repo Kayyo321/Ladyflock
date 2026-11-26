@@ -129,6 +129,7 @@ private:
     void show_location_edit(LocationEdit*);
     QToolButton* create_navigation_history_toolbar_button(QWidget& parent, QAction&, int direction);
     void recreate_icons();
+    void update_extension_sidebar_icon();
     void update_chrome_style();
     void update_downloads_popover();
     void position_downloads_popover();

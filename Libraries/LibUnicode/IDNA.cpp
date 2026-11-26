@@ -5,11 +5,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
 #include <LibUnicode/ICU.h>
 #include <LibUnicode/IDNA.h>
 #include <LibUnicode/RustFFI.h>
 
 #include <unicode/idna.h>
+#include <unicode/uspoof.h>
 
 namespace Unicode::IDNA {
 
@@ -73,6 +75,33 @@ ErrorOr<String> to_ascii(Utf16View domain_name, ToAsciiOptions const& options)
         builder.append(static_cast<char>(code_unit));
     }
     return builder.to_string();
+}
+
+String to_display(String const& ascii_domain)
+{
+    if (!ascii_domain.contains("xn--"sv))
+        return ascii_domain;
+
+    UErrorCode status = U_ZERO_ERROR;
+    auto idna = adopt_own_if_nonnull(icu::IDNA::createUTS46Instance(UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ, status));
+    if (!idna || icu_failure(status))
+        return ascii_domain;
+
+    icu::UnicodeString decoded;
+    icu::IDNAInfo info;
+    auto input = Utf16String::from_utf8(ascii_domain);
+    idna->nameToUnicode(icu_string(input), decoded, info, status);
+    if (icu_failure(status) || info.hasErrors())
+        return ascii_domain;
+
+    auto* checker = uspoof_open(&status);
+    if (!checker || icu_failure(status))
+        return ascii_domain;
+    ScopeGuard close_checker = [&] { uspoof_close(checker); };
+    auto issues = uspoof_check(checker, decoded.getBuffer(), decoded.length(), nullptr, &status);
+    if (icu_failure(status) || issues != 0)
+        return ascii_domain;
+    return icu_string_to_utf16_string(decoded).to_utf8();
 }
 
 }

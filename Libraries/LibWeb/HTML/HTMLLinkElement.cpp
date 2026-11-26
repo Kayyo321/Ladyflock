@@ -850,6 +850,9 @@ void HTMLLinkElement::fetch_and_process_linked_modulepreload_resource()
 // https://html.spec.whatwg.org/multipage/links.html#link-type-prefetch:fetch-and-process-the-linked-resource-2
 void HTMLLinkElement::fetch_and_process_linked_prefetch_resource()
 {
+    if (!ResourceLoader::network_prediction_enabled())
+        return;
+
     // 1. If el's href attribute's value is the empty string, then return.
     if (attribute(AttributeNames::href).value_or({}).is_empty())
         return;

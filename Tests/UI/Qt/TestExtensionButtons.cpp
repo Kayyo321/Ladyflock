@@ -4,12 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
+#include <LibGfx/Bitmap.h>
 #include <LibTest/TestCase.h>
+#include <LibWebView/Settings.h>
 #include <QApplication>
 #include <QMenu>
 #include <QToolButton>
 #include <UI/Qt/ExtensionButtons.h>
 #include <UI/Qt/StringUtils.h>
+#include <UI/Qt/Theme.h>
 
 static Hub::ExtensionItem toolbar_item(String id, String title)
 {
@@ -20,6 +24,8 @@ static Hub::ExtensionItem toolbar_item(String id, String title)
         .badge = "12"_string,
         .badge_color = "#207740"_string,
         .icon = {},
+        .light_icon = {},
+        .dark_icon = {},
         .has_action = true,
         .enabled = true,
         .pinned = true,
@@ -75,6 +81,8 @@ TEST_CASE(extensions_menu_keeps_actions_accessible_when_pins_overflow)
     VERIFY(menu);
     auto* submenu = menu->actions().first()->menu();
     VERIFY(submenu);
+    EXPECT(!submenu->icon().isNull());
+    EXPECT(submenu->menuAction()->isIconVisibleInMenu());
     EXPECT_EQ(submenu->title(), QString("Search && save"));
     EXPECT_EQ(submenu->actions().size(), 4);
     String invoked;
@@ -93,5 +101,64 @@ TEST_CASE(extensions_menu_keeps_actions_accessible_when_pins_overflow)
     buttons.on_manage = [&] { managed = true; };
     menu->actions().last()->trigger();
     EXPECT(managed);
+    menu->close();
+}
+
+static Gfx::ShareableBitmap solid_icon(Gfx::Color premultiplied_color)
+{
+    auto bitmap = MUST(Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, { 16, 16 }));
+    for (int y = 0; y < bitmap->height(); ++y) {
+        for (int x = 0; x < bitmap->width(); ++x)
+            bitmap->set_pixel(x, y, premultiplied_color);
+    }
+    return bitmap->to_shareable_bitmap();
+}
+
+TEST_CASE(pinned_and_menu_icons_preserve_translucent_publisher_colors)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(1);
+    auto item = toolbar_item("addon"_string, "Paint"_string);
+    item.icon = solid_icon(Gfx::Color(128, 0, 64, 128));
+    buttons.set_items({ item });
+    buttons.show();
+    buttons.update_icons();
+    auto& pinned = static_cast<QToolButton&>(buttons.anchor_for(item.id));
+    auto color = pinned.icon().pixmap(16, 16).toImage().pixelColor(8, 8);
+    EXPECT_EQ(color.rgba(), qRgba(255, 0, 128, 128));
+    buttons.findChild<QToolButton*>("LadybirdExtensionsButton")->click();
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    VERIFY(menu);
+    EXPECT_EQ(menu->actions().first()->icon().pixmap(16, 16).toImage().pixelColor(8, 8), color);
+    item.icon = solid_icon(Gfx::Color::Blue);
+    buttons.set_items({ item });
+    EXPECT_EQ(menu->actions().first()->icon().pixmap(16, 16).toImage().pixelColor(8, 8), QColor(Qt::blue));
+    menu->close();
+}
+
+TEST_CASE(publisher_theme_icons_follow_the_toolbar_appearance)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(1);
+    auto item = toolbar_item("addon"_string, "Contrast"_string);
+    item.light_icon = solid_icon(Gfx::Color::White);
+    item.dark_icon = solid_icon(Gfx::Color::Black);
+    Ladybird::Theme::set_interface_theme(WebView::ThemePreference::Light);
+    ScopeGuard restore_theme = [] { Ladybird::Theme::set_interface_theme(WebView::ThemePreference::System); };
+    buttons.set_items({ item });
+    auto& pinned = static_cast<QToolButton&>(buttons.anchor_for(item.id));
+    EXPECT_EQ(pinned.icon().pixmap(16, 16).toImage().pixelColor(8, 8), QColor(Qt::black));
+    Ladybird::Theme::set_interface_theme(WebView::ThemePreference::Dark);
+    buttons.update_icons();
+    EXPECT_EQ(pinned.icon().pixmap(16, 16).toImage().pixelColor(8, 8), QColor(Qt::white));
+    buttons.show();
+    buttons.findChild<QToolButton*>("LadybirdExtensionsButton")->click();
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    VERIFY(menu);
+    auto palette = menu->palette();
+    palette.setColor(QPalette::WindowText, Qt::black);
+    menu->setPalette(palette);
+    buttons.update_icons();
+    EXPECT_EQ(menu->actions().first()->icon().pixmap(16, 16).toImage().pixelColor(8, 8), QColor(Qt::black));
     menu->close();
 }

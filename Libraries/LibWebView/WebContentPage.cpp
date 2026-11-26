@@ -3114,6 +3114,25 @@ void WebContentPage::did_fail_download(u64 download_id, String error)
     Application::the().file_downloader().fail_download(download_id, move(error));
 }
 
+void WebContentPage::did_reach_dom_content_loaded(Web::HTML::CrossProcessId navigable_id, Web::HTML::CrossProcessId document_id)
+{
+    auto* manager = client().session().extension_manager.ptr();
+    if (!manager)
+        return;
+    auto frame = traversable().find(navigable_id);
+    if (!frame.has_value())
+        return;
+    auto document = frame->document_with_id(document_id);
+    if (!document || document->host().ptr() != this || document->unload_counter() || document->is_initial_about_blank()
+        || document->creation_url() == URL::about_error() || document->reached_dom_content_loaded())
+        return;
+    document->set_reached_dom_content_loaded();
+    if (&frame->active_document() == document.ptr())
+        manager->dispatch_navigation_event(*frame, "onDOMContentLoaded"sv);
+    else
+        document->defer_dom_content_loaded();
+}
+
 void WebContentPage::did_finish_loading(Web::HTML::CrossProcessId navigable_id, Web::HTML::CrossProcessId document_id)
 {
     // NB: Only the page hosting the active document finishes loading it. A page standing in for a document the
@@ -3201,10 +3220,10 @@ void WebContentPage::did_change_title(Utf16String title)
     }
 }
 
-void WebContentPage::did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
+void WebContentPage::did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
 {
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_page_context_menu({}, *this, target->position, for_input_events_target, move(misspelled_word), text_fragment_generation_id);
+        target->view.did_request_page_context_menu({}, *this, document_id, target->position, for_input_events_target, move(misspelled_word), text_fragment_generation_id);
 }
 
 void WebContentPage::did_request_spelling_menu_action_for_testing(Web::SpellingMenuActionForTesting action, u32 guess_index)
@@ -3227,13 +3246,13 @@ void WebContentPage::did_request_page_translation_for_testing(String target_lang
     view().page_translation().translate_for_testing({}, move(target_language));
 }
 
-void WebContentPage::did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<u64> text_fragment_generation_id)
+void WebContentPage::did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<u64> text_fragment_generation_id)
 {
     auto verified_navigation = navigation_from_page(client(), move(navigation));
     if (!verified_navigation.has_value())
         return;
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_link_context_menu({}, target->position, verified_navigation.release_value(), text_fragment_generation_id);
+        target->view.did_request_link_context_menu({}, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, verified_navigation.release_value(), text_fragment_generation_id);
 }
 
 void WebContentPage::did_generate_text_fragment_url(u64 request_id, Optional<URL::URL> url)
@@ -3241,7 +3260,7 @@ void WebContentPage::did_generate_text_fragment_url(u64 request_id, Optional<URL
     view().did_generate_text_fragment_url(request_id, move(url));
 }
 
-void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
     auto verified_navigation = navigation_from_page(client(), move(navigation));
     if (!verified_navigation.has_value())
@@ -3251,10 +3270,10 @@ void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId lo
     if (link_navigation.has_value())
         verified_link_navigation = navigation_from_page(client(), link_navigation.release_value());
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_image_context_menu({}, target->position, verified_navigation.release_value(), move(bitmap), move(verified_link_navigation), move(image_mime_type));
+        target->view.did_request_image_context_menu({}, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, verified_navigation.release_value(), move(bitmap), move(verified_link_navigation), move(image_mime_type));
 }
 
-void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint content_position, ByteString, unsigned, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, ByteString, unsigned, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
     Optional<Web::HTML::PreparedNavigationDescriptor> verified_navigation;
     if (navigation.has_value()) {
@@ -3263,7 +3282,7 @@ void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId lo
             return;
     }
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_media_context_menu({}, *this, target->position, move(menu), move(verified_navigation));
+        target->view.did_request_media_context_menu({}, *this, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, move(menu), move(verified_navigation));
 }
 
 void WebContentPage::did_get_highlighted_source(String html)
@@ -3475,6 +3494,16 @@ Messages::WebContentClient::DidRequestNewWebViewResponse WebContentPage::did_req
         return { {}, {}, {}, {}, {}, {}, {}, Web::HTML::VisibilityState::Hidden, move(window_handle) };
     }
     traversable.represent_group_everywhere();
+    if (!picture_in_picture_navigable.has_value() && view().is_private() == IsPrivate::No && !view().owner_view_id().has_value()
+        && !Extensions::ExtensionManager::is_extension_background_view(view())) {
+        if (auto* manager = client().session().extension_manager.ptr()) {
+            JsonObject details;
+            details.set("sourceTabId"sv, view().view_id());
+            details.set("sourceFrameId"sv, current_navigable->extension_frame_id());
+            details.set("url"sv, hints.requested_url.value_or(URL::about_blank()).serialize());
+            manager->dispatch_navigation_event(traversable, "onCreatedNavigationTarget"sv, move(details));
+        }
+    }
 
     auto environment_id = traversable.active_document().relevant_global_object().relevant_settings_object().id();
     Optional<u64> browsing_context_group_id = traversable.active_browsing_context().group()->id();

@@ -77,6 +77,7 @@ struct NavigableDestructionHistoryOperationParameters {
 struct FinalizeSameDocumentNavigationHistoryOperationParameters {
     HTML::CrossProcessId navigable_id;
     HTML::SameDocumentNavigationEntry target_entry;
+    bool is_fragment_navigation { false };
     Optional<HTML::SessionHistoryEntryIdentity> entry_to_replace;
     Optional<HTML::SessionHistoryEntryPersistedState> previous_entry_persisted_state;
     HTML::HistoryHandlingBehavior history_handling;

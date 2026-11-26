@@ -4,12 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Base64.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
+#include <AK/LexicalPath.h>
+#include <LibGfx/ImageFormats/PNGWriter.h>
+#include <LibImageDecoderClient/Client.h>
 #include <LibWebCommon/Extensions/SupportMatrix.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
+#include <LibWebView/ImageDecoderManager.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebContentPage.h>
@@ -37,6 +42,8 @@ AddonsUI::~AddonsUI()
         for (auto const& token : m_pending_tokens)
             (void)ext_mgr->cancel_install(token);
     }
+    if (m_icon_decoder_generation.has_value() && Application::is_initialized())
+        Application::image_decoder_manager().process_did_release_decoder(0, *m_icon_decoder_generation);
 }
 
 void AddonsUI::register_interfaces()
@@ -46,6 +53,7 @@ void AddonsUI::register_interfaces()
     register_interface("removeExtension"sv, [this](auto const& data) { remove_extension(data); });
     register_interface("setExtensionSiteAccess"sv, [this](auto const& data) { set_extension_site_access(data); });
     register_interface("searchCatalog"sv, [this](auto const& data) { search_catalog(data); });
+    register_interface("getExtensionIcon"sv, [this](auto const& data) { get_extension_icon(data); });
     register_interface("pickLocalXpi"sv, [this](auto const& data) { pick_local_xpi(data); });
     register_interface("stageCatalogInstall"sv, [this](auto const& data) { stage_catalog_install(data); });
     register_interface("approveInstall"sv, [this](auto const& data) { approve_install(data); });
@@ -152,7 +160,9 @@ void AddonsUI::search_catalog(JsonValue const& data)
     auto page = arguments.get_u32("page"sv).value_or(1);
     auto request_id = arguments.get("request_id"sv).value_or(JsonValue {});
 
-    ext_mgr->catalog_client().search(query, page, [weak = make_weak_ptr<AddonsUI>(), request_id = move(request_id)](ErrorOr<Extensions::CatalogSearchResult> res) {
+    auto generation = ++m_catalog_search_generation;
+    m_catalog_icon_urls.clear();
+    ext_mgr->catalog_client().search(query, page, [weak = make_weak_ptr<AddonsUI>(), request_id = move(request_id), generation](ErrorOr<Extensions::CatalogSearchResult> res) {
         auto self = weak.strong_ref();
         if (!self || !self->has_client())
             return;
@@ -176,6 +186,11 @@ void AddonsUI::search_catalog(JsonValue const& data)
                 o.set("compatibility_reasons"sv, string_array(e.compatibility_reasons.span()));
                 o.set("listing_url"sv, e.listing_url);
                 o.set("author"sv, e.author);
+                if (e.icon_url.has_value() && generation == self->m_catalog_search_generation && self->m_catalog_icon_urls.size() < 50) {
+                    auto key = MUST(String::formatted("catalog:{}:{}", generation, arr.size()));
+                    self->m_catalog_icon_urls.set(key, *e.icon_url);
+                    o.set("icon_key"sv, key);
+                }
                 arr.must_append(move(o));
             }
             out.set("results"sv, move(arr));
@@ -183,6 +198,113 @@ void AddonsUI::search_catalog(JsonValue const& data)
         }
         self->async_send_message("catalogSearchResults"_string, JsonValue(move(out)));
     });
+}
+
+void AddonsUI::get_extension_icon(JsonValue const& data)
+{
+    auto* ext_mgr = extension_manager();
+    if (!ext_mgr || !data.is_object())
+        return;
+    auto key = data.as_object().get_string("icon_key"sv);
+    if (!key.has_value() || key->bytes().size() > 1024 || m_pending_icons.contains(*key))
+        return;
+    if (m_pending_icons.size() >= 50) {
+        send_extension_icon(*key);
+        return;
+    }
+    m_pending_icons.set(*key);
+
+    if (auto url = m_catalog_icon_urls.get(*key); url.has_value()) {
+        ext_mgr->catalog_client().download_icon(*url, [weak = make_weak_ptr<AddonsUI>(), key = *key](ErrorOr<ByteBuffer> image) {
+            if (auto self = weak.strong_ref())
+                self->decode_extension_icon(key, move(image), ByteString("image/png"sv));
+        });
+        return;
+    }
+
+    auto read_icon = [&](ByteString const& directory, StringView path) {
+        Optional<ByteString> mime_type;
+        if (path.ends_with(".svg"sv, CaseSensitivity::CaseInsensitive))
+            mime_type = ByteString("image/svg+xml"sv);
+        decode_extension_icon(*key, Extensions::ExtensionManager::read_package_icon(directory, path), move(mime_type));
+    };
+    auto key_view = key->bytes_as_string_view();
+    if (key_view.starts_with("installed:"sv)) {
+        auto suffix = key_view.substring_view("installed:"sv.length());
+        if (auto separator = suffix.find(':'); separator.has_value()) {
+            auto extension = ext_mgr->extension_by_uuid(suffix.substring_view(0, *separator));
+            if (extension.has_value() && extension->manifest.version() == suffix.substring_view(*separator + 1)) {
+                if (auto path = extension->manifest.package_icon_path(); path.has_value())
+                    return read_icon(extension->install_directory, *path);
+            }
+        }
+    } else if (key_view.starts_with("staged:"sv)) {
+        auto token = key_view.substring_view("staged:"sv.length());
+        if (m_pending_tokens.contains(MUST(String::from_utf8(token)))) {
+            if (auto staged = ext_mgr->installer().staged_install(token); staged.has_value() && staged->icon_path.has_value())
+                return read_icon(LexicalPath::join(staged->staged_directory, "payload"sv).string(), *staged->icon_path);
+        }
+    }
+    send_extension_icon(*key);
+}
+
+void AddonsUI::decode_extension_icon(String key, ErrorOr<ByteBuffer> bytes, Optional<ByteString> mime_type)
+{
+    if (!has_client() || !is_open() || bytes.is_error() || bytes.value().is_empty()) {
+        send_extension_icon(key);
+        return;
+    }
+    if (!m_icon_decoder || !m_icon_decoder->is_open()) {
+        auto& manager = Application::image_decoder_manager();
+        auto handle = manager.connect_new_client(0, &client().session(), {});
+        if (handle.is_error()) {
+            send_extension_icon(key);
+            return;
+        }
+        manager.note_connected_client(0, m_icon_decoder_generation);
+        auto transport = handle.value().create_transport();
+        if (transport.is_error()) {
+            send_extension_icon(key);
+            return;
+        }
+        m_icon_decoder = make_ref_counted<ImageDecoderClient::Client>(transport.release_value());
+    }
+    auto weak = make_weak_ptr<AddonsUI>();
+    (void)m_icon_decoder->decode_image(bytes.value().bytes(), [weak, key](auto& image) -> ErrorOr<void> {
+        auto self = weak.strong_ref();
+        if (!self)
+            return {};
+        if (image.session_id && self->m_icon_decoder)
+            self->m_icon_decoder->stop_animation_decode(image.session_id);
+        if (!image.frames.is_empty()) {
+            auto& bitmap = *image.frames.first().bitmap;
+            if (bitmap.width() <= 512 && bitmap.height() <= 512) {
+                auto png = Gfx::PNGWriter::encode(bitmap);
+                if (!png.is_error() && png.value().size() <= 256 * KiB) {
+                    auto encoded = encode_base64(png.value().bytes());
+                    if (!encoded.is_error()) {
+                        self->send_extension_icon(key, MUST(String::formatted("data:image/png;base64,{}", encoded.value())));
+                        return {};
+                    }
+                }
+            }
+        }
+        self->send_extension_icon(key);
+        return {}; }, [weak, key](Error&) {
+        if (auto self = weak.strong_ref())
+            self->send_extension_icon(key); }, Gfx::IntSize { 96, 96 }, move(mime_type));
+}
+
+void AddonsUI::send_extension_icon(String const& key, Optional<String> data_url)
+{
+    m_pending_icons.remove(key);
+    if (!has_client() || !is_open())
+        return;
+    JsonObject result;
+    result.set("icon_key"sv, key);
+    if (data_url.has_value())
+        result.set("icon_data_url"sv, *data_url);
+    async_send_message("extensionIcon"_string, JsonValue(move(result)));
 }
 
 void AddonsUI::pick_local_xpi(JsonValue const& data)
@@ -291,6 +413,8 @@ void AddonsUI::send_staged_install(ErrorOr<Extensions::StagedInstall> staged, bo
         resp.set("addon_id"sv, s.addon_id);
         resp.set("name"sv, s.name);
         resp.set("version"sv, s.version);
+        if (s.icon_path.has_value())
+            resp.set("icon_key"sv, MUST(String::formatted("staged:{}", s.token)));
         resp.set("verified_signature"sv, s.verified_signature);
         resp.set("compatibility_status"sv, MUST(String::from_utf8(Web::Extensions::to_string(s.compatibility_status))));
         resp.set("compatibility_reasons"sv, string_array(s.compatibility_reasons.span()));

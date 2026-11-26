@@ -26,6 +26,7 @@
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWebCommon/Extensions/ExtensionManifest.h>
 #include <LibWebCommon/Extensions/MatchPattern.h>
+#include <LibWebCommon/Extensions/NavigationURLFilter.h>
 #include <LibWebCommon/Extensions/SupportMatrix.h>
 #include <LibWebCommon/Extensions/ZipReader.h>
 #include <LibWebCommon/SecureContexts/AbstractOperations.h>
@@ -313,6 +314,42 @@ TEST_CASE(extension_manifest_mv2_mv3_and_csp)
     EXPECT(Web::Extensions::ExtensionManifest::normalize_package_relative_path("a\\b.js"sv).is_error());
 }
 
+TEST_CASE(action_theme_icons_require_local_paths_and_positive_sizes)
+{
+    auto parse = [](StringView icons) {
+        return Web::Extensions::ExtensionManifest::parse(MUST(String::formatted(R"({{
+            "manifest_version": 3, "name": "Colors", "version": "1",
+            "action": {{ "theme_icons": {} }}
+        }})",
+            icons)));
+    };
+    EXPECT(parse(R"([{"size": 16, "light": "../escape.png", "dark": "dark.png"}])"sv).is_error());
+    EXPECT(parse(R"([{"size": 0, "light": "light.png", "dark": "dark.png"}])"sv).is_error());
+    EXPECT(parse(R"([{"size": 16, "dark": "dark.png"}])"sv).is_error());
+    auto valid = TRY_OR_FAIL(parse(R"([{"size": 16, "light": "light.png", "dark": "dark.png"}])"sv));
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(valid).status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+}
+
+TEST_CASE(navigation_url_filters_match_components_and_regular_expressions)
+{
+    auto filter = TRY_OR_FAIL(Web::Extensions::NavigationURLFilter::parse(TRY_OR_FAIL(JsonValue::from_string(R"({
+        "url": [
+            { "schemes": ["https"], "hostContains": ".example.", "ports": [443, [8000, 8080]],
+              "pathPrefix": "/tools/", "queryEquals": "q=1", "urlMatches": "1$", "originAndPathMatches": "/tools/install$" },
+            { "urlEquals": "about:blank" }
+        ]
+    })"sv))));
+    auto matches = [&](StringView url) { return filter->matches(URL::Parser::basic_parse(url).release_value()); };
+    EXPECT(matches("https://example.test/tools/install?q=1#done"sv));
+    EXPECT(matches("https://www.example.test:8010/tools/install?q=1"sv));
+    EXPECT(matches("about:blank#fragment"sv));
+    EXPECT(!matches("https://otherexample.test/tools/install?q=1"sv));
+    EXPECT(!matches("https://example.test:800/tools/install?q=1"sv));
+    EXPECT(!matches("https://example.test/tools/INSTALL?q=1"sv));
+    EXPECT(Web::Extensions::NavigationURLFilter::parse(TRY_OR_FAIL(JsonValue::from_string(R"({"url":[{"ports":[1.5]}]})"sv))).is_error());
+    EXPECT(Web::Extensions::NavigationURLFilter::parse(TRY_OR_FAIL(JsonValue::from_string(R"({"url":[{"urlMatches":"["}]})"sv))).is_error());
+}
+
 TEST_CASE(support_matrix_classification)
 {
     auto compatible = Web::Extensions::ExtensionManifest::parse(R"({
@@ -352,7 +389,7 @@ TEST_CASE(support_matrix_classification)
         "manifest_version": 3,
         "name": "Bad",
         "version": "1.0",
-        "permissions": ["webNavigation"],
+        "permissions": ["bookmarks"],
         "background": { "service_worker": "sw.js" }
     })"sv)
                            .release_value();
@@ -411,11 +448,19 @@ TEST_CASE(zip_reader_hardening)
     EXPECT(Web::Extensions::ZipReader::parse(bomb_zip.bytes()).is_error());
 }
 
+static void install_test_font_plugin()
+{
+    static Web::Platform::FontPlugin font_plugin { false };
+    static bool installed = false;
+    if (installed)
+        return;
+    Web::Platform::FontPlugin::install(font_plugin);
+    installed = true;
+}
+
 TEST_CASE(extension_content_script_host_isolated_world_and_css)
 {
-    Web::Platform::FontPlugin font_plugin(false);
-    Web::Platform::FontPlugin::install(font_plugin);
-
+    install_test_font_plugin();
     auto principal_realm = Web::Bindings::create_a_principal_javascript_realm();
     VERIFY(principal_realm.ptr());
     auto& vm = Web::Bindings::main_thread_vm();
@@ -464,4 +509,46 @@ TEST_CASE(extension_content_script_host_isolated_world_and_css)
         auto css_after_revoke = document->extension_style_sheet_source()->to_utf8();
         EXPECT(!css_after_revoke.bytes_as_string_view().contains("rgb(1, 2, 3)"sv));
     }
+}
+
+TEST_CASE(extension_public_suffix_api_requires_permission)
+{
+    install_test_font_plugin();
+    auto principal_realm = Web::Bindings::create_a_principal_javascript_realm();
+    VERIFY(principal_realm.ptr());
+    auto& vm = Web::Bindings::main_thread_vm();
+    auto client = vm.heap().allocate<ExtensionTestPageClient>();
+    auto page = Web::Page::create(client);
+    client->m_page = page.ptr();
+    auto traversable = Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {});
+    page->set_top_level_traversable(traversable);
+    auto& document = *traversable->active_document();
+
+    auto without_permission = Web::Bindings::ExtensionRealmContext::create_for_extension_page(document,
+        "psl@test"_string, "11111111-2222-4333-8444-555555555555"_string, R"({"optional_permissions":["publicSuffix"]})"_string);
+    auto absent = without_permission->evaluate_script("browser.publicSuffix === undefined"sv, "public-suffix.js"sv, true);
+    EXPECT_EQ(absent, Optional<String> { R"({"result":true})"_string });
+
+    auto with_permission = Web::Bindings::ExtensionRealmContext::create_for_extension_page(document,
+        "psl@test"_string, "11111111-2222-4333-8444-555555555555"_string, R"({"permissions":["publicSuffix"]})"_string);
+    auto present = with_permission->evaluate_script(R"(
+        (() => {
+            const api = browser.publicSuffix;
+            let invalidRejected = false;
+            try { api.getKnownSuffix('https://example.com'); } catch (error) { invalidRejected = error instanceof TypeError; }
+            return invalidRejected
+                && api.isKnownSuffix('co.uk') && !api.isKnownSuffix('example.co.uk')
+                && api.getKnownSuffix('a.b.co.uk') === 'co.uk'
+                && api.getDomain('a.b.co.uk') === 'b.co.uk'
+                && api.getDomain('a.unknown-test') === null
+                && api.getDomain('a.unknown-test', { allowUnknownSuffix: true }) === 'a.unknown-test'
+                && api.getDomain('co.uk', { allowPlainSuffix: true }) === 'co.uk'
+                && api.getDomain('[::1]') === null
+                && api.getDomain('[::1]', { allowIPAddress: true }) === '[::1]'
+                && api.getDomain('www.bücher.de') === 'xn--bcher-kva.de'
+                && api.getDomain('www.bücher.de', { encoding: 'display' }) === 'bücher.de';
+        })()
+    )"sv,
+        "public-suffix.js"sv, true);
+    EXPECT_EQ(present, Optional<String> { R"({"result":true})"_string });
 }

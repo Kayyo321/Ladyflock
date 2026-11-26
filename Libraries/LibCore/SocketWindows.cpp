@@ -229,7 +229,7 @@ ErrorOr<int> Socket::create_fd(SocketDomain domain, SocketType type)
     return fd;
 }
 
-ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> Socket::resolve_host(ByteString const& host, SocketType type, AddressFamily address_family)
+ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> Socket::resolve_host(ByteString const& host, SocketType type, AddressFamily address_family, Optional<ByteString>* canonical_name)
 {
     int socket_type;
     switch (type) {
@@ -261,7 +261,7 @@ ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> Socket::resolve_host(ByteStri
     struct addrinfo hints = {};
     hints.ai_family = ai_family;
     hints.ai_socktype = socket_type;
-    hints.ai_flags = 0;
+    hints.ai_flags = canonical_name ? AI_CANONNAME : 0;
     hints.ai_protocol = 0;
 
     auto const results = TRY(System::getaddrinfo(host.characters(), nullptr, hints));
@@ -269,6 +269,8 @@ ErrorOr<Vector<Variant<IPv4Address, IPv6Address>>> Socket::resolve_host(ByteStri
     Vector<Variant<IPv4Address, IPv6Address>> addresses;
 
     for (auto const& result : results.addresses()) {
+        if (canonical_name && result.ai_canonname && !canonical_name->has_value())
+            *canonical_name = ByteString(result.ai_canonname);
         if (result.ai_family == AF_INET6) {
             auto* socket_address = bit_cast<struct sockaddr_in6*>(result.ai_addr);
             auto address = IPv6Address { socket_address->sin6_addr.s6_addr };

@@ -79,6 +79,8 @@ public:
 
     void prefetch_dns(GC::Ptr<DOM::Document>, URL::URL const&, URL::URL const& source_url);
     void preconnect(GC::Ptr<DOM::Document>, URL::URL const&, URL::URL const& source_url);
+    static bool network_prediction_enabled() { return s_network_prediction_enabled; }
+    static void set_network_prediction_enabled(bool enabled);
 
     static bool is_known_hsts_host(Page&, String const& host);
 
@@ -111,7 +113,7 @@ private:
     RefPtr<Requests::RequestClient> m_request_client;
     HashMap<Utf16String, RefPtr<Requests::RequestClient>> m_site_request_clients;
     HashTable<NonnullRefPtr<Requests::Request>> m_active_requests;
-
+    static Atomic<bool, AK::MemoryOrder::memory_order_relaxed> s_network_prediction_enabled;
     static Atomic<NavigatorCompatibilityMode, AK::MemoryOrder::memory_order_relaxed> s_navigator_compatibility_mode;
 };
 

@@ -4196,6 +4196,11 @@ void ConnectionFromClient::set_web_request_watch_snapshot(Web::Extensions::WebRe
     Web::Extensions::WebRequestClient::set_watch_snapshot(move(snapshot));
 }
 
+void ConnectionFromClient::set_network_prediction_enabled(bool enabled)
+{
+    Web::ResourceLoader::set_network_prediction_enabled(enabled);
+}
+
 void ConnectionFromClient::did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestDecision decision)
 {
     if (auto page = this->page(page_id); page.has_value())

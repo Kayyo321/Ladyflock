@@ -67,6 +67,7 @@ public:
 
     virtual bool is_top_level_traversable() const { return false; }
 
+    i64 extension_frame_id() const;
     Web::HTML::CrossProcessId id() const { return m_id; }
     void set_id(Web::HTML::CrossProcessId id) { m_id = id; }
 
@@ -269,6 +270,7 @@ private:
     void send_completely_finished_loading_to_container() const;
 
     Web::HTML::CrossProcessId m_id;
+    mutable i64 m_extension_frame_id { 0 };
     CanonicalNavigable* m_parent { nullptr };
     RefPtr<CanonicalDocument> m_container_document;
     Vector<NonnullOwnPtr<CanonicalNavigable>> m_children;

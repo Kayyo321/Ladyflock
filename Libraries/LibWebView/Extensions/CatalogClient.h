@@ -31,6 +31,7 @@ struct WEBVIEW_API CatalogEntry {
     Vector<String> compatibility_reasons;
     String listing_url;
     String author;
+    Optional<String> icon_url;
 };
 
 struct WEBVIEW_API CatalogSearchResult {
@@ -55,6 +56,7 @@ public:
     void search(StringView query, u32 page, Function<void(ErrorOr<CatalogSearchResult>)> callback) const;
     void lookup(StringView addon_id, Function<void(ErrorOr<CatalogEntry>)> callback) const;
     void download(CatalogEntry const&, Function<void(ErrorOr<ByteBuffer>)> callback) const;
+    void download_icon(StringView url, Function<void(ErrorOr<ByteBuffer>)> callback) const;
 
 private:
     bool m_enable_public_amo_catalog { false };

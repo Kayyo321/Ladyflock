@@ -361,7 +361,7 @@ TEST_CASE(signed_xpi_sandboxed_verification_install_update_and_isolation)
 
     JsonObject stored;
     stored.set("note"sv, "keep-across-update"_string);
-    (void)mgr.storage().set(addon_id, stored);
+    (void)TRY_OR_FAIL(mgr.storage().set(addon_id, stored));
 
     // 4. Update v2 adds "tabs" permission -> requires_permission_prompt == true; rejecting keeps v1
     auto manifest_v2 = MUST(ByteBuffer::copy(R"({

@@ -299,7 +299,7 @@ WebIDL::ExceptionOr<void> HTMLFormElement::submit_form(GC::Ref<HTMLElement> subm
 
     // 22. Let targetNavigable be the first return value of applying the rules for choosing a navigable given target,
     //     form's node navigable, and noopener.
-    auto target_navigable = form_document->navigable()->choose_a_navigable(target, no_opener).navigable;
+    auto target_navigable = form_document->navigable()->choose_a_navigable(target, no_opener, ActivateTab::Yes, {}, parsed_action).navigable;
 
     // 23. If targetNavigable is null, then return.
     if (!target_navigable) {

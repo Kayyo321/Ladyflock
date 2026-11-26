@@ -5,6 +5,7 @@ set(SOURCES
     Extensions/ExtensionManifest.cpp
     Extensions/ExtensionTypes.cpp
     Extensions/MatchPattern.cpp
+    Extensions/NavigationURLFilter.cpp
     Extensions/SupportMatrix.cpp
     Extensions/ZipReader.cpp
     CSS/PreferredColorScheme.cpp
@@ -178,7 +179,7 @@ endif()
 ladybird_lib(LibWebCommon webcommon EXPLICIT_SYMBOL_EXPORT)
 # NB: The enumerations of LibWeb's IDL modules are generated into LibWebCommon along with LibWeb's bindings.
 add_dependencies(LibWebCommon generate_bindings)
-target_link_libraries(LibWebCommon PRIVATE LibCore LibCrypto LibGfx LibHTTP LibIPC LibRequests LibURL ZLIB::ZLIB)
+target_link_libraries(LibWebCommon PRIVATE LibCore LibCrypto LibGfx LibHTTP LibIPC LibRegex LibRequests LibURL ZLIB::ZLIB)
 
 import_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME libwebcommon_rust FEATURES allocator FFI_HEADER RustFFI.h)
 target_link_libraries(LibWebCommon PRIVATE libwebcommon_rust)

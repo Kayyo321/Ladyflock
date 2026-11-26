@@ -10,6 +10,7 @@
 #include <AK/Types.h>
 #include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
+#include <LibURL/URL.h>
 #include <LibWebCommon/Export.h>
 #include <LibWebCommon/HTML/CrossProcessId.h>
 #include <LibWebCommon/PixelUnits.h>
@@ -24,6 +25,7 @@ struct PictureInPictureWindowHints {
 
 struct WebViewHints {
     bool popup = false;
+    Optional<URL::URL> requested_url {};
     Optional<PictureInPictureWindowHints> picture_in_picture_window;
     Optional<DevicePixels> width;
     Optional<DevicePixels> height;

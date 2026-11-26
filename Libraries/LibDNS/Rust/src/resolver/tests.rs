@@ -176,7 +176,7 @@ impl Harness {
     }
 
     fn system_resolved(&mut self, request: SystemRequestId, result: Result<Vec<IpAddr>, String>) {
-        self.resolver.on_system_resolved(request, result, self.now);
+        self.resolver.on_system_resolved(request, result, "", self.now);
         self.drain();
     }
 
@@ -730,6 +730,8 @@ fn dnssec_harness(server: &crate::dnssec::tests::Server) -> Harness {
 const VALIDATE: LookupOptions = LookupOptions {
     validate_dnssec_locally: true,
     query_aaaa_without_global_ipv6: false,
+    bypass_cache: false,
+    cache_only: false,
 };
 
 #[test]

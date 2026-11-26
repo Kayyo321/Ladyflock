@@ -61,6 +61,8 @@ public:
         // Asks the system resolver for AAAA records even when no global IPv6 route exists, as a host on the local
         // network may still be reachable over IPv6.
         bool query_aaaa_without_global_ipv6 { false };
+        bool bypass_cache { false };
+        bool cache_only { false };
 
         static LookupOptions default_() { return {}; }
     };
@@ -83,7 +85,11 @@ public:
 
     using ResultPromise = Core::Promise<NonnullRefPtr<LookupResult const>>;
 
-    using SystemResolution = ErrorOr<Vector<LookupResult::Address>>;
+    struct ResolvedSystemHost {
+        Vector<LookupResult::Address> addresses;
+        Optional<ByteString> canonical_name;
+    };
+    using SystemResolution = ErrorOr<ResolvedSystemHost>;
     // Resolves a name to the addresses of one family somewhere else, such as in another process, and calls back on the
     // thread that asked, once it has them.
     // Forgets a lookup handed to the remote resolver, whose answer, if any comes, is then dropped.

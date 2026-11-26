@@ -94,6 +94,12 @@ ResourceLoader::ResourceLoader(GC::Heap& heap)
 }
 
 Atomic<NavigatorCompatibilityMode, AK::MemoryOrder::memory_order_relaxed> ResourceLoader::s_navigator_compatibility_mode { default_navigator_compatibility_mode };
+Atomic<bool, AK::MemoryOrder::memory_order_relaxed> ResourceLoader::s_network_prediction_enabled { true };
+
+void ResourceLoader::set_network_prediction_enabled(bool enabled)
+{
+    s_network_prediction_enabled = enabled;
+}
 
 void ResourceLoader::set_navigator_compatibility_mode(NavigatorCompatibilityMode mode)
 {
@@ -163,6 +169,8 @@ static Optional<HTTP::NetworkIsolationKey> speculative_network_isolation_key(GC:
 
 void ResourceLoader::prefetch_dns(GC::Ptr<DOM::Document> document, URL::URL const& url, URL::URL const& source_url)
 {
+    if (!network_prediction_enabled())
+        return;
     if (url.scheme().is_one_of("file"sv, "data"sv))
         return;
 
@@ -184,6 +192,8 @@ void ResourceLoader::prefetch_dns(GC::Ptr<DOM::Document> document, URL::URL cons
 
 void ResourceLoader::preconnect(GC::Ptr<DOM::Document> document, URL::URL const& url, URL::URL const& source_url)
 {
+    if (!network_prediction_enabled())
+        return;
     if (url.scheme().is_one_of("file"sv, "data"sv))
         return;
 

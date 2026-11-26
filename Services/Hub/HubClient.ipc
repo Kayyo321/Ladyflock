@@ -166,9 +166,19 @@ struct Hub::InitialState {
 }
 
 [ExistingCpp]
+struct WebView::ExtensionMenuItem {
+    String extension_id;
+    String title;
+    u64 token;
+    Optional<Gfx::ShareableBitmap> icon;
+}
+
+[ExistingCpp]
 struct WebView::ContextMenuRequest {
     WebView::ContextMenuKind kind;
     Gfx::IntPoint widget_position;
+    u64 extension_menu_serial;
+    Vector<WebView::ExtensionMenuItem> extension_menu_items;
     bool is_editable;
     Optional<String> selected_text;
     Optional<WebView::DictionaryLookup> dictionary_lookup;
@@ -248,6 +258,8 @@ struct Hub::ExtensionItem {
     String badge;
     String badge_color;
     Optional<Gfx::ShareableBitmap> icon;
+    Optional<Gfx::ShareableBitmap> light_icon;
+    Optional<Gfx::ShareableBitmap> dark_icon;
     bool has_action;
     bool enabled;
     bool pinned;

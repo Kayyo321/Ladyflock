@@ -2075,6 +2075,7 @@ void WindowToolbar::recreate_icons()
     m_reload_action->setIcon(create_chrome_icon(ChromeIcon::Reload, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     m_stop_action->setIcon(create_chrome_icon(ChromeIcon::Stop, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     m_extension_buttons->update_icons();
+    update_extension_sidebar_icon();
     m_downloads_button->setIcon(create_chrome_icon(ChromeIcon::Download, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     if (m_feedback_button)
         m_feedback_button->setIcon(create_chrome_icon(ChromeIcon::Feedback, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
@@ -2196,6 +2197,17 @@ void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL co
     view.setFocus();
 }
 
+void WindowToolbar::update_extension_sidebar_icon()
+{
+    if (!m_extension_sidebar)
+        return;
+    auto* label = m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarIcon");
+    auto icon = label->property("packageIcon").value<QIcon>();
+    if (icon.isNull())
+        icon = create_chrome_icon(ChromeIcon::Extensions, Theme::chrome_palette(*label), ChromeStyle::window_activity(*label), 16);
+    label->setPixmap(icon.pixmap({ 16, 16 }, label->devicePixelRatioF()));
+}
+
 void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::ExtensionItem> items, u32 width)
 {
     if (m_tab != &tab)
@@ -2262,9 +2274,8 @@ void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::Ex
             });
         }
         auto* icon = m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarIcon");
-        auto sidebar_icon = ExtensionButtons::package_icon(sidebar->sidebar_icon);
-        icon->setVisible(!sidebar_icon.isNull());
-        icon->setPixmap(sidebar_icon.pixmap({ 16, 16 }, devicePixelRatioF()));
+        icon->setProperty("packageIcon", ExtensionButtons::package_icon(sidebar->sidebar_icon));
+        update_extension_sidebar_icon();
         m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarTitle")->setText(qstring_from_ak_string(sidebar->sidebar_title));
         m_extension_sidebar->setAccessibleName(qstring_from_ak_string(sidebar->sidebar_title));
         m_extension_sidebar->show();

@@ -41,6 +41,7 @@ public:
     // Tells the UI where the view has changed, which it must hear of before anything that makes it look.
     void push_state_to_ui();
 
+    void activate_extension_menu_item(u64 serial, u64 token);
     bool is_tab() const { return m_is_tab; }
     virtual void pick_local_extension_package(Function<void(Optional<ByteString>)>) override;
     void did_pick_extension_package(u64, Optional<ByteString>);
@@ -61,6 +62,11 @@ public:
     using ViewImplementation::set_page_background_color_to_system_canvas;
 
 private:
+    u64 m_extension_menu_serial { 0 };
+    Optional<Web::HTML::CrossProcessId> m_extension_menu_document;
+    Vector<WebView::ExtensionMenuItem> m_extension_menu_items;
+    WebView::ExtensionMenuTarget m_extension_menu_target;
+
     // ^WebView::ViewImplementation
     virtual void prepare_page_for_navigable(WebView::WebContentPage&) override;
     virtual Core::AnonymousBuffer system_theme() override { return m_system_theme; }

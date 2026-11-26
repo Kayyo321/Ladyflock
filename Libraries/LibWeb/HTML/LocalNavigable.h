@@ -181,7 +181,7 @@ public:
         WindowType window_type;
     };
 
-    ChosenNavigable choose_a_navigable(Utf16View name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes, Optional<TokenizedFeature::Map const&> window_features = {});
+    ChosenNavigable choose_a_navigable(Utf16View name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes, Optional<TokenizedFeature::Map const&> window_features = {}, Optional<URL::URL> requested_url = {});
 
     GC::Ptr<Navigable> find_a_navigable_by_target_name(Utf16View name);
     bool is_familiar_with(Navigable&);

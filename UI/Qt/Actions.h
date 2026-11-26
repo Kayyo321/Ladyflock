@@ -46,6 +46,7 @@ enum class ActionID {
     LookUpSelectedText,
     SearchSelectedText,
     CopyLinkToHighlight,
+    ExtensionPageMenuItem,
     SpellingGuess,
     NoSpellingGuesses,
     IgnoreSpelling,

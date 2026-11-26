@@ -491,7 +491,7 @@ public:
     InputTraceRecorder& input_trace() { return m_input_trace; }
 
     using MediaContextMenu = Web::MediaContextMenu;
-    void did_request_media_context_menu(UniqueNodeID media_id, HTML::CrossProcessId local_root_id, CSSPixelPoint, ByteString const& target, unsigned modifiers, MediaContextMenu const&, Optional<HTML::PreparedNavigationDescriptor>);
+    void did_request_media_context_menu(UniqueNodeID media_id, HTML::CrossProcessId local_root_id, HTML::CrossProcessId document_id, CSSPixelPoint, ByteString const& target, unsigned modifiers, MediaContextMenu const&, Optional<HTML::PreparedNavigationDescriptor>);
     void toggle_media_play_state();
     void toggle_media_mute_state();
     void toggle_media_loop_state();
@@ -893,6 +893,7 @@ public:
     virtual void page_did_change_picture_in_picture_player_controls_visibility(bool) { }
     virtual void page_did_change_active_document_in_top_level_browsing_context(Web::DOM::Document&) { }
     virtual void page_did_change_active_document_in_child_navigable(Web::DOM::Document&) { }
+    virtual void page_did_reach_dom_content_loaded(HTML::CrossProcessId, HTML::CrossProcessId) { }
     virtual void page_did_finish_loading(HTML::CrossProcessId, HTML::CrossProcessId) { }
     virtual Optional<u64> page_did_start_download(HTML::CrossProcessId navigable_id, Optional<Utf16String> const& navigation_id, URL::URL const&, ByteString const& suggested_filename, Optional<u64> total_size, HTTP::Cookie::SameSiteContext same_site_context, int request_server_client_id, u64 request_server_request_id, ByteBuffer initial_data, JsonValue network_response)
     {
@@ -923,10 +924,10 @@ public:
     // The node an assistive technology should treat as focused: the focused element, or the document element once
     // nothing in the document is focused.
     virtual void page_did_change_accessibility_focus(Web::UniqueNodeID) { }
-    virtual void page_did_request_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, CSSPixelPoint, ContextMenuForInputEventsTarget, [[maybe_unused]] Optional<Utf16String> misspelled_word, [[maybe_unused]] GC::Ptr<DOM::Range> selected_text_range) { }
-    virtual void page_did_request_link_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, CSSPixelPoint, HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, [[maybe_unused]] GC::Ptr<DOM::Range> selected_text_range) { }
-    virtual void page_did_request_image_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, CSSPixelPoint, HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, Optional<Gfx::Bitmap const*>, [[maybe_unused]] Optional<HTML::PreparedNavigationDescriptor> link_navigation, [[maybe_unused]] Optional<String> image_mime_type) { }
-    virtual void page_did_request_media_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, CSSPixelPoint, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, Page::MediaContextMenu const&, Optional<HTML::PreparedNavigationDescriptor>) { }
+    virtual void page_did_request_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, [[maybe_unused]] HTML::CrossProcessId document_id, CSSPixelPoint, ContextMenuForInputEventsTarget, [[maybe_unused]] Optional<Utf16String> misspelled_word, [[maybe_unused]] GC::Ptr<DOM::Range> selected_text_range) { }
+    virtual void page_did_request_link_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, [[maybe_unused]] HTML::CrossProcessId document_id, CSSPixelPoint, HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, [[maybe_unused]] GC::Ptr<DOM::Range> selected_text_range) { }
+    virtual void page_did_request_image_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, [[maybe_unused]] HTML::CrossProcessId document_id, CSSPixelPoint, HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, Optional<Gfx::Bitmap const*>, [[maybe_unused]] Optional<HTML::PreparedNavigationDescriptor> link_navigation, [[maybe_unused]] Optional<String> image_mime_type) { }
+    virtual void page_did_request_media_context_menu([[maybe_unused]] HTML::CrossProcessId local_root_id, [[maybe_unused]] HTML::CrossProcessId document_id, CSSPixelPoint, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers, Page::MediaContextMenu const&, Optional<HTML::PreparedNavigationDescriptor>) { }
     virtual void page_did_click_link(HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers) { }
     virtual void page_did_middle_click_link(HTML::PreparedNavigationDescriptor, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers) { }
     virtual void page_did_request_external_url([[maybe_unused]] URL::URL const& url, [[maybe_unused]] URL::Origin const& initiator_origin, [[maybe_unused]] bool has_transient_activation) { }

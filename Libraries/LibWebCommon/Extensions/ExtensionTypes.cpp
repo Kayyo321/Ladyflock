@@ -124,6 +124,9 @@ bool WebRequestWatchSnapshot::matches(URL::URL const& url, WebRequestResourceTyp
     if (url.scheme() != "http"sv && url.scheme() != "https"sv)
         return false;
 
+    if (has_declarative_rules)
+        return true;
+
     for (auto const& entry : entries) {
         if (!entry.types.is_empty() && !entry.types.contains_slow(type))
             continue;
@@ -258,7 +261,7 @@ ErrorOr<void> IPC::encode(Encoder& encoder, Web::Extensions::WebRequestWatchSnap
 {
     TRY(encoder.encode(snapshot.revision));
     TRY(encoder.encode(snapshot.entries));
-    return {};
+    return encoder.encode(snapshot.has_declarative_rules);
 }
 
 template<>
@@ -266,7 +269,8 @@ ErrorOr<Web::Extensions::WebRequestWatchSnapshot> IPC::decode(Decoder& decoder)
 {
     auto revision = TRY(decoder.decode<u64>());
     auto entries = TRY(decoder.decode<Vector<Web::Extensions::WebRequestWatchEntry>>());
-    return Web::Extensions::WebRequestWatchSnapshot { revision, move(entries) };
+    auto has_declarative_rules = TRY(decoder.decode<bool>());
+    return Web::Extensions::WebRequestWatchSnapshot { revision, move(entries), has_declarative_rules };
 }
 
 template<>

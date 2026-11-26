@@ -37,13 +37,23 @@ static constexpr Array s_supported_manifest_keys {
     "options_page"sv,
     "web_accessible_resources"sv,
     "content_security_policy"sv,
+    "declarative_net_request"sv,
 };
 
 static constexpr Array s_supported_permissions {
     "activeTab"sv,
+    "alarms"sv,
+    "contextMenus"sv,
+    "declarativeNetRequest"sv,
+    "dns"sv,
+    "menus"sv,
+    "privacy"sv,
+    "publicSuffix"sv,
     "scripting"sv,
     "storage"sv,
     "tabs"sv,
+    "unlimitedStorage"sv,
+    "webNavigation"sv,
     "webRequest"sv,
     "webRequestBlocking"sv,
 };
@@ -57,6 +67,37 @@ static constexpr Array s_supported_api_methods {
     "runtime.onInstalled"sv,
     "runtime.openOptionsPage"sv,
     "runtime.lastError"sv,
+    "alarms.create"sv,
+    "alarms.get"sv,
+    "alarms.getAll"sv,
+    "alarms.clear"sv,
+    "alarms.clearAll"sv,
+    "alarms.onAlarm"sv,
+    "dns.resolve"sv,
+    "declarativeNetRequest.getEnabledRulesets"sv,
+    "declarativeNetRequest.updateEnabledRulesets"sv,
+    "menus.create"sv,
+    "menus.update"sv,
+    "menus.remove"sv,
+    "menus.removeAll"sv,
+    "menus.onClicked"sv,
+    "privacy.network.networkPredictionEnabled.get"sv,
+    "privacy.network.networkPredictionEnabled.set"sv,
+    "privacy.network.networkPredictionEnabled.clear"sv,
+    "privacy.network.networkPredictionEnabled.onChange"sv,
+    "privacy.network.globalPrivacyControl.get"sv,
+    "privacy.network.globalPrivacyControl.onChange"sv,
+    "privacy.websites.hyperlinkAuditingEnabled.get"sv,
+    "webNavigation.getFrame"sv,
+    "webNavigation.getAllFrames"sv,
+    "webNavigation.onBeforeNavigate"sv,
+    "webNavigation.onCommitted"sv,
+    "webNavigation.onDOMContentLoaded"sv,
+    "webNavigation.onCompleted"sv,
+    "webNavigation.onCreatedNavigationTarget"sv,
+    "webNavigation.onHistoryStateUpdated"sv,
+    "webNavigation.onReferenceFragmentUpdated"sv,
+    "webNavigation.onErrorOccurred"sv,
     "storage.local.get"sv,
     "storage.local.set"sv,
     "storage.local.remove"sv,
@@ -118,6 +159,9 @@ static constexpr Array s_supported_api_methods {
     "permissions.remove"sv,
     "permissions.onAdded"sv,
     "permissions.onRemoved"sv,
+    "publicSuffix.isKnownSuffix"sv,
+    "publicSuffix.getKnownSuffix"sv,
+    "publicSuffix.getDomain"sv,
     "webRequest.onBeforeRequest"sv,
 };
 
@@ -198,6 +242,8 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
 
     auto const source = MUST(JsonValue::from_string(manifest.raw_json()));
     auto const& root = source.as_object();
+    if (root.has("declarative_net_request"sv) && !manifest.has_permission("declarativeNetRequest"sv))
+        evaluation.unsupported_reasons.append("Declarative rules require declarativeNetRequest permission"_string);
     auto reject = [&](StringView field) {
         evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported manifest setting '{}'", field)));
     };
@@ -226,12 +272,6 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
             }
         }
     }
-    constexpr Array action_keys { "action"sv, "browser_action"sv };
-    for (auto key : action_keys) {
-        if (auto action = root.get_object(key); action.has_value() && action->has("theme_icons"sv))
-            reject("action.theme_icons"sv);
-    }
-
     for (auto const& perm : manifest.permissions()) {
         if (!is_permission_supported(perm))
             evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported permission '{}'", perm)));

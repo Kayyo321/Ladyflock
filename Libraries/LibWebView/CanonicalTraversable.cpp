@@ -16,6 +16,8 @@
 #include <LibWebView/CanonicalDocument.h>
 #include <LibWebView/CanonicalEnvironmentSettingsObject.h>
 #include <LibWebView/CanonicalTraversable.h>
+
+#include <AK/JsonArray.h>
 #include <LibWebView/CanonicalWindow.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/StorageJar.h>
@@ -1721,7 +1723,8 @@ void CanonicalTraversable::did_activate_history_entry(HistoryOperation& operatio
         target_entry.document_state->navigable_target_name = {};
 
     Optional<Utf16String const&> navigation_id;
-    if (auto navigation = finalized_navigation(operation))
+    auto navigation = finalized_navigation(operation);
+    if (navigation)
         navigation_id = navigation->navigation_id;
     else if (auto reload = m_reload_navigation_ids.find(operation.operation_id); reload != m_reload_navigation_ids.end() && navigable.is_top_level_traversable()) {
         navigation_id = reload->value.id;
@@ -1737,8 +1740,41 @@ void CanonicalTraversable::did_activate_history_entry(HistoryOperation& operatio
 
     // NB: Another operation's job for the document this replaced cannot run: destroying the document drops its tasks.
     //     This operation's job has ended already.
-    if (&navigable.active_document() != replaced_document)
+    if (&navigable.active_document() != replaced_document) {
+        if (ext_manager && !navigable.active_document().is_initial_about_blank()) {
+            JsonObject details;
+            if (navigable.active_document().creation_url() == URL::about_error()) {
+                details.set("error"sv, "Navigation failed"sv);
+                ext_manager->dispatch_navigation_event(navigable, "onErrorOccurred"sv, move(details));
+            } else {
+                auto const* retry = navigation && navigation->retry.has_value() ? &*navigation->retry : nullptr;
+                StringView type = navigable.parent() ? "auto_subframe"sv : "link"sv;
+                JsonArray qualifiers;
+                if (changing_navigable.target_entry_reload_pending || operation.parameters.has<Web::ReloadHistoryOperationParameters>())
+                    type = "reload"sv;
+                else if (retry) {
+                    if (retry->csp_navigation_type == Web::ContentSecurityPolicy::Directives::NavigationType::FormSubmission)
+                        type = "form_submit"sv;
+                    else if (navigable.parent() && retry->user_involvement == Web::HTML::UserNavigationInvolvement::Activation)
+                        type = "manual_subframe"sv;
+                    if (retry->user_involvement == Web::HTML::UserNavigationInvolvement::BrowserUI && !navigation->source_page)
+                        type = "typed"sv;
+                    if (!retry->url.equals(target_entry.url, URL::ExcludeFragment::Yes))
+                        qualifiers.must_append("server_redirect"sv);
+                } else if (operation.parameters.has<Web::TraverseByDeltaHistoryOperationParameters>() || operation.parameters.has<Web::NavigationAPITraverseHistoryOperationParameters>() || operation.parameters.has<Web::ResumeTraverseHistoryOperationParameters>()) {
+                    qualifiers.must_append("forward_back"sv);
+                }
+                details.set("transitionType"sv, type);
+                details.set("transitionQualifiers"sv, move(qualifiers));
+                ext_manager->dispatch_navigation_event(navigable, "onCommitted"sv, move(details));
+                if (navigable.active_document().take_pending_dom_content_loaded())
+                    ext_manager->dispatch_navigation_event(navigable, "onDOMContentLoaded"sv);
+                if (navigable.active_document().is_completely_loaded())
+                    ext_manager->dispatch_navigation_event(navigable, "onCompleted"sv);
+            }
+        }
         end_history_jobs(navigable);
+    }
 
     if (&navigable == this) {
         if (auto view = this->view(); view.has_value()) {
@@ -2277,6 +2313,9 @@ void CanonicalTraversable::apply_the_reload_history_step(HistoryOperation& opera
             bidi->navigation_started(*this, { .id = navigation_id, .status = WebDriverBiDi::NavigationStatusType::Pending, .url = active_document_url() });
     }
 
+    if (auto tab = view(); tab.has_value() && tab->session().extension_manager)
+        tab->session().extension_manager->dispatch_navigation_event(*this, "onBeforeNavigate"sv);
+
     // 2. Return the result of applying the history step step to traversable given true, null, null, userInvolvement, and "reload".
     apply_history_step(operation, step, true, {}, user_involvement, Web::Bindings::NavigationType::Reload);
 }
@@ -2489,6 +2528,14 @@ void CanonicalTraversable::finalize_a_same_document_navigation(HistoryOperation&
 
     target_navigable->set_active_session_history_entry(target_entry);
     target_navigable->send_replicated_state();
+
+    if (auto tab = view(); tab.has_value() && tab->session().extension_manager && !target_navigable->active_document().is_initial_about_blank()) {
+        JsonObject details;
+        details.set("url"sv, target_entry->url.serialize());
+        details.set("transitionType"sv, target_navigable->parent() ? "auto_subframe"sv : "link"sv);
+        details.set("transitionQualifiers"sv, JsonArray {});
+        tab->session().extension_manager->dispatch_navigation_event(*target_navigable, request.is_fragment_navigation ? "onReferenceFragmentUpdated"sv : "onHistoryStateUpdated"sv, move(details));
+    }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
     apply_the_push_or_replace_history_step(operation, *target_step, request.history_handling, request.user_involvement);

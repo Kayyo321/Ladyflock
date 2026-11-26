@@ -1895,7 +1895,7 @@ Optional<LocalNavigable::NavigationParkedForPopulation> LocalNavigable::take_nav
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
-LocalNavigable::ChosenNavigable LocalNavigable::choose_a_navigable(Utf16View name, TokenizedFeature::NoOpener no_opener, ActivateTab activate_tab, Optional<TokenizedFeature::Map const&> window_features)
+LocalNavigable::ChosenNavigable LocalNavigable::choose_a_navigable(Utf16View name, TokenizedFeature::NoOpener no_opener, ActivateTab activate_tab, Optional<TokenizedFeature::Map const&> window_features, Optional<URL::URL> requested_url)
 {
     // 1. Let chosen be null.
     GC::Ptr<Navigable> chosen;
@@ -1941,6 +1941,7 @@ LocalNavigable::ChosenNavigable LocalNavigable::choose_a_navigable(Utf16View nam
         auto request_new_web_view = [&] {
             TokenizedFeature::Map empty_window_features;
             auto hints = web_view_hints_from_tokenised_features(window_features.has_value() ? *window_features : empty_window_features);
+            hints.requested_url = move(requested_url);
             return page().client().page_did_request_new_web_view(activate_tab, hints, id(), Utf16String::from_utf16(name), no_opener, active_document()->base_url());
         };
 
@@ -4307,7 +4308,7 @@ void LocalNavigable::navigate_to_a_fragment(URL::URL const& url, HistoryHandling
     // Append the following session history synchronous navigation steps involving navigable to its traversable:
     // 1. Finalize a same-document navigation given traversable, navigable, historyEntry, entryToReplace,
     //    historyHandling, and userInvolvement.
-    page().history_executor().finalize_same_document_navigation(*this, history_entry, entry_to_replace, history_handling, user_involvement, move(previous_entry_persisted_state));
+    page().history_executor().finalize_same_document_navigation(*this, history_entry, entry_to_replace, history_handling, user_involvement, move(previous_entry_persisted_state), true);
 
     // Invoke WebDriver BiDi fragment navigated with navigable and a new WebDriver BiDi navigation status whose id is
     // navigationId, url is url, and status is "complete".
@@ -4808,7 +4809,7 @@ void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_
     // 14. Append the following session history synchronous navigation steps involving navigable to traversable:
     // 1. Finalize a same-document navigation given traversable, navigable, newEntry, entryToReplace,
     //    historyHandling, and "none".
-    navigable->page().history_executor().finalize_same_document_navigation(*navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None, move(previous_entry_persisted_state));
+    navigable->page().history_executor().finalize_same_document_navigation(*navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None, move(previous_entry_persisted_state), false);
 
     // 2. Invoke WebDriver BiDi history updated with navigable.
     // NB: The browser process names the navigable and its URL, which is its active document's URL.

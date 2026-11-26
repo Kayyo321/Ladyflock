@@ -14,6 +14,7 @@
 #include <LibCore/System.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibWebCommon/Extensions/ZipReader.h>
+#include <LibWebView/Extensions/DeclarativeRequestRules.h>
 #include <LibWebView/Extensions/ExtensionInstaller.h>
 #include <LibWebView/HelperProcess.h>
 
@@ -243,6 +244,23 @@ ErrorOr<StagedInstall> ExtensionInstaller::stage_package(
         return Error::from_string_literal("Package checksum does not match the Mozilla Add-ons listing");
 
     auto manifest = TRY(Web::Extensions::ExtensionManifest::parse(result.manifest_json));
+    auto rulesets = load_declarative_rulesets(manifest, [&](StringView path) -> ErrorOr<String> {
+        for (size_t i = 0; i < verified.file_names.size(); ++i) {
+            if (verified.file_names[i] == path) {
+                auto const& contents = verified.file_contents[i];
+                if (contents.size() > 16 * MiB)
+                    return Error::from_string_literal("Declarative ruleset exceeds its size limit");
+                return String::from_utf8(StringView { contents.bytes() });
+            }
+        }
+        return Error::from_string_literal("Declarative ruleset is missing from the signed package");
+    });
+    if (rulesets.is_error()) {
+        auto error = rulesets.release_error();
+        if (diagnostic)
+            diagnostic->compatibility_reasons.append(TRY(String::formatted("{}", error)));
+        return error;
+    }
     if (current_manifest_for_update.has_value() && !is_newer_version(result.version, current_manifest_for_update->version()))
         return Error::from_string_literal("Update needs a newer numeric extension version");
 
@@ -271,6 +289,7 @@ ErrorOr<StagedInstall> ExtensionInstaller::stage_package(
         .sha256_hex = result.sha256_hex,
         .manifest_json = result.manifest_json,
         .staged_directory = stage_dir,
+        .icon_path = manifest.package_icon_path(),
         .permissions = {
             .permissions = manifest.permissions(),
             .host_permissions = collect_host_permissions(manifest),

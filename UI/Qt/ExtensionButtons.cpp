@@ -25,7 +25,8 @@ QIcon ExtensionButtons::package_icon(Optional<Gfx::ShareableBitmap> const& icon)
     auto const& bitmap = *icon->bitmap();
     if (bitmap.width() > 512 || bitmap.height() > 512)
         return {};
-    QImage image(bitmap.width(), bitmap.height(), QImage::Format_ARGB32);
+    auto format = bitmap.alpha_type() == Gfx::AlphaType::Premultiplied ? QImage::Format_ARGB32_Premultiplied : QImage::Format_ARGB32;
+    QImage image(bitmap.width(), bitmap.height(), format);
     for (int y = 0; y < bitmap.height(); ++y) {
         auto* row = reinterpret_cast<QRgb*>(image.scanLine(y));
         for (int x = 0; x < bitmap.width(); ++x)
@@ -54,6 +55,9 @@ public:
 
     QString badge;
     QColor badge_color;
+    QIcon package_icon;
+    QIcon light_icon;
+    QIcon dark_icon;
 
 private:
     virtual void paintEvent(QPaintEvent*) override
@@ -141,7 +145,9 @@ void ExtensionButtons::update_buttons()
         button->badge_color = badge_color.has_value() ? QColor::fromRgba(badge_color->value()) : QColor {};
         button->setAccessibleDescription(button->badge);
         button->setProperty("extensionId", qstring_from_ak_string(item.id));
-        button->setProperty("packageIcon", package_icon(item.icon));
+        button->package_icon = package_icon(item.icon);
+        button->light_icon = package_icon(item.light_icon);
+        button->dark_icon = package_icon(item.dark_icon);
         button->setEnabled(item.enabled);
         button->update();
     }
@@ -150,14 +156,35 @@ void ExtensionButtons::update_buttons()
     update_icons();
 }
 
+static QIcon menu_icon(Hub::ExtensionItem const& item, QPalette const& palette)
+{
+    auto color = palette.color(QPalette::WindowText);
+    auto icon = ExtensionButtons::package_icon(color.lightness() >= 128 ? item.light_icon : item.dark_icon);
+    if (icon.isNull())
+        icon = ExtensionButtons::package_icon(item.icon);
+    return icon.isNull() ? create_chrome_icon(ChromeIcon::Extensions, color) : icon;
+}
+
 void ExtensionButtons::update_icons()
 {
-    auto icon = create_chrome_icon(ChromeIcon::Extensions, Theme::chrome_palette(*this), ChromeStyle::WindowActivity::Active, TOOLBAR_ICON_SIZE);
+    auto icon = create_chrome_icon(ChromeIcon::Extensions, Theme::chrome_palette(*this), ChromeStyle::window_activity(*this), TOOLBAR_ICON_SIZE);
     m_menu_button->setIcon(icon);
+    auto dark = Theme::is_dark(*this);
+    if (m_menu) {
+        for (auto* entry : m_menu->actions()) {
+            if (!entry->menu())
+                continue;
+            auto id = ak_string_from_qstring(entry->data().toString());
+            auto item = m_items.find_if([&](auto const& item) { return item.id == id; });
+            if (item != m_items.end())
+                entry->setIcon(menu_icon(*item, m_menu->palette()));
+        }
+    }
     for (int i = 0; i < m_layout->count() - 1; ++i) {
-        auto* button = static_cast<QToolButton*>(m_layout->itemAt(i)->widget());
-        auto custom_icon = button->property("packageIcon").value<QIcon>();
-        button->setIcon(custom_icon.isNull() ? icon : custom_icon);
+        auto* button = static_cast<ActionButton*>(m_layout->itemAt(i)->widget());
+        auto const& themed_icon = dark ? button->light_icon : button->dark_icon;
+        auto const& package_icon = themed_icon.isNull() ? button->package_icon : themed_icon;
+        button->setIcon(package_icon.isNull() ? icon : package_icon);
     }
 }
 
@@ -190,7 +217,9 @@ void ExtensionButtons::open_menu()
     menu->setAttribute(Qt::WA_DeleteOnClose);
     for (auto const& item : m_items) {
         auto name = menu_label(qstring_from_ak_string(item.name));
-        auto* actions = menu->addMenu(package_icon(item.icon), name);
+        auto* actions = menu->addMenu(menu_icon(item, menu->palette()), name);
+        actions->menuAction()->setData(qstring_from_ak_string(item.id));
+        actions->menuAction()->setIconVisibleInMenu(true);
         auto id = item.id;
         if (item.has_action) {
             auto title = menu_label(qstring_from_ak_string(item.title));

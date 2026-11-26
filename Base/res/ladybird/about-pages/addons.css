@@ -24,6 +24,33 @@ h3,
     font-weight: 600;
 }
 
+.extension-identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.extension-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    color: var(--muted);
+}
+
+.extension-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.extension-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
 .entry-header {
     justify-content: space-between;
 }
@@ -53,6 +80,10 @@ h3,
 #notice:not(:empty),
 #catalog-status:not(:empty) {
     margin: 10px 0;
+}
+
+#notice.error {
+    white-space: pre-line;
 }
 
 #notice.error,

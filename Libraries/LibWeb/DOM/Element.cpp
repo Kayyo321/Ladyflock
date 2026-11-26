@@ -679,7 +679,7 @@ void Element::follow_the_hyperlink(Optional<Utf16String> hyperlink_suffix, HTML:
 
     // 7. Let targetNavigable be the first return value of applying the rules for choosing a navigable given
     //    targetAttributeValue, subject's node navigable, and noopener.
-    auto target_navigable = document().navigable()->choose_a_navigable(target_attribute_value, noopener).navigable;
+    auto target_navigable = document().navigable()->choose_a_navigable(target_attribute_value, noopener, HTML::ActivateTab::Yes, {}, url_record).navigable;
 
     // 8. If targetNavigable is null, then return.
     if (!target_navigable)

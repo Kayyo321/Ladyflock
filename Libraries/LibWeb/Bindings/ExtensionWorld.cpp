@@ -23,6 +23,8 @@
 #include <LibJS/Runtime/ValueInlines.h>
 #include <LibJS/Script.h>
 #include <LibURL/Parser.h>
+#include <LibURL/PublicSuffixData.h>
+#include <LibUnicode/IDNA.h>
 #include <LibWeb/Bindings/ExtensionWorld.h>
 #include <LibWeb/Bindings/HostDefined.h>
 #include <LibWeb/Bindings/Intrinsics.h>
@@ -48,6 +50,84 @@ GC_DEFINE_ALLOCATOR(ExtensionRealmContext);
 
 static Atomic<u64> s_next_api_call_id { 1 };
 static Atomic<u64> s_next_listener_id { 1 };
+
+static bool manifest_has_permission(JsonValue const& manifest, StringView permission)
+{
+    auto permissions = manifest.is_object() ? manifest.as_object().get_array("permissions"sv) : Optional<JsonArray const&> {};
+    return permissions.has_value() && any_of(permissions->values(), [&](auto const& value) {
+        return value.is_string() && value.as_string() == permission;
+    });
+}
+
+static JS::Value make_public_suffix_api(JS::Realm& realm)
+{
+    auto& vm = realm.vm();
+    auto api = JS::Object::create(realm, realm.intrinsics().object_prototype());
+    for (auto method : { "isKnownSuffix"sv, "getKnownSuffix"sv, "getDomain"sv }) {
+        auto name = Utf16FlyString::from_utf8(method);
+        auto function = JS::NativeFunction::create(realm,
+            GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(MUST(String::from_utf8(method))), [](String const& method, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+                using SuffixData = URL::PublicSuffixData;
+                using StarRule = SuffixData::IncludeStarRule;
+                if (!vm.argument(0).is_string())
+                    return vm.throw_completion<JS::TypeError>("Expected a hostname"_utf16);
+                auto input = vm.argument(0).as_string().utf16_string().to_utf8();
+                auto host = URL::Parser::parse_host(input);
+                if (!host.has_value() || host->is_empty_host() || input.starts_with('.') || input.contains(".."sv) || input.contains('*') || input.contains('%'))
+                    return vm.throw_completion<JS::TypeError>("Invalid hostname"_utf16);
+
+                auto make_string = [&](String const& value) {
+                    return JS::Value(JS::PrimitiveString::create(vm, Utf16String::from_utf8(value)));
+                };
+                if (method == "isKnownSuffix"sv)
+                    return JS::Value(SuffixData::is_matching_public_suffix(*host, StarRule::No));
+                if (method == "getKnownSuffix"sv) {
+                    auto suffix = SuffixData::find_matching_public_suffix(*host, StarRule::No);
+                    return suffix.has_value() ? make_string(*suffix) : JS::js_null();
+                }
+
+                auto options = vm.argument(1);
+                if (!options.is_nullish() && !options.is_object())
+                    return vm.throw_completion<JS::TypeError>("Expected publicSuffix options"_utf16);
+                auto read_option = [&](Utf16FlyString const& key) -> JS::ThrowCompletionOr<JS::Value> {
+                    if (options.is_object())
+                        return options.as_object().get(key);
+                    return JS::js_undefined();
+                };
+                auto allow_ip_address = TRY(read_option("allowIPAddress"_utf16_fly_string));
+                auto allow_plain_suffix = TRY(read_option("allowPlainSuffix"_utf16_fly_string));
+                auto allow_unknown_suffix = TRY(read_option("allowUnknownSuffix"_utf16_fly_string));
+                auto encoding = TRY(read_option("encoding"_utf16_fly_string));
+                for (auto value : { allow_ip_address, allow_plain_suffix, allow_unknown_suffix }) {
+                    if (!value.is_undefined() && !value.is_boolean())
+                        return vm.throw_completion<JS::TypeError>("Expected a boolean publicSuffix option"_utf16);
+                }
+                bool use_display = false;
+                if (!encoding.is_undefined()) {
+                    if (!encoding.is_string())
+                        return vm.throw_completion<JS::TypeError>("Invalid publicSuffix encoding"_utf16);
+                    auto value = encoding.as_string().utf16_string();
+                    use_display = value == "display"_utf16;
+                    if (!use_display && value != "punycode"_utf16)
+                        return vm.throw_completion<JS::TypeError>("Invalid publicSuffix encoding"_utf16);
+                }
+
+                if (!host->is_domain())
+                    return allow_ip_address.to_boolean() ? make_string(input) : JS::js_null();
+                auto domain = SuffixData::find_matching_registrable_domain(*host, StarRule::Yes);
+                if (!domain.has_value() && allow_plain_suffix.to_boolean())
+                    domain = host->serialize();
+                else if (!allow_unknown_suffix.to_boolean() && !SuffixData::find_matching_public_suffix(*host, StarRule::No).has_value())
+                    return JS::js_null();
+                if (!domain.has_value())
+                    return JS::js_null();
+                return make_string(use_display ? Unicode::IDNA::to_display(*domain) : *domain);
+            }),
+            1, name, realm);
+        api->define_direct_property(name, function, JS::default_attributes);
+    }
+    return api;
+}
 
 static JS::Value json_value_to_js_value(JS::VM& vm, JS::Realm&, StringView json_text)
 {
@@ -352,6 +432,15 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                 .types = {},
             };
 
+            if (event_key.bytes_as_string_view().starts_with("webNavigation."sv) && vm.argument_count() > 1 && !vm.argument(1).is_undefined()) {
+                auto value = JsonValue::from_string(js_value_to_json_string(vm, vm.argument(1)));
+                if (value.is_error())
+                    return vm.throw_completion<JS::TypeError>("Invalid navigation filter"_utf16);
+                auto filter = Extensions::NavigationURLFilter::parse(value.value());
+                if (filter.is_error())
+                    return vm.throw_completion<JS::TypeError>("Invalid navigation URL filter"_utf16);
+                listener.navigation_filter = filter.release_value();
+            }
             if (is_web_request) {
                 JsonObject args_obj;
                 args_obj.set("listener_id"sv, listener_id);
@@ -494,9 +583,18 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
 
     size_t arg_count = vm.argument_count();
     GC::Ptr<JS::FunctionObject> callback;
-    if (is_chrome && arg_count > 0 && vm.argument(arg_count - 1).is_function()) {
+    bool creates_menu = ns_name == "menus"sv && method_name == "create"sv;
+    if ((is_chrome || creates_menu) && arg_count > 0 && vm.argument(arg_count - 1).is_function()) {
         callback = &vm.argument(arg_count - 1).as_function();
         --arg_count;
+    }
+
+    if (creates_menu || (ns_name == "menus"sv && method_name == "update"sv)) {
+        size_t properties_index = creates_menu ? 0 : 1;
+        if (arg_count != properties_index + 1 || !vm.argument(properties_index).is_object())
+            return vm.throw_completion<JS::TypeError>("Expected menu properties"_utf16);
+        if (!TRY(vm.argument(properties_index).as_object().get("onclick"_utf16_fly_string)).is_undefined())
+            return vm.throw_completion<JS::TypeError>("Use menus.onClicked for page menu items"_utf16);
     }
 
     Optional<size_t> message_index;
@@ -546,12 +644,21 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
         serialized_args = arr.serialized();
     }
 
+    JS::Value created_menu_id;
+    if (creates_menu) {
+        auto args = JsonValue::from_string(serialized_args);
+        auto const& details = args.value().as_array().at(0);
+        if (!details.is_object() || !details.as_object().get_string("id"sv).has_value())
+            return vm.throw_completion<JS::TypeError>("Page menu items require a string ID"_utf16);
+        created_menu_id = JS::PrimitiveString::create(vm, Utf16String::from_utf8(*details.as_object().get_string("id"sv)));
+    }
     u64 call_id = s_next_api_call_id.fetch_add(1);
     m_pending_calls.set(call_id, PendingCall {
                                      .promise = promise,
                                      .callback = callback,
                                      .is_chrome = is_chrome,
                                      .clone_response = message_index.has_value(),
+                                     .creates_menu = creates_menu,
                                  });
 
     m_document->page().client().page_did_call_extension_api(
@@ -564,6 +671,8 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
         MUST(String::from_utf8(method_name)),
         serialized_args);
 
+    if (creates_menu)
+        return created_menu_id;
     if (callback)
         return JS::js_undefined();
     return promise->promise();
@@ -592,6 +701,9 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
 {
     auto& vm = main_thread_vm();
     auto& global = m_realm->global_object();
+
+    auto parsed_manifest = JsonValue::from_string(m_manifest_json);
+    auto manifest = parsed_manifest.is_error() ? JsonValue {} : parsed_manifest.release_value();
 
     auto build_root = [&](bool is_chrome) -> JS::Value {
         auto root = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
@@ -649,6 +761,43 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         if (!full_extension_page_apis)
             return root;
 
+        if (manifest_has_permission(manifest, "alarms"sv)) {
+            static constexpr Array alarms_methods { "create"sv, "get"sv, "getAll"sv, "clear"sv, "clearAll"sv };
+            auto alarms_obj = create_namespace_object("alarms"sv, alarms_methods.span(), is_chrome);
+            alarms_obj.as_object().define_direct_property("onAlarm"_utf16_fly_string, create_event_object("alarms"sv, "onAlarm"sv), JS::default_attributes);
+            root->define_direct_property("alarms"_utf16_fly_string, alarms_obj, JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "publicSuffix"sv))
+            root->define_direct_property("publicSuffix"_utf16_fly_string, make_public_suffix_api(*m_realm), JS::default_attributes);
+
+        if (manifest_has_permission(manifest, "dns"sv)) {
+            static constexpr Array dns_methods { "resolve"sv };
+            root->define_direct_property("dns"_utf16_fly_string, create_namespace_object("dns"sv, dns_methods.span(), is_chrome), JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "declarativeNetRequest"sv)) {
+            static constexpr Array request_methods { "getEnabledRulesets"sv, "updateEnabledRulesets"sv };
+            root->define_direct_property("declarativeNetRequest"_utf16_fly_string, create_namespace_object("declarativeNetRequest"sv, request_methods.span(), is_chrome), JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "privacy"sv)) {
+            auto privacy = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+            auto network = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+            static constexpr Array setting_methods { "get"sv, "set"sv, "clear"sv };
+            auto prediction = create_namespace_object("privacy.network.networkPredictionEnabled"sv, setting_methods.span(), is_chrome);
+            prediction.as_object().define_direct_property("onChange"_utf16_fly_string, create_event_object("privacy.network.networkPredictionEnabled"sv, "onChange"sv), JS::default_attributes);
+            auto global_privacy_control = create_namespace_object("privacy.network.globalPrivacyControl"sv, setting_methods.span(), is_chrome);
+            global_privacy_control.as_object().define_direct_property("onChange"_utf16_fly_string, create_event_object("privacy.network.globalPrivacyControl"sv, "onChange"sv), JS::default_attributes);
+            network->define_direct_property("networkPredictionEnabled"_utf16_fly_string, prediction, JS::default_attributes);
+            network->define_direct_property("globalPrivacyControl"_utf16_fly_string, global_privacy_control, JS::default_attributes);
+            privacy->define_direct_property("network"_utf16_fly_string, network, JS::default_attributes);
+            auto websites = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+            websites->define_direct_property("hyperlinkAuditingEnabled"_utf16_fly_string, create_namespace_object("privacy.websites.hyperlinkAuditingEnabled"sv, setting_methods.span(), is_chrome), JS::default_attributes);
+            privacy->define_direct_property("websites"_utf16_fly_string, websites, JS::default_attributes);
+            root->define_direct_property("privacy"_utf16_fly_string, privacy, JS::default_attributes);
+        }
+
         // tabs
         static constexpr Array tabs_methods { "query"sv, "get"sv, "create"sv, "update"sv, "remove"sv, "sendMessage"sv, "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
         auto tabs_obj = create_namespace_object("tabs"sv, tabs_methods.span(), is_chrome);
@@ -658,6 +807,14 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         tabs_js_obj.define_direct_property("onCreated"_utf16_fly_string, create_event_object("tabs"sv, "onCreated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onRemoved"_utf16_fly_string, create_event_object("tabs"sv, "onRemoved"sv), JS::default_attributes);
         root->define_direct_property("tabs"_utf16_fly_string, tabs_obj, JS::default_attributes);
+
+        if (manifest_has_permission(manifest, "webNavigation"sv)) {
+            static constexpr Array navigation_methods { "getFrame"sv, "getAllFrames"sv };
+            auto navigation = create_namespace_object("webNavigation"sv, navigation_methods.span(), is_chrome);
+            for (auto name : Array { "onBeforeNavigate"sv, "onCommitted"sv, "onCompleted"sv, "onDOMContentLoaded"sv, "onHistoryStateUpdated"sv, "onReferenceFragmentUpdated"sv, "onErrorOccurred"sv, "onCreatedNavigationTarget"sv })
+                navigation.as_object().define_direct_property(Utf16FlyString::from_utf8(name), create_event_object("webNavigation"sv, name), JS::default_attributes);
+            root->define_direct_property("webNavigation"_utf16_fly_string, navigation, JS::default_attributes);
+        }
 
         static constexpr Array window_methods { "getCurrent"sv };
         root->define_direct_property("windows"_utf16_fly_string, create_namespace_object("windows"sv, window_methods.span(), is_chrome), JS::default_attributes);
@@ -675,6 +832,14 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         auto browser_action_obj = create_namespace_object("browserAction"sv, action_methods.span(), is_chrome);
         browser_action_obj.as_object().define_direct_property("onClicked"_utf16_fly_string, create_event_object("browserAction"sv, "onClicked"sv), JS::default_attributes);
         root->define_direct_property("browserAction"_utf16_fly_string, browser_action_obj, JS::default_attributes);
+
+        if (manifest_has_permission(manifest, "menus"sv) || manifest_has_permission(manifest, "contextMenus"sv)) {
+            static constexpr Array methods { "create"sv, "update"sv, "remove"sv, "removeAll"sv };
+            auto menus = create_namespace_object("menus"sv, methods.span(), is_chrome);
+            menus.as_object().define_direct_property("onClicked"_utf16_fly_string, create_event_object("menus"sv, "onClicked"sv), JS::default_attributes);
+            root->define_direct_property("menus"_utf16_fly_string, menus, JS::default_attributes);
+            root->define_direct_property("contextMenus"_utf16_fly_string, menus, JS::default_attributes);
+        }
 
         // sidebarAction
         static constexpr Array sidebar_methods { "setPanel"sv, "getPanel"sv, "setTitle"sv, "getTitle"sv, "setIcon"sv, "open"sv, "close"sv, "toggle"sv, "isOpen"sv };
@@ -730,12 +895,25 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
     if (pending->callback) {
         if (success) {
             m_last_error = {};
-            auto arg = decode_response();
-            (void)JS::call(vm, *pending->callback, JS::js_undefined(), arg);
+            if (pending->creates_menu) {
+                (void)JS::call(vm, *pending->callback, JS::js_undefined());
+            } else {
+                auto arg = decode_response();
+                (void)JS::call(vm, *pending->callback, JS::js_undefined(), arg);
+            }
         } else {
             m_last_error = MUST(String::from_utf8(result_or_error_json));
             (void)JS::call(vm, *pending->callback, JS::js_undefined());
             m_last_error = {};
+        }
+        return;
+    }
+
+    // menus.create returns its ID synchronously, with completion optionally delivered to a callback.
+    if (pending->creates_menu) {
+        if (!success) {
+            auto error = JS::Error::create(*m_realm, Utf16String::from_utf8(result_or_error_json));
+            HTML::report_exception_to_console(error, *m_realm, HTML::ErrorInPromise::No);
         }
         return;
     }
@@ -941,8 +1119,17 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
         return;
     }
 
-    for (auto const& listener : listeners)
+    Optional<URL::URL> navigation_url;
+    if (namespace_name == "webNavigation"sv) {
+        auto parsed = JsonValue::from_string(args_json);
+        if (!parsed.is_error() && parsed.value().is_array() && !parsed.value().as_array().is_empty() && parsed.value().as_array().at(0).is_object())
+            navigation_url = URL::Parser::basic_parse(parsed.value().as_array().at(0).as_object().get_string("url"sv).value_or({}));
+    }
+    for (auto const& listener : listeners) {
+        if (listener.navigation_filter && (!navigation_url.has_value() || !listener.navigation_filter->matches(*navigation_url)))
+            continue;
         (void)JS::call(vm, *listener.callback, JS::js_undefined(), args.span());
+    }
 
     if (reply_id.has_value())
         m_document->page().client().page_did_reply_extension_event(*reply_id, true, "null"_string);

@@ -23,6 +23,7 @@ void ExtensionActionController::configure_from_manifest(String const& extension_
     }
     if (!entry.global_state.icon_path.has_value())
         entry.global_state.icon_path = manifest.preferred_icon(manifest.icons());
+    entry.default_icon = entry.global_state.icon_path;
     entry.global_state.enabled = true;
     m_entries.set(extension_id, move(entry));
 }
@@ -159,7 +160,8 @@ void ExtensionActionController::set_icon(String const& extension_id, Optional<St
         tab_id,
         window_id,
         [&](Web::Extensions::ExtensionActionState& global) {
-            global.icon_path = icon_path;
+            global.icon_path = icon_path.has_value() ? icon_path : it->value.default_icon;
+            global.use_manifest_icon = !icon_path.has_value();
         },
         [&](StateOverride& ov) {
             ov.icon_path = icon_path;
@@ -204,8 +206,10 @@ Web::Extensions::ExtensionActionState ExtensionActionController::resolved_state(
             state.badge_background_color = *ov.badge_background_color;
         if (ov.popup.has_value())
             state.popup_url = *ov.popup;
-        if (ov.icon_path.has_value())
+        if (ov.icon_path.has_value()) {
             state.icon_path = *ov.icon_path;
+            state.use_manifest_icon = false;
+        }
         if (ov.enabled.has_value())
             state.enabled = *ov.enabled;
     };

@@ -171,6 +171,11 @@ struct ApplicationSettingsObserver final : public SettingsObserver {
         Application::the().permission_settings_changed({});
     }
 
+    virtual void global_privacy_control_changed() override
+    {
+        Application::the().global_privacy_control_changed({});
+    }
+
     virtual void config_variable_changed(ConfigVariableID id) override
     {
         if (id == ConfigVariableID::MaximumDiskCacheSize)
@@ -1228,8 +1233,10 @@ ErrorOr<NonnullRefPtr<WebContentClient>> Application::create_web_content_client(
     if (m_content_blocker_list_buffer.has_value())
         client->async_set_content_blockers(*m_content_blocker_list_buffer);
 
-    if (session.is_private() == IsPrivate::No && session.extension_manager)
+    if (session.is_private() == IsPrivate::No && session.extension_manager) {
         client->async_set_web_request_watch_snapshot(session.extension_manager->web_request_coordinator().snapshot());
+        client->async_set_network_prediction_enabled(session.extension_manager->network_prediction_enabled());
+    }
 
     m_web_content_clients.set(client);
     return client;
@@ -3199,6 +3206,12 @@ void Application::schedule_permission_expiry()
 void Application::permission_settings_changed(Badge<ApplicationSettingsObserver>)
 {
     update_permission_defaults();
+}
+
+void Application::global_privacy_control_changed(Badge<ApplicationSettingsObserver>)
+{
+    if (m_default_session && m_default_session->extension_manager)
+        m_default_session->extension_manager->global_privacy_control_changed();
 }
 
 void Application::update_os_location_authorization()

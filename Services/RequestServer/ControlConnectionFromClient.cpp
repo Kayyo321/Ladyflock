@@ -281,7 +281,7 @@ DNS::Resolver::CancelRemoteSystemResolution ControlConnectionFromClient::resolve
     };
 }
 
-void ControlConnectionFromClient::resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses)
+void ControlConnectionFromClient::resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses, Optional<ByteString> canonical_name)
 {
     auto on_resolved = m_pending_system_resolutions.take(resolution_id);
     if (!on_resolved.has_value()) {
@@ -306,7 +306,7 @@ void ControlConnectionFromClient::resolved_host_with_system_resolver(u64 resolut
         else
             dbgln("RequestServer: Ignoring an address the system resolver returned that does not parse: {}", address);
     }
-    (*on_resolved)(move(parsed_addresses));
+    (*on_resolved)(DNS::Resolver::ResolvedSystemHost { move(parsed_addresses), move(canonical_name) });
 }
 
 void ControlConnectionFromClient::retrieved_http_cookie(int client_id, u64 request_id, RequestType request_type, u64 cookie_request_id, String cookie)

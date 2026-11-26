@@ -94,6 +94,7 @@ struct WEBCOMMON_API ExtensionActionState {
     String badge_background_color;
     Optional<String> popup_url;
     Optional<String> icon_path;
+    bool use_manifest_icon { true };
     bool enabled { true };
     bool pinned { false };
 };
@@ -143,6 +144,7 @@ struct WEBCOMMON_API WebRequestWatchEntry {
 struct WEBCOMMON_API WebRequestWatchSnapshot {
     u64 revision { 0 };
     Vector<WebRequestWatchEntry> entries;
+    bool has_declarative_rules { false };
 
     bool matches(URL::URL const& url, WebRequestResourceType type) const;
 };

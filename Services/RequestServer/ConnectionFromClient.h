@@ -95,7 +95,7 @@ private:
     virtual Messages::RequestServer::ExportRequestResponse export_request(u64 request_id) override;
     virtual void import_request(u64 request_id, Requests::ExportedRequest, bool create_transfer_lease) override;
     virtual void ensure_connection(u64 request_id, URL::URL url, ::RequestServer::CacheLevel cache_level) override;
-    virtual void resolve_host(u64 lookup_id, ByteString host) override;
+    virtual void resolve_host(u64 lookup_id, ByteString host, u8 flags) override;
 
     virtual void websocket_connect(u64 websocket_id, URL::URL, Optional<HTTP::NetworkIsolationKey>, ByteString, Vector<ByteString>, Vector<ByteString>, Vector<HTTP::Header>, u64 originating_page_id, HTTP::Cookie::SameSiteContext) override;
     virtual void websocket_send(u64 websocket_id, bool, ByteBuffer) override;

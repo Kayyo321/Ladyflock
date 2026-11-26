@@ -205,7 +205,7 @@ void HistoryExecutor::traverse_the_history_by_delta(int delta, DOM::Document& so
         });
 }
 
-void HistoryExecutor::finalize_same_document_navigation(GC::Ref<LocalNavigable> target_navigable, NonnullRefPtr<SessionHistoryEntry> target_entry, RefPtr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, Optional<SessionHistoryEntryPersistedState> previous_entry_persisted_state)
+void HistoryExecutor::finalize_same_document_navigation(GC::Ref<LocalNavigable> target_navigable, NonnullRefPtr<SessionHistoryEntry> target_entry, RefPtr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, Optional<SessionHistoryEntryPersistedState> previous_entry_persisted_state, bool is_fragment_navigation)
 {
     if (target_navigable->has_been_destroyed())
         return;
@@ -221,6 +221,7 @@ void HistoryExecutor::finalize_same_document_navigation(GC::Ref<LocalNavigable> 
     auto parameters = FinalizeSameDocumentNavigationHistoryOperationParameters {
         .navigable_id = target_navigable->id(),
         .target_entry = create_same_document_navigation_entry(target_entry),
+        .is_fragment_navigation = is_fragment_navigation,
         .entry_to_replace = move(entry_to_replace_identity),
         .previous_entry_persisted_state = move(previous_entry_persisted_state),
         .history_handling = history_handling,

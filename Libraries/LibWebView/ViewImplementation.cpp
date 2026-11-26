@@ -5942,7 +5942,7 @@ void ViewImplementation::prepare_inspect_element(Gfx::IntPoint content_position)
     page().async_get_node_id_at_position(request_id, { content_position.x(), content_position.y() });
 }
 
-void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
     prepare_inspect_element(content_position);
@@ -5951,20 +5951,24 @@ void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, We
     auto request_id = ++m_context_menu_request_id;
     auto weak_this = make_weak_ptr();
     auto makes_link_to_highlight = text_fragment_generation_id.has_value();
+    Optional<Web::HTML::CrossProcessId> menu_document;
+    if (requesting_page.hosted_document_with_id(document_id))
+        menu_document = document_id;
     // NB: The menu lists the guesses for a misspelled word, so it waits for them.
-    update_context_menu_misspelling(move(misspelled_word), [weak_this, request_id, content_position, for_input_events_target, makes_link_to_highlight] {
+    update_context_menu_misspelling(move(misspelled_word), [weak_this, request_id, content_position, for_input_events_target, makes_link_to_highlight, menu_document] {
         if (!weak_this || request_id != weak_this->m_context_menu_request_id)
             return;
-        weak_this->request_context_menu_dictionary_lookup([weak_this, request_id, content_position, for_input_events_target, makes_link_to_highlight](auto const& lookup) {
+        weak_this->request_context_menu_dictionary_lookup([weak_this, request_id, content_position, for_input_events_target, makes_link_to_highlight, menu_document](auto const& lookup) {
             if (!weak_this || request_id != weak_this->m_context_menu_request_id)
                 return;
 
-            auto open_menu = [weak_this, request_id, content_position, for_input_events_target, lookup, makes_link_to_highlight](Optional<String> selected_text) {
+            auto open_menu = [weak_this, request_id, content_position, for_input_events_target, lookup, makes_link_to_highlight, menu_document](Optional<String> selected_text) {
                 if (!weak_this || request_id != weak_this->m_context_menu_request_id)
                     return;
 
                 ContextMenuRequest request;
                 request.kind = ContextMenuKind::Page;
+                request.extension_menu_document = menu_document;
                 request.is_editable = for_input_events_target == Web::ContextMenuForInputEventsTarget::Yes;
                 request.selected_text = move(selected_text);
                 request.dictionary_lookup = lookup;
@@ -5990,7 +5994,7 @@ void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, We
     });
 }
 
-void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
     prepare_inspect_element(content_position);
@@ -5998,6 +6002,7 @@ void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, Gf
 
     ContextMenuRequest request;
     request.kind = ContextMenuKind::Link;
+    request.extension_menu_document = document_id;
     request.link_navigation = move(navigation);
     request.makes_link_to_highlight = text_fragment_generation_id.has_value();
     send_context_menu_request(move(request), content_position);
@@ -6026,13 +6031,14 @@ void ViewImplementation::download_url(URL::URL const& url, PromptForPath prompt_
     });
 }
 
-void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
     prepare_inspect_element(content_position);
     ++m_context_menu_request_id;
 
     ContextMenuRequest request;
     request.kind = ContextMenuKind::Image;
+    request.extension_menu_document = document_id;
     request.navigation = move(navigation);
     request.image_bitmap = move(bitmap);
     request.link_navigation = move(link_navigation);
@@ -6040,7 +6046,7 @@ void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, G
     send_context_menu_request(move(request), content_position);
 }
 
-void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
     prepare_inspect_element(content_position);
     ++m_context_menu_request_id;
@@ -6049,6 +6055,7 @@ void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, W
 
     ContextMenuRequest request;
     request.kind = ContextMenuKind::Media;
+    request.extension_menu_document = document_id;
     request.media = move(media);
     request.navigation = move(navigation);
     send_context_menu_request(move(request), content_position);

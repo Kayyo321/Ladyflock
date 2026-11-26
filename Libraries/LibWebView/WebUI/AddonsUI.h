@@ -8,6 +8,7 @@
 
 #include <AK/HashTable.h>
 #include <AK/JsonValue.h>
+#include <LibImageDecoderClient/Client.h>
 #include <LibWebView/Extensions/ExtensionInstaller.h>
 #include <LibWebView/WebUI.h>
 
@@ -36,6 +37,9 @@ private:
     void remove_extension(JsonValue const&);
     void set_extension_site_access(JsonValue const&);
     void search_catalog(JsonValue const&);
+    void get_extension_icon(JsonValue const&);
+    void decode_extension_icon(String key, ErrorOr<ByteBuffer>, Optional<ByteString> mime_type = {});
+    void send_extension_icon(String const& key, Optional<String> data_url = {});
     void pick_local_xpi(JsonValue const&);
     void stage_catalog_install(JsonValue const&);
     void stage_catalog_package(String const& extension_id, bool is_update);
@@ -48,6 +52,11 @@ private:
     void get_support_matrix(JsonValue const&);
 
     HashTable<String> m_pending_tokens;
+    HashMap<String, String> m_catalog_icon_urls;
+    HashTable<String> m_pending_icons;
+    RefPtr<ImageDecoderClient::Client> m_icon_decoder;
+    Optional<u64> m_icon_decoder_generation;
+    u64 m_catalog_search_generation { 0 };
     bool m_picker_open { false };
 };
 

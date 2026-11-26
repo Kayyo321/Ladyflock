@@ -392,6 +392,7 @@ private:
     virtual void dispatch_extension_event(Web::PageId page_id, String extension_id, String namespace_name, String event_name, String args_json, Optional<u64> reply_id, Optional<Web::HTML::CrossProcessId> document_id) override;
     virtual void revoke_extension_world(Web::PageId page_id, String extension_id, Optional<Web::HTML::CrossProcessId> document_id, u64 new_grant_generation) override;
     virtual void set_web_request_watch_snapshot(Web::Extensions::WebRequestWatchSnapshot snapshot) override;
+    virtual void set_network_prediction_enabled(bool enabled) override;
     virtual void did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestDecision decision) override;
 
     RefPtr<TestConnection> m_test_connection;

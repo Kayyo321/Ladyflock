@@ -29,10 +29,13 @@ public:
         String const& args_json,
         Function<void(bool has_value, String const& result_json)> reply_callback)>;
     using PermissionCheckCallback = Function<bool(StringView extension_id, URL::URL const& url)>;
+    using DeclarativeBlockCallback = Function<bool(Web::Extensions::WebRequestBeforeRequestDetails const&, Optional<URL::URL> const&)>;
 
     void set_on_snapshot_changed(SnapshotCallback cb) { m_on_snapshot_changed = move(cb); }
     void set_dispatch_event_callback(DispatchEventCallback cb) { m_dispatch_event = move(cb); }
     void set_permission_check_callback(PermissionCheckCallback cb) { m_has_permission = move(cb); }
+    void set_declarative_block_callback(DeclarativeBlockCallback cb) { m_declarative_block = move(cb); }
+    void set_has_declarative_rules(bool);
 
     void add_listener(
         String extension_id,
@@ -62,6 +65,7 @@ private:
     SnapshotCallback m_on_snapshot_changed;
     DispatchEventCallback m_dispatch_event;
     PermissionCheckCallback m_has_permission;
+    DeclarativeBlockCallback m_declarative_block;
 };
 
 }

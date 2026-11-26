@@ -37,6 +37,7 @@ public:
 
     ~CanonicalDocument();
 
+    String const& extension_document_id() const;
     Web::HTML::CrossProcessId id() const { return m_id; }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-creation-url
@@ -73,6 +74,10 @@ public:
     bool is_allowed_to_use(Web::PermissionsPolicy::PolicyControlledFeature) const;
 
     // https://html.spec.whatwg.org/multipage/dom.html#completely-loaded
+    bool reached_dom_content_loaded() const { return m_reached_dom_content_loaded; }
+    void set_reached_dom_content_loaded() { m_reached_dom_content_loaded = true; }
+    bool take_pending_dom_content_loaded() { return exchange(m_pending_dom_content_loaded, false); }
+    void defer_dom_content_loaded() { m_pending_dom_content_loaded = true; }
     bool is_completely_loaded() const { return m_completely_loaded; }
     void set_completely_loaded() { m_completely_loaded = true; }
 
@@ -121,6 +126,7 @@ private:
     CanonicalDocument(Web::HTML::CrossProcessId id, URL::URL creation_url, URL::Origin, NonnullRefPtr<CanonicalBrowsingContext>, NonnullRefPtr<CanonicalWindow>, Web::HTML::SandboxingFlagSet active_sandboxing_flag_set, IsInitialAboutBlank);
 
     Web::HTML::CrossProcessId m_id;
+    mutable Optional<String> m_extension_document_id;
     URL::URL m_creation_url;
     URL::Origin m_origin;
     NonnullRefPtr<CanonicalBrowsingContext> m_browsing_context;
@@ -130,6 +136,8 @@ private:
     Web::HTML::OpenerPolicy m_opener_policy;
     Web::HTML::EmbedderPolicy m_embedder_policy;
     Web::PermissionsPolicy::PermissionsPolicy m_permissions_policy { Web::PermissionsPolicy::PermissionsPolicy::empty_permissions_policy() };
+    bool m_reached_dom_content_loaded { false };
+    bool m_pending_dom_content_loaded { false };
     bool m_completely_loaded { false };
     u32 m_unload_counter { 0 };
     bool m_is_local_file_content { false };

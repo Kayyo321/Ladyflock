@@ -17,6 +17,7 @@
 #include <LibRequests/CacheState.h>
 #include <LibRequests/ExportedRequest.h>
 #include <LibRequests/ExtensionRequestCheck.h>
+#include <LibRequests/HostLookupFlag.h>
 #include <LibRequests/RequestTimingInfo.h>
 #include <LibRequests/RequestTransferLease.h>
 #include <LibRequests/WebSocket.h>
@@ -64,6 +65,7 @@ public:
     void ensure_connection(URL::URL const&, RequestServer::CacheLevel);
     // Calls back with no addresses when the lookup fails or a proxy is configured.
     void resolve_host(ByteString const& host, Function<void(Vector<ByteString>)> on_resolved);
+    void resolve_host(ByteString const& host, HostLookupFlag flags, Function<void(Vector<ByteString>, Optional<ByteString>)> on_resolved);
     int request_server_client_id() const { return m_request_server_client_id; }
 
     // No other client this process creates has the same epoch, so a request is known by its id and this epoch.
@@ -86,7 +88,7 @@ private:
     virtual void request_finished(u64 request_id, u64, RequestTimingInfo, Optional<NetworkError>) override;
     virtual void headers_became_available(u64 request_id, URL::URL, Vector<HTTP::Header>, Optional<u32>, Optional<String>, CacheState, ByteString http_version) override;
     virtual void request_transferred(u64 request_id) override;
-    virtual void host_resolved(u64 lookup_id, Vector<ByteString> addresses) override;
+    virtual void host_resolved(u64 lookup_id, Vector<ByteString> addresses, Optional<ByteString> canonical_name) override;
 
     virtual void websocket_connected(u64 websocket_id) override;
     virtual void websocket_received(u64 websocket_id, bool, ByteBuffer) override;
@@ -105,7 +107,7 @@ private:
     HashMap<u64, NonnullRefPtr<WebSocket>> m_websockets;
     u64 m_next_websocket_id { 0 };
 
-    HashMap<u64, Function<void(Vector<ByteString>)>> m_host_lookups;
+    HashMap<u64, Function<void(Vector<ByteString>, Optional<ByteString>)>> m_host_lookups;
     u64 m_next_host_lookup_id { 0 };
 };
 

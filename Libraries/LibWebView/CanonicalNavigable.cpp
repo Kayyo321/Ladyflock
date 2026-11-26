@@ -36,6 +36,17 @@ CanonicalNavigable::CanonicalNavigable(Web::HTML::CrossProcessId id)
 {
 }
 
+i64 CanonicalNavigable::extension_frame_id() const
+{
+    if (is_top_level_traversable())
+        return 0;
+    // The public ID follows this navigable across document and process replacements.
+    static i64 next_frame_id = 1;
+    if (!m_extension_frame_id)
+        m_extension_frame_id = next_frame_id++;
+    return m_extension_frame_id;
+}
+
 RefPtr<WebContentPage> CanonicalNavigable::reporting_page() const
 {
     if (!m_container_document)
@@ -1556,9 +1567,14 @@ bool CanonicalNavigable::is_script_closable() const
 
 void CanonicalNavigable::document_completely_finished_loading(CanonicalDocument& document)
 {
+    bool already_loaded = document.is_completely_loaded();
     document.set_completely_loaded();
     if (&document != &active_document())
         return;
+    if (!already_loaded && document.host() && document.creation_url() != URL::about_error() && !document.is_initial_about_blank()) {
+        if (auto* manager = document.host()->client().session().extension_manager.ptr())
+            manager->dispatch_navigation_event(*this, "onCompleted"sv);
+    }
     send_replicated_state();
     send_completely_finished_loading_to_container();
 }
@@ -1666,8 +1682,9 @@ void CanonicalNavigable::did_commit_navigation(CanonicalSessionHistoryEntry& ent
             view->did_change_display_page({}, previous_display_page);
     }
     update_hosted_state(move(hosted_state));
-    if (document != previous_document && document->is_completely_loaded())
+    if (document != previous_document && document->is_completely_loaded()) {
         send_completely_finished_loading_to_container();
+    }
 
     // The displaced document is gone, and its child navigables with it. When another page hosts the activated
     // document, the page that hosted the displaced one holds the navigable remotely from now on.
@@ -1784,6 +1801,12 @@ void CanonicalNavigable::set_ongoing_navigation(CanonicalNavigation::Start navig
     m_navigations.append(move(ongoing_navigation));
     set_the_ongoing_navigation(move(navigation_id));
 
+    if (auto view = top_level_traversable().view(); view.has_value() && view->session().extension_manager) {
+        JsonObject details;
+        details.set("url"sv, m_navigations.last()->url.serialize());
+        view->session().extension_manager->dispatch_navigation_event(*this, "onBeforeNavigate"sv, move(details));
+    }
+
     // NB: An admitted navigation supersedes a pending BiDi reload. Late events from an older navigation do not.
     if (auto* bidi = WebDriverBiDi::the())
         bidi->navigation_superseded_reload(*this);
@@ -1838,6 +1861,14 @@ void CanonicalNavigable::end_navigation(CanonicalNavigation& navigation)
     auto index = m_navigations.find_first_index_if([&](auto const& candidate) { return candidate.ptr() == &navigation; });
     VERIFY(index.has_value());
     auto ended_navigation = m_navigations.take(*index);
+    if (!navigation.is_finalizing() && !navigation.state.has<CanonicalNavigation::EvaluatingJavaScriptURL>()) {
+        if (auto view = top_level_traversable().view(); view.has_value() && view->session().extension_manager) {
+            JsonObject details;
+            details.set("url"sv, navigation.url.serialize());
+            details.set("error"sv, "Navigation aborted"sv);
+            view->session().extension_manager->dispatch_navigation_event(*this, "onErrorOccurred"sv, move(details));
+        }
+    }
 
     // The page checking if unloading is canceled holds the navigation until it is told to continue it.
     if (auto worker = navigation.worker(); worker && worker->is_open() && navigation.state.has<CanonicalNavigation::CheckingIfUnloadingIsCanceled>())

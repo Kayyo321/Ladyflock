@@ -30,6 +30,7 @@ template<>
 ErrorOr<void> encode(Encoder& encoder, ::Web::HTML::WebViewHints const& data_holder)
 {
     TRY(encoder.encode(data_holder.popup));
+    TRY(encoder.encode(data_holder.requested_url));
     TRY(encoder.encode(data_holder.picture_in_picture_window));
     TRY(encoder.encode(data_holder.width));
     TRY(encoder.encode(data_holder.height));
@@ -43,6 +44,7 @@ template<>
 ErrorOr<::Web::HTML::WebViewHints> decode(Decoder& decoder)
 {
     auto popup = TRY(decoder.decode<bool>());
+    auto requested_url = TRY(decoder.decode<Optional<URL::URL>>());
     auto picture_in_picture_window = TRY(decoder.decode<Optional<Web::HTML::PictureInPictureWindowHints>>());
     auto width = TRY(decoder.decode<Optional<Web::DevicePixels>>());
     auto height = TRY(decoder.decode<Optional<Web::DevicePixels>>());
@@ -51,6 +53,7 @@ ErrorOr<::Web::HTML::WebViewHints> decode(Decoder& decoder)
 
     return ::Web::HTML::WebViewHints {
         .popup = popup,
+        .requested_url = move(requested_url),
         .picture_in_picture_window = picture_in_picture_window,
         .width = width,
         .height = height,

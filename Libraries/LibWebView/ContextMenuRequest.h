@@ -12,6 +12,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/ShareableBitmap.h>
+#include <LibWebCommon/HTML/CrossProcessId.h>
 #include <LibWebCommon/HTML/PreparedNavigationDescriptor.h>
 #include <LibWebCommon/Page/MediaContextMenu.h>
 #include <LibWebCommon/WebView/DictionaryLookup.h>
@@ -25,11 +26,30 @@ enum class ContextMenuKind : u8 {
     Media,
 };
 
+struct ExtensionMenuTarget {
+    Optional<URL::URL> link_url;
+    Optional<URL::URL> source_url;
+    Optional<String> media_type;
+    bool has_selection { false };
+    bool editable { false };
+};
+
+struct ExtensionMenuItem {
+    String extension_id;
+    String title;
+    u64 token;
+    Optional<Gfx::ShareableBitmap> icon {};
+};
+
 // What the user asked for a context menu on. The view finds this out, and the application decides what to offer.
 struct ContextMenuRequest {
     ContextMenuKind kind { ContextMenuKind::Page };
     Gfx::IntPoint widget_position;
 
+    // Hub-only identity of the top-level document that requested this menu.
+    Optional<Web::HTML::CrossProcessId> extension_menu_document {};
+    u64 extension_menu_serial { 0 };
+    Vector<ExtensionMenuItem> extension_menu_items;
     bool is_editable { false };
     Optional<String> selected_text;
     Optional<DictionaryLookup> dictionary_lookup;

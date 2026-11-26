@@ -5,6 +5,7 @@
  */
 
 #include <AK/Array.h>
+#include <AK/HashTable.h>
 #include <LibDatabase/Database.h>
 #include <LibWebView/Extensions/ExtensionStorage.h>
 
@@ -36,6 +37,7 @@ ErrorOr<NonnullOwnPtr<ExtensionStorage>> ExtensionStorage::create(Database::Data
     Statements statements {};
     statements.get_item = TRY(database.prepare_statement("SELECT value_json FROM ExtensionLocalStorage WHERE extension_id = ? AND storage_key = ?;"sv));
     statements.get_all = TRY(database.prepare_statement("SELECT storage_key, value_json FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
+    statements.get_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(length(CAST(storage_key AS BLOB)) + length(CAST(value_json AS BLOB))), 0) FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
     statements.set_item = TRY(database.prepare_statement("INSERT OR REPLACE INTO ExtensionLocalStorage (extension_id, storage_key, value_json) VALUES (?, ?, ?);"sv));
     statements.delete_item = TRY(database.prepare_statement("DELETE FROM ExtensionLocalStorage WHERE extension_id = ? AND storage_key = ?;"sv));
     statements.clear_extension = TRY(database.prepare_statement("DELETE FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
@@ -58,23 +60,28 @@ ExtensionStorage::~ExtensionStorage() = default;
 
 Optional<String> ExtensionStorage::read_raw(StringView extension_id, StringView key) const
 {
+    return MUST(try_read_raw(extension_id, key));
+}
+
+ErrorOr<Optional<String>> ExtensionStorage::try_read_raw(StringView extension_id, StringView key) const
+{
     if (!m_database) {
         if (auto ext = m_memory_store.get(extension_id); ext.has_value()) {
             if (auto val = ext->get(key); val.has_value())
                 return *val;
         }
-        return {};
+        return Optional<String> {};
     }
 
     Optional<String> result;
-    m_database->execute_statement(
+    TRY(m_database->try_execute_statement(
         m_statements.get_item,
         [&](Database::StatementID stmt) -> ErrorOr<void> {
             result = m_database->result_column<String>(stmt, 0);
             return {};
         },
         MUST(String::from_utf8(extension_id)),
-        MUST(String::from_utf8(key)));
+        MUST(String::from_utf8(key))));
     return result;
 }
 
@@ -96,15 +103,15 @@ HashMap<String, String> ExtensionStorage::read_all_raw(StringView extension_id) 
     return out;
 }
 
-void ExtensionStorage::write_raw(StringView extension_id, StringView key, StringView json_value)
+ErrorOr<void> ExtensionStorage::write_raw(StringView extension_id, StringView key, StringView json_value)
 {
     if (!m_database) {
         auto& bucket = m_memory_store.ensure(MUST(String::from_utf8(extension_id)));
         bucket.set(MUST(String::from_utf8(key)), MUST(String::from_utf8(json_value)));
-        return;
+        return {};
     }
 
-    m_database->execute_statement(
+    return m_database->try_execute_statement(
         m_statements.set_item,
         [](Database::StatementID) -> ErrorOr<void> { return {}; },
         MUST(String::from_utf8(extension_id)),
@@ -190,23 +197,95 @@ JsonObject ExtensionStorage::get(StringView extension_id, JsonValue const& keys_
     return result;
 }
 
-JsonObject ExtensionStorage::set(StringView extension_id, JsonObject const& items)
+ErrorOr<u64> ExtensionStorage::get_bytes_in_use(StringView extension_id, JsonValue const& keys_spec) const
+{
+    auto item_size = [&](StringView key) -> ErrorOr<u64> {
+        auto value = TRY(try_read_raw(extension_id, key));
+        return value.has_value() ? key.length() + value->byte_count() : 0;
+    };
+
+    if (keys_spec.is_string())
+        return item_size(keys_spec.as_string());
+
+    u64 size = 0;
+    if (keys_spec.is_array()) {
+        HashTable<String> seen;
+        for (auto const& entry : keys_spec.as_array().values()) {
+            if (!entry.is_string())
+                return Error::from_string_literal("Storage keys must be strings");
+            if (seen.set(entry.as_string()) == AK::HashSetResult::InsertedNewEntry)
+                size += TRY(item_size(entry.as_string()));
+        }
+        return size;
+    }
+
+    if (!keys_spec.is_null())
+        return Error::from_string_literal("Expected a storage key or an array of keys");
+
+    if (m_database) {
+        TRY(m_database->try_execute_statement(
+            m_statements.get_size,
+            [&](Database::StatementID stmt) -> ErrorOr<void> {
+                size = m_database->result_column<i64>(stmt, 0);
+                return {};
+            },
+            MUST(String::from_utf8(extension_id))));
+    } else if (auto bucket = m_memory_store.get(extension_id); bucket.has_value()) {
+        for (auto const& [key, value] : *bucket)
+            size += key.byte_count() + value.byte_count();
+    }
+    return size;
+}
+
+ErrorOr<JsonObject> ExtensionStorage::set(StringView extension_id, JsonObject const& items, Quota quota)
 {
     JsonObject changes;
-    items.for_each_member([&](String const& key, JsonValue const& new_val) {
-        auto new_raw = new_val.serialized();
-        auto old_raw = read_raw(extension_id, key);
-        if (old_raw.has_value() && *old_raw == new_raw)
-            return;
+    if (items.is_empty())
+        return changes;
 
-        write_raw(extension_id, key, new_raw);
+    auto apply_changes = [&]() -> ErrorOr<void> {
+        auto previous_size = quota == Quota::Limited ? TRY(get_bytes_in_use(extension_id)) : 0;
+        auto next_size = previous_size;
+        struct PendingWrite {
+            String key;
+            String value;
+        };
+        Vector<PendingWrite> writes;
+        TRY(items.try_for_each_member([&](String const& key, JsonValue const& new_value) -> ErrorOr<void> {
+            auto new_raw = new_value.serialized();
+            auto old_raw = TRY(try_read_raw(extension_id, key));
+            if (old_raw == new_raw)
+                return {};
 
-        JsonObject change;
-        if (old_raw.has_value())
-            change.set("oldValue"sv, parse_stored_json(*old_raw));
-        change.set("newValue"sv, new_val);
-        changes.set(key, move(change));
-    });
+            if (quota == Quota::Limited) {
+                if (old_raw.has_value())
+                    next_size -= old_raw->byte_count();
+                else
+                    next_size += key.byte_count();
+                next_size += new_raw.byte_count();
+            }
+
+            JsonObject change;
+            if (old_raw.has_value())
+                change.set("oldValue"sv, parse_stored_json(*old_raw));
+            change.set("newValue"sv, new_value);
+            changes.set(key, move(change));
+            writes.append({ key, move(new_raw) });
+            return {};
+        }));
+        // Existing over-quota data remains readable and can be reduced after a permission is lost.
+        if (next_size > default_quota_bytes && next_size > previous_size)
+            return Error::from_string_literal("Extension storage quota exceeded");
+
+        for (auto const& write : writes)
+            TRY(write_raw(extension_id, write.key, write.value));
+        return {};
+    };
+
+    if (m_database)
+        TRY(m_database->transaction(move(apply_changes)));
+    else
+        TRY(apply_changes());
     return changes;
 }
 

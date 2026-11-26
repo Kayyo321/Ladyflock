@@ -26,9 +26,12 @@
 #include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/HTML/CrossProcessId.h>
 #include <LibWebCommon/Page/PageId.h>
+#include <LibWebView/ContextMenuRequest.h>
 #include <LibWebView/Export.h>
 #include <LibWebView/Extensions/CatalogClient.h>
+#include <LibWebView/Extensions/DeclarativeRequestRules.h>
 #include <LibWebView/Extensions/ExtensionActionController.h>
+#include <LibWebView/Extensions/ExtensionAlarms.h>
 #include <LibWebView/Extensions/ExtensionInstaller.h>
 #include <LibWebView/Extensions/ExtensionSidebarController.h>
 #include <LibWebView/Extensions/ExtensionStorage.h>
@@ -60,6 +63,8 @@ struct WEBVIEW_API InstalledExtension {
     HashTable<String> revoked_hosts;
     HashTable<u64> active_tab_ids;
     bool from_catalog { false };
+    Optional<bool> network_prediction_setting {};
+    Vector<DeclarativeRuleset> declarative_rulesets {};
 };
 
 // Central Hub authority for extensions within one ordinary BrowsingSession.
@@ -78,6 +83,8 @@ public:
 
     ExtensionStorage& storage() { return *m_storage; }
     ExtensionStorage const& storage() const { return *m_storage; }
+    bool network_prediction_enabled() const;
+    void global_privacy_control_changed();
     ExtensionActionController& action_controller() { return m_action_controller; }
     ExtensionActionController const& action_controller() const { return m_action_controller; }
     ExtensionSidebarController& sidebar_controller() { return m_sidebar_controller; }
@@ -113,6 +120,7 @@ public:
 
     // Resource serving for moz-extension://<uuid>/<path> (with WAR & CSP).
     Web::Extensions::ExtensionResourceResponse serve_resource(URL::URL const&, Optional<URL::Origin> const& initiator_origin, Optional<size_t> size_limit = {}) const;
+    static ErrorOr<ByteBuffer> read_package_icon(ByteString const& directory, StringView path);
     bool is_extension_document_url(URL::URL const&) const;
 
     // Permission checks & activeTab.
@@ -129,6 +137,8 @@ public:
     // Tab views (excluding hidden background pages and private views).
     static bool is_extension_background_view(ViewImplementation const&);
     Vector<ViewImplementation*> ordinary_tab_views() const;
+    ErrorOr<JsonValue> navigation_frames(StringView method, JsonValue const& arguments) const;
+    void dispatch_navigation_event(CanonicalNavigable const&, StringView event, JsonObject extra = {});
     Optional<Web::Extensions::ExtensionTabInfo> tab_info_for_extension(StringView extension_id, ViewImplementation const&) const;
     Optional<u64> tab_id_for_page(WebContentClient const&, Web::PageId) const;
     Optional<u64> view_id_for_document(Web::HTML::CrossProcessId document_id) const;
@@ -185,6 +195,9 @@ public:
     static Optional<URL::URL> package_page_url(InstalledExtension const&, StringView path);
     u64 current_window_id() const;
 
+    Vector<ExtensionMenuItem> page_menu_items(ViewImplementation const&, Web::HTML::CrossProcessId, ExtensionMenuTarget const& = {}) const;
+    void activate_page_menu_item(ViewImplementation const&, Web::HTML::CrossProcessId, u64 token, ExtensionMenuTarget const& = {});
+
     JsonObject summary_json() const;
 
     // Invokes action on a tab (popup or action.onClicked + activeTab).
@@ -200,6 +213,10 @@ private:
 
     void broadcast_world_revocation(StringView extension_id, u64 new_grant_generation, bool include_extension_pages = true);
     void push_watch_snapshot_everywhere(Web::Extensions::WebRequestWatchSnapshot const&);
+    void refresh_declarative_watch_state();
+    Optional<InstalledExtension const&> network_prediction_owner() const;
+    JsonObject network_prediction_setting_for(StringView extension_id) const;
+    void notify_network_prediction_changed(bool previously_enabled);
 
     void register_extension_entry(InstalledExtension, bool first_install = false);
     void dispatch_installed_event(InstalledExtension const&, Optional<String> previous_version = {});
@@ -242,11 +259,26 @@ private:
 
     NonnullOwnPtr<ExtensionStorage> m_storage;
     ExtensionActionController m_action_controller;
+    ExtensionAlarms m_alarms;
     ExtensionSidebarController m_sidebar_controller;
     RevocationList m_revocation_list;
     CatalogClient m_catalog_client;
     ExtensionInstaller m_installer;
     WebRequestCoordinator m_web_request_coordinator;
+
+    ErrorOr<void> change_page_menu(String const& extension_id, StringView method, JsonArray const&);
+    struct MenuRegistration {
+        bool matches(CanonicalNavigable const&, ExtensionMenuTarget const&) const;
+        String id;
+        String title;
+        u64 token;
+        Vector<String> contexts { "page"_string };
+        Vector<Web::Extensions::MatchPattern> documents {};
+        Vector<Web::Extensions::MatchPattern> targets {};
+        bool matches_abp_links { false };
+    };
+    HashMap<String, Vector<MenuRegistration>> m_page_menus;
+    u64 m_next_menu_token { 1 };
 
     HashMap<String, InstalledExtension> m_extensions_by_id;
     HashMap<String, String> m_id_by_uuid;

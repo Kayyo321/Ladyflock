@@ -35,6 +35,7 @@ public:
     static ConnectionFromUI* the();
 
     static Vector<DownloadState> downloads();
+    void populate_extension_menu_icons(Vector<WebView::ExtensionMenuItem>&, WebView::Extensions::ExtensionManager&);
 
     // The ID that the UI gave an input event, from the browser data of the event. Input the UI didn't send has none,
     // whether it carries no browser data or someone else's (WebDriver's, e.g.).
@@ -226,6 +227,7 @@ private:
     virtual void view_download_translation_languages(u64 view_id, String target_language) override;
     virtual void view_prefer_higher_quality_translation(u64 view_id, bool prefers_higher_quality) override;
     virtual void view_download_url(u64 view_id, URL::URL url, bool prompt_for_path, Optional<String> image_mime_type) override;
+    virtual void view_activate_extension_menu_item(u64 view_id, u64 serial, u64 token) override;
     virtual void view_inspect_context_menu_element(u64 view_id) override;
     virtual void view_replace_context_menu_misspelling(u64 view_id, Utf16String replacement) override;
     virtual void view_ignore_misspelling(u64 view_id, Utf16String word) override;

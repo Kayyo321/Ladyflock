@@ -321,6 +321,7 @@ void View::forward_callbacks_to_ui(bool is_tab)
     };
 
     on_load_start = [this] {
+        m_extension_menu_document.clear();
         if (m_is_tab && session().extension_manager && session().extension_manager->extensions_enabled())
             session().extension_manager->notify_tab_updated(view_id(), WebView::Extensions::ExtensionManager::TabChange::Loading);
         if (auto* ui = ConnectionFromUI::the()) {
@@ -808,9 +809,44 @@ void View::read_clipboard_item(Function<void(Web::Clipboard::SystemClipboardItem
 
 void View::did_request_context_menu(WebView::ContextMenuRequest request)
 {
+    ++m_extension_menu_serial;
+    m_extension_menu_document.clear();
+    m_extension_menu_items.clear();
+    m_extension_menu_target = {};
+    if (m_is_tab && session().extension_manager && request.extension_menu_document.has_value()) {
+        m_extension_menu_target.editable = request.is_editable;
+        m_extension_menu_target.has_selection = request.selected_text.has_value();
+        if (request.link_navigation.has_value())
+            m_extension_menu_target.link_url = request.link_navigation->url;
+        if (request.navigation.has_value())
+            m_extension_menu_target.source_url = request.navigation->url;
+        if (request.kind == WebView::ContextMenuKind::Image)
+            m_extension_menu_target.media_type = "image"_string;
+        else if (request.media.has_value())
+            m_extension_menu_target.media_type = request.media->is_video ? "video"_string : "audio"_string;
+        m_extension_menu_document = request.extension_menu_document;
+        m_extension_menu_items = session().extension_manager->page_menu_items(*this, *m_extension_menu_document, m_extension_menu_target);
+        request.extension_menu_serial = m_extension_menu_serial;
+        request.extension_menu_items = m_extension_menu_items;
+    }
     if (auto* ui = ConnectionFromUI::the()) {
         push_state_to_ui();
+        if (!request.extension_menu_items.is_empty())
+            ui->populate_extension_menu_icons(request.extension_menu_items, *session().extension_manager);
         ui->async_view_request_context_menu(view_id(), move(request));
+    }
+}
+
+void View::activate_extension_menu_item(u64 serial, u64 token)
+{
+    if (!m_extension_menu_document.has_value() || m_extension_menu_serial != serial || !is_current_tab_of_window() || !session().extension_manager)
+        return;
+    for (auto const& item : m_extension_menu_items) {
+        if (item.token == token) {
+            auto document = m_extension_menu_document.release_value();
+            session().extension_manager->activate_page_menu_item(*this, document, token, m_extension_menu_target);
+            return;
+        }
     }
 }
 

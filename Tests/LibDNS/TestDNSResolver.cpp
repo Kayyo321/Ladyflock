@@ -261,14 +261,21 @@ TEST_CASE(test_remote_system_resolver_answers_lookups)
     resolver.set_remote_system_resolver([&](ByteString const& name, Core::Socket::AddressFamily family, Function<void(DNS::Resolver::SystemResolution)> on_resolved) -> DNS::Resolver::CancelRemoteSystemResolution {
         asked.append(name);
         if (family == Core::Socket::AddressFamily::IPv4Only)
-            on_resolved(Vector<DNS::LookupResult::Address> { IPv4Address { 192, 0, 2, 9 } });
+            on_resolved(DNS::Resolver::ResolvedSystemHost { { IPv4Address { 192, 0, 2, 9 } }, ByteString("alias.example.com"sv) });
         else
-            on_resolved(Vector<DNS::LookupResult::Address> {});
+            on_resolved(DNS::Resolver::ResolvedSystemHost {});
         return {};
     });
 
     auto result = TRY_OR_FAIL(await_lookup(resolver.lookup("example.com", DNS::Messages::Class::IN, { .query_aaaa_without_global_ipv6 = true })));
     EXPECT_EQ(result->cached_addresses().first().get<IPv4Address>(), (IPv4Address { 192, 0, 2, 9 }));
+    EXPECT_EQ(asked.size(), 2u);
+    auto alias = result->records().first_matching([](auto const& record) { return record.type == DNS::Messages::ResourceType::CNAME; });
+    EXPECT(alias.has_value());
+    if (alias.has_value())
+        EXPECT(alias->text.bytes_as_string_view().trim("."sv, TrimMode::Right) == "alias.example.com"sv);
+    auto offline = resolver.lookup("unresolved.example", DNS::Messages::Class::IN, { .cache_only = true });
+    EXPECT(await_lookup(offline).is_error());
     EXPECT_EQ(asked.size(), 2u);
 }
 
@@ -338,7 +345,7 @@ TEST_CASE(test_remote_system_resolver_lookups_given_up_on_are_cancelled)
 
     // Answers that come anyway are dropped.
     for (auto& on_resolved : unanswered)
-        on_resolved(Vector<DNS::LookupResult::Address> { IPv4Address { 192, 0, 2, 9 } });
+        on_resolved(DNS::Resolver::ResolvedSystemHost { { IPv4Address { 192, 0, 2, 9 } }, {} });
     bool spun = false;
     auto timer = Core::Timer::create_single_shot(AK::Duration::zero(), [&] { spun = true; });
     timer->start();
@@ -349,7 +356,7 @@ TEST_CASE(test_remote_system_resolver_lookups_given_up_on_are_cancelled)
     auto promise = resolver.lookup("example.com", DNS::Messages::Class::IN, { .query_aaaa_without_global_ipv6 = true });
     EXPECT_EQ(unanswered.size(), 2u);
     for (auto& on_resolved : unanswered)
-        on_resolved(Vector<DNS::LookupResult::Address> { IPv4Address { 192, 0, 2, 10 } });
+        on_resolved(DNS::Resolver::ResolvedSystemHost { { IPv4Address { 192, 0, 2, 10 } }, {} });
     auto result = TRY_OR_FAIL(await_lookup(promise));
     EXPECT_EQ(result->cached_addresses().first().get<IPv4Address>(), (IPv4Address { 192, 0, 2, 10 }));
 }

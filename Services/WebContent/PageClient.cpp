@@ -1141,6 +1141,11 @@ GC::Ptr<WebContentConsoleClient> PageClient::attach_js_console(Web::DOM::Documen
     return as<WebContentConsoleClient>(*console_client);
 }
 
+void PageClient::page_did_reach_dom_content_loaded(Web::HTML::CrossProcessId navigable, Web::HTML::CrossProcessId document)
+{
+    client().async_did_reach_dom_content_loaded(m_id, navigable, document);
+}
+
 void PageClient::page_did_finish_loading(Web::HTML::CrossProcessId navigable_id, Web::HTML::CrossProcessId document_id)
 {
     client().async_did_finish_loading(m_id, navigable_id, document_id);
@@ -1365,10 +1370,10 @@ Optional<URL::URL> PageClient::generate_text_fragment_url(u64 generation_id)
     return Web::HTML::generate_text_fragment_url(*document, **range, document->url());
 }
 
-void PageClient::page_did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::CSSPixelPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, GC::Ptr<Web::DOM::Range> selected_text_range)
+void PageClient::page_did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, GC::Ptr<Web::DOM::Range> selected_text_range)
 {
     auto text_fragment_generation_id = prepare_text_fragment_generation(selected_text_range);
-    client().async_did_request_context_menu(m_id, local_root_id, page().css_to_device_point(content_position).to_type<int>(), for_input_events_target, move(misspelled_word), text_fragment_generation_id);
+    client().async_did_request_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), for_input_events_target, move(misspelled_word), text_fragment_generation_id);
 }
 
 void PageClient::page_did_request_spelling_menu_action_for_testing(Web::SpellingMenuActionForTesting action, u32 guess_index)
@@ -1376,24 +1381,24 @@ void PageClient::page_did_request_spelling_menu_action_for_testing(Web::Spelling
     client().async_did_request_spelling_menu_action_for_testing(m_id, action, guess_index);
 }
 
-void PageClient::page_did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, GC::Ptr<Web::DOM::Range> selected_text_range)
+void PageClient::page_did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, GC::Ptr<Web::DOM::Range> selected_text_range)
 {
     auto text_fragment_generation_id = prepare_text_fragment_generation(selected_text_range);
-    client().async_did_request_link_context_menu(m_id, local_root_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, text_fragment_generation_id);
+    client().async_did_request_link_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, text_fragment_generation_id);
 }
 
-void PageClient::page_did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, Optional<Gfx::Bitmap const*> bitmap_pointer, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void PageClient::page_did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, Optional<Gfx::Bitmap const*> bitmap_pointer, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
     Optional<Gfx::ShareableBitmap> bitmap;
     if (bitmap_pointer.has_value() && bitmap_pointer.value())
         bitmap = bitmap_pointer.value()->to_shareable_bitmap();
 
-    client().async_did_request_image_context_menu(m_id, local_root_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, bitmap, move(link_navigation), move(image_mime_type));
+    client().async_did_request_image_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, bitmap, move(link_navigation), move(image_mime_type));
 }
 
-void PageClient::page_did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::CSSPixelPoint content_position, ByteString const& target, unsigned modifiers, Web::Page::MediaContextMenu const& menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void PageClient::page_did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, ByteString const& target, unsigned modifiers, Web::Page::MediaContextMenu const& menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
-    client().async_did_request_media_context_menu(m_id, local_root_id, page().css_to_device_point(content_position).to_type<int>(), target, modifiers, menu, move(navigation));
+    client().async_did_request_media_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), target, modifiers, menu, move(navigation));
 }
 
 void PageClient::set_geolocation_emulated_position(WebView::GeolocationPositionData const& position, Optional<u16> error_code)

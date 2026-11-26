@@ -57,6 +57,29 @@ def run_test(webdriver_binary, theme, width, screenshots):
                     data,
                 )
 
+            def expect_icon(selector):
+                command(
+                    "POST",
+                    "execute/async",
+                    {
+                        "script": """
+                        const [selector, done] = arguments;
+                        const icon = document.querySelector(selector + " .extension-icon");
+                        if (icon.querySelector("img")?.naturalWidth) return done();
+                        const observer = new MutationObserver(() => {
+                            if (icon.querySelector("img")?.naturalWidth) { observer.disconnect(); done(); }
+                        });
+                        observer.observe(icon, {childList: true});
+                        """,
+                        "args": [selector],
+                    },
+                )
+                assert script(
+                    "const icon = document.querySelector(arguments[0] + ' .extension-icon');"
+                    "return icon.getBoundingClientRect().width === 32 && icon.getAttribute('aria-hidden') === 'true';",
+                    selector,
+                )
+
             def click(selector):
                 script("document.querySelector(arguments[0]).click();", selector)
 
@@ -92,6 +115,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             script("window.requests = []; ladybird.sendMessage = (name, data) => requests.push([name, data]);")
             ext = {
                 "extension_id": "fixture@example.test",
+                "icon_key": "package-key",
                 "name": "Example extension with a long name " + "abcdef" * 12,
                 "version": "1.0",
                 "source": "unpacked",
@@ -104,6 +128,14 @@ def run_test(webdriver_binary, theme, width, screenshots):
             }
             summary = {"extensions": [ext], "extensions_enabled": True, "enable_public_amo_catalog": True}
             reply("installedExtensions", **summary)
+            assert sent() == ["getExtensionIcon", {"icon_key": "package-key"}]
+            assert script("return !!document.querySelector('#installed .extension-icon svg');")
+            reply("extensionIcon", icon_key="package-key", icon_data_url="https://example.invalid/image.png")
+            assert script("return !document.querySelector('#installed .extension-icon img');")
+            fixture = Path(__file__).resolve().parents[2] / "Base/res/icons/48x48/app-browser.png"
+            png = "data:image/png;base64," + base64.b64encode(fixture.read_bytes()).decode()
+            reply("extensionIcon", icon_key="package-key", icon_data_url=png)
+            expect_icon("#installed")
             click('[data-control="enabled"]')
             assert sent() == ["setExtensionEnabled", {"extension_id": ext["extension_id"], "enabled": False}]
             assert script("return document.querySelector('[data-control=enabled]').checked;")
@@ -116,6 +148,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             assert script("return document.querySelector('details').open;")
 
             click('[data-control="remove"]')
+            expect_icon("#review")
             assert script("return document.activeElement.id;") == "cancel"
             command(
                 "POST",
@@ -140,6 +173,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             assert name == "searchCatalog" and request["query"] == "example" and request["page"] == 1
             catalog_entry = {
                 "addon_id": "catalog@example.test",
+                "icon_key": "catalog-key",
                 "name": "Example catalog entry",
                 "version": "2",
                 "summary": "<b>plain text</b>",
@@ -152,10 +186,27 @@ def run_test(webdriver_binary, theme, width, screenshots):
             reply("catalogSearchResults", request_id=request["request_id"], results=[catalog_entry], has_more=True)
             assert script("return !document.querySelector('#results b') && !document.querySelector('#pages').hidden;")
             assert script("return document.documentElement.scrollWidth <= innerWidth;")
+            assert sent() == ["getExtensionIcon", {"icon_key": "catalog-key"}]
+            reply("extensionIcon", icon_key="catalog-key", icon_data_url=png)
+            expect_icon("#results")
             screenshot("installed-and-catalog")
+            script("document.querySelector('#results').scrollIntoView();")
+            screenshot("catalog-icon")
             click("#next")
             assert sent()[1]["page"] == 2
-            reply("catalogSearchResults", request_id=sent()[1]["request_id"], results=[catalog_entry], has_more=False)
+            reply(
+                "catalogSearchResults",
+                request_id=sent()[1]["request_id"],
+                results=[catalog_entry, dict(catalog_entry, addon_id="missing-icon@example.test", icon_key="missing")],
+                has_more=False,
+            )
+            assert sent() == ["getExtensionIcon", {"icon_key": "missing"}]
+            reply("extensionIcon", icon_key="missing")
+            expect_icon("#results article:first-child")
+            assert script("return !!document.querySelector('#results article:last-child .extension-icon svg');")
+            requests = script("return window.requests.filter(([name]) => name === 'getExtensionIcon');")
+            assert requests.count(["getExtensionIcon", {"icon_key": "catalog-key"}]) == 1
+            screenshot("catalog-fallback")
             assert script(
                 "return document.querySelector('#next').disabled && !document.querySelector('#previous').disabled;"
             )
@@ -164,6 +215,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             assert sent() == ["stageCatalogInstall", {"extension_id": catalog_entry["addon_id"]}]
             staged = {
                 "token": "opaque-review-token",
+                "icon_key": "package-key",
                 "name": catalog_entry["name"],
                 "version": "2",
                 "verified_signature": True,
@@ -178,6 +230,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             reply("installStaged", **staged)
             assert script("return document.activeElement.id;") == "cancel"
             assert sent()[0] == "stageCatalogInstall"
+            expect_icon("#review")
             review = script("return document.querySelector('#review').textContent;")
             for value in (
                 "storage",
@@ -206,6 +259,16 @@ def run_test(webdriver_binary, theme, width, screenshots):
             reply("installCancelled")
             click("#pick-file")
             assert sent() == ["pickLocalXpi", {}]
+            reply(
+                "installStaged",
+                error="Package incompatible",
+                compatibility_reasons=["Unsupported pattern <file>", "Unsupported permission"],
+            )
+            assert script("return document.querySelector('#notice.error').textContent;") == (
+                "Package incompatible\nUnsupported pattern <file>\nUnsupported permission"
+            )
+            assert not script("return !!document.querySelector('#notice file');")
+            click("#pick-file")
             reply("installStaged", **dict(staged, verified_signature=False))
             assert sent() == ["cancelInstall", {"token": staged["token"]}]
             assert not script("return document.querySelector('#review').open;")
@@ -217,7 +280,8 @@ def run_test(webdriver_binary, theme, width, screenshots):
             reply("installCompleted", summary=summary)
             click('[data-control="update"]')
             assert sent() == ["checkManualUpdate", {"extension_id": ext["extension_id"]}]
-            reply("updateStaged", **staged, newly_requested_permissions=["storage"])
+            reply("updateStaged", **dict(staged, icon_key=None), newly_requested_permissions=["storage"])
+            assert script("return !!document.querySelector('#review .extension-icon svg');")
             assert script(
                 "return document.querySelector('#review').innerText.includes('New permissions in this update');"
             )

@@ -45,6 +45,8 @@ struct WEBCOMMON_API ActionConfig {
     Optional<String> default_popup;
     Optional<String> default_title;
     HashMap<String, String> default_icons;
+    Optional<String> light_icon;
+    Optional<String> dark_icon;
 };
 
 struct WEBCOMMON_API SidebarActionConfig {
@@ -100,6 +102,7 @@ public:
 
     static ErrorOr<HashMap<String, String>> parse_icon_map(JsonValue const&);
     static Optional<String> preferred_icon(HashMap<String, String> const&);
+    Optional<String> package_icon_path() const;
     bool has_permission(StringView name) const;
     bool has_host_permission_for(URL::URL const&) const;
     bool is_web_accessible(StringView relative_path, Optional<URL::URL> const& initiator_url, Optional<StringView> initiator_extension_id = {}) const;

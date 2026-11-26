@@ -86,9 +86,10 @@ void RequestControlClient::resolve_host_with_system_resolver(u64 resolution_id, 
         // A lookup that waited in the queue past the deadline has no one left to answer, so it isn't made, and
         // RequestServer gets a failure for it, which it drops.
         Optional<Vector<ByteString>> addresses;
+        Optional<ByteString> canonical_name;
         if (MonotonicTime::now() - queued_at < SYSTEM_LOOKUP_DEADLINE) {
             auto family = ipv6 ? Core::Socket::AddressFamily::IPv6Only : Core::Socket::AddressFamily::IPv4Only;
-            auto addresses_or_error = Core::Socket::resolve_host(host, Core::Socket::SocketType::Stream, family);
+            auto addresses_or_error = Core::Socket::resolve_host(host, Core::Socket::SocketType::Stream, family, &canonical_name);
             if (!addresses_or_error.is_error()) {
                 addresses = Vector<ByteString> {};
                 for (auto const& address : addresses_or_error.value())
@@ -99,9 +100,9 @@ void RequestControlClient::resolve_host_with_system_resolver(u64 resolution_id, 
         auto origin_event_loop = event_loop->take();
         if (!origin_event_loop.is_alive())
             return;
-        origin_event_loop->deferred_invoke([weak_this = move(weak_this), resolution_id, addresses = move(addresses)] mutable {
+        origin_event_loop->deferred_invoke([weak_this = move(weak_this), resolution_id, addresses = move(addresses), canonical_name = move(canonical_name)] mutable {
             if (auto self = weak_this.strong_ref())
-                self->async_resolved_host_with_system_resolver(resolution_id, move(addresses));
+                self->async_resolved_host_with_system_resolver(resolution_id, move(addresses), move(canonical_name));
         });
     });
 }

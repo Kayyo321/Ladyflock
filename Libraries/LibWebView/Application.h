@@ -195,6 +195,7 @@ public:
     Core::GeolocationAuthorization geolocation_authorization();
 
     void permission_settings_changed(Badge<ApplicationSettingsObserver>);
+    void global_privacy_control_changed(Badge<ApplicationSettingsObserver>);
     void permissions_changed(Badge<ApplicationPermissionManagerObserver>, PermissionManager const&);
 
     bool content_blocking_enabled() const;

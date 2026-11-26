@@ -360,7 +360,7 @@ static NonnullRefPtr<Menu> create_media_context_menu(RemoteView& view, ContextMe
     return menu;
 }
 
-NonnullRefPtr<Menu> create_context_menu(RemoteView& view, ContextMenuRequest const& request)
+static NonnullRefPtr<Menu> create_builtin_context_menu(RemoteView& view, ContextMenuRequest const& request)
 {
     switch (request.kind) {
     case ContextMenuKind::Page:
@@ -383,6 +383,26 @@ NonnullRefPtr<Menu> create_context_menu(RemoteView& view, ContextMenuRequest con
         break;
     }
     return create_page_context_menu(view, request);
+}
+
+NonnullRefPtr<Menu> create_context_menu(RemoteView& view, ContextMenuRequest const& request)
+{
+    auto menu = create_builtin_context_menu(view, request);
+    if (!request.extension_menu_items.is_empty()) {
+        menu->add_separator();
+        for (auto const& item : request.extension_menu_items) {
+            auto action = Action::create(item.title, ActionID::ExtensionPageMenuItem, [view_id = view.view_id(), serial = request.extension_menu_serial, token = item.token] {
+                HubConnection::the().async_view_activate_extension_menu_item(view_id, serial, token);
+            });
+            if (item.icon.has_value() && item.icon->is_valid()) {
+                auto png = Gfx::PNGWriter::encode(*item.icon->bitmap());
+                if (!png.is_error())
+                    action->set_png_icon(png.release_value());
+            }
+            menu->add_action(move(action));
+        }
+    }
+    return menu;
 }
 
 }

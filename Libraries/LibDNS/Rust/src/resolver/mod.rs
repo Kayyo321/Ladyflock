@@ -148,6 +148,8 @@ pub struct LookupOptions {
     /// Asks the system resolver for AAAA records even when no global IPv6 route exists, as a host on the local
     /// network may still be reachable over IPv6.
     pub query_aaaa_without_global_ipv6: bool,
+    pub bypass_cache: bool,
+    pub cache_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -542,11 +544,15 @@ impl Resolver {
             .collect();
 
         if !is_server_address
+            && !options.bypass_cache
             && let Some(entry) = self.cache.lookup(name, &queried_types, now)
             && (!options.validate_dnssec_locally || Cache::was_validated(entry))
         {
             let result = entry.snapshot_for(&queried_types);
             return self.settle_lookup_waiter(waiter, Ok(result), now);
+        }
+        if options.cache_only {
+            return self.settle_lookup_waiter(waiter, Err(Error::new("No cached DNS result")), now);
         }
 
         if uses_system_resolver {
@@ -919,7 +925,13 @@ impl Resolver {
     }
 
     /// The system resolver answered a `SystemResolve` action.
-    pub fn on_system_resolved(&mut self, request: SystemRequestId, result: Result<Vec<IpAddr>, String>, now: Instant) {
+    pub fn on_system_resolved(
+        &mut self,
+        request: SystemRequestId,
+        result: Result<Vec<IpAddr>, String>,
+        canonical_name: &str,
+        now: Instant,
+    ) {
         let Some((key, id, family)) = self.system_requests.remove(&request) else {
             return;
         };
@@ -938,6 +950,24 @@ impl Resolver {
         }
 
         // Late-arriving records still populate the cache for later lookups.
+        let canonical_name = canonical_name.trim_end_matches('.');
+        if result.is_ok()
+            && !canonical_name.is_empty()
+            && let Some(name) = &state.cache_key
+            && !canonical_name.eq_ignore_ascii_case(name)
+        {
+            let domain = DomainName::from_string(canonical_name);
+            if domain.is_valid() {
+                state.entry.add_record(
+                    synthetic_record(
+                        ResourceType::CNAME,
+                        RecordData::Cname(domain),
+                        SYSTEM_RESOLVER_SYNTHETIC_TTL_SECONDS,
+                    ),
+                    now,
+                );
+            }
+        }
         let mut got_records = false;
         for address in result.unwrap_or_default() {
             let record = match address {

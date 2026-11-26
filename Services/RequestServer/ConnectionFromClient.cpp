@@ -17,6 +17,7 @@
 #include <LibHTTP/Port.h>
 #include <LibIPC/Limits.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibRequests/HostLookupFlag.h>
 #include <LibRequests/NetworkError.h>
 #include <LibRequests/WebSocket.h>
 #include <LibURL/Parser.h>
@@ -848,29 +849,60 @@ void ConnectionFromClient::import_request(u64 request_id, Requests::ExportedRequ
     m_active_requests.set(request_id, move(request));
 }
 
-void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host)
+void ConnectionFromClient::resolve_host(u64 lookup_id, ByteString host, u8 bits)
 {
+    using Requests::HostLookupFlag;
+    auto flags = static_cast<HostLookupFlag>(bits);
     // Whatever connects to the host would bypass a proxy, and a proxy that resolves names would never see this lookup,
     // so nothing is looked up while one is configured.
-    if (!proxy_configuration().is_empty() || host.is_empty() || host.length() > 253) {
-        async_host_resolved(lookup_id, {});
+    if (!proxy_configuration().is_empty() || host.is_empty() || host.length() > 253
+        || (flags != HostLookupFlag::None && m_site_binding != SiteBinding::Unrestricted)) {
+        async_host_resolved(lookup_id, {}, {});
         return;
     }
 
+    Vector<DNS::Messages::ResourceType> types;
+    if (!has_flag(flags, HostLookupFlag::DisableIPv4))
+        types.append(DNS::Messages::ResourceType::A);
+    if (!has_flag(flags, HostLookupFlag::DisableIPv6))
+        types.append(DNS::Messages::ResourceType::AAAA);
+    if (types.is_empty()) {
+        async_host_resolved(lookup_id, {}, {});
+        return;
+    }
     auto weak_self = make_weak_ptr<ConnectionFromClient>();
-    m_resolver->dns.lookup(host, DNS::Messages::Class::IN, { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA }, { .validate_dnssec_locally = DNSInfo::the().validate_dnssec_locally })
+    m_resolver->dns.lookup(host, DNS::Messages::Class::IN, move(types), {
+                                                                            .validate_dnssec_locally = DNSInfo::the().validate_dnssec_locally,
+                                                                            .query_aaaa_without_global_ipv6 = has_flag(flags, HostLookupFlag::IncludeLocalIPv6),
+                                                                            .bypass_cache = has_flag(flags, HostLookupFlag::BypassCache),
+                                                                            .cache_only = has_flag(flags, HostLookupFlag::CacheOnly),
+                                                                        })
         ->when_rejected([weak_self, lookup_id](auto const&) {
             if (auto self = weak_self.strong_ref())
-                self->async_host_resolved(lookup_id, {});
+                self->async_host_resolved(lookup_id, {}, {});
         })
-        .when_resolved([weak_self, lookup_id](auto const& dns_result) {
+        .when_resolved([weak_self, lookup_id, flags, host = move(host)](auto const& dns_result) {
             auto self = weak_self.strong_ref();
             if (!self)
                 return;
             Vector<ByteString> addresses;
-            for (auto const& address : dns_result->cached_addresses())
-                addresses.append(address.visit([](auto const& address) { return ByteString { MUST(address.to_string()) }; }));
-            self->async_host_resolved(lookup_id, move(addresses));
+            for (auto const& address : dns_result->cached_addresses()) {
+                if (flags != HostLookupFlag::None && !has_flag(flags, HostLookupFlag::AllowNameCollisions)
+                    && address.template has<IPv4Address>() && address.template get<IPv4Address>() == IPv4Address { 127, 0, 53, 53 })
+                    continue;
+                auto serialized = address.visit([](auto const& address) { return ByteString { MUST(address.to_string()) }; });
+                if (flags == HostLookupFlag::None || !addresses.contains_slow(serialized))
+                    addresses.append(move(serialized));
+            }
+            Optional<ByteString> canonical_name;
+            if (has_flag(flags, HostLookupFlag::CanonicalName)) {
+                canonical_name = host;
+                for (auto const& record : dns_result->records()) {
+                    if (record.type == DNS::Messages::ResourceType::CNAME)
+                        canonical_name = ByteString { record.text.bytes_as_string_view().trim("."sv, TrimMode::Right) };
+                }
+            }
+            self->async_host_resolved(lookup_id, move(addresses), move(canonical_name));
         });
 }
 

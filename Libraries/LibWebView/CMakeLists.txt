@@ -31,9 +31,12 @@ set(SOURCES
     DownloadSegmentation.cpp
     DownloadStore.cpp
     Extensions/CatalogClient.cpp
+    Extensions/DeclarativeRequestRules.cpp
     Extensions/ExtensionActionController.cpp
+    Extensions/ExtensionAlarms.cpp
     Extensions/ExtensionInstaller.cpp
     Extensions/ExtensionManager.cpp
+    Extensions/ExtensionPageMenus.cpp
     Extensions/ExtensionSidebarController.cpp
     Extensions/ExtensionStorage.cpp
     Extensions/ExtensionVerifierClient.cpp

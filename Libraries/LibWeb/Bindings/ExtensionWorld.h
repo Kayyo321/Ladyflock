@@ -19,6 +19,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/Extensions/MatchPattern.h>
+#include <LibWebCommon/Extensions/NavigationURLFilter.h>
 #include <LibWebCommon/HTML/CrossProcessId.h>
 
 namespace Web::Bindings {
@@ -109,6 +110,7 @@ private:
         GC::Ptr<JS::FunctionObject> callback;
         bool is_chrome { false };
         bool clone_response { false };
+        bool creates_menu { false };
     };
     HashMap<u64, PendingCall> m_pending_calls;
     String m_last_error;
@@ -117,6 +119,7 @@ private:
         GC::Ref<JS::FunctionObject> callback;
         u64 listener_id { 0 };
         bool blocking { false };
+        RefPtr<Extensions::NavigationURLFilter> navigation_filter {};
         Vector<Extensions::MatchPattern> urls;
         Vector<Extensions::WebRequestResourceType> types;
     };

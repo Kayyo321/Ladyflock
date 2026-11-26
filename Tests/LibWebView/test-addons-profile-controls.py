@@ -157,7 +157,7 @@ def run_test(binary):
             client.evaluate("document.querySelector('#query').value = 'catalog'; true;")
             click("#search")
             wait_for(
-                "the local catalog response", "document.querySelector('#results h3')?.textContent === 'Catalog fixture'"
+                "the local catalog response", "document.querySelector('#results h3')?.textContent.trim() === 'Catalog fixture'"
             )
             assert client.evaluate(
                 "document.querySelector('#results').textContent.includes('Compatibility pending package review')"

@@ -11,6 +11,7 @@
 #include <AK/NeverDestroyed.h>
 #include <AK/Random.h>
 #include <AK/StringBuilder.h>
+#include <AK/Time.h>
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
@@ -18,15 +19,18 @@
 #include <LibCrypto/Hash/Hash.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibGfx/SystemTheme.h>
+#include <LibRequests/RequestClient.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CanonicalNavigable.h>
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/Extensions/MozillaAddonTrust.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/RequestServerManager.h>
+#include <LibWebView/Settings.h>
 #include <LibWebView/Utilities.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
@@ -108,6 +112,17 @@ static ErrorOr<String> read_package_script(ByteString const& directory, StringVi
     return String::from_utf8(StringView { data.bytes() });
 }
 
+static ErrorOr<Vector<DeclarativeRuleset>> read_declarative_rulesets(Web::Extensions::ExtensionManifest const& manifest, ByteString const& directory)
+{
+    return load_declarative_rulesets(manifest, [&](StringView path) { return read_package_script(directory, path); });
+}
+
+ErrorOr<ByteBuffer> ExtensionManager::read_package_icon(ByteString const& directory, StringView path)
+{
+    auto normalized = TRY(Web::Extensions::ExtensionManifest::normalize_package_relative_path(path));
+    return read_package_resource(directory, normalized, 1 * MiB);
+}
+
 ErrorOr<NonnullOwnPtr<ExtensionManager>> ExtensionManager::create(ByteString profile_data_root, Database::Database* shared_database)
 {
     NonnullOwnPtr<ExtensionStorage> storage = shared_database
@@ -120,6 +135,11 @@ ExtensionManager::ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<E
     : m_profile_data_root(move(profile_data_root))
     , m_extensions_root(LexicalPath::join(m_profile_data_root, "extensions"sv).string())
     , m_storage(move(storage))
+    , m_alarms([this](String const& extension_id, JsonObject alarm) {
+        JsonArray arguments;
+        arguments.must_append(move(alarm));
+        dispatch_event_to_extension(extension_id, "alarms"sv, "onAlarm"sv, arguments.serialized());
+    })
     , m_installer(m_extensions_root, m_revocation_list)
 {
     m_installer.add_trusted_root_pem(MUST(String::from_utf8(mozilla_addon_signing_root)));
@@ -128,6 +148,26 @@ ExtensionManager::ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<E
     });
     m_web_request_coordinator.set_permission_check_callback([this](StringView ext_id, URL::URL const& url) {
         return has_host_permission(ext_id, url);
+    });
+    m_web_request_coordinator.set_declarative_block_callback([this](auto const& request, auto const& initiator) {
+        auto host = request.url.serialized_host();
+        auto restricted_host = [](StringView host) { return host.is_one_of("addons.mozilla.org"sv, "addons.cdn.mozilla.net"sv); };
+        if (!m_extensions_enabled || restricted_host(host) || (initiator.has_value() && restricted_host(initiator->serialized_host())))
+            return false;
+        for (auto const& [_, extension] : m_extensions_by_id) {
+            if (!extension.enabled || extension.declarative_rulesets.is_empty())
+                continue;
+            // Blocking rules can run without broad host grants. Honor explicit
+            // user site restrictions on both the destination and source site.
+            auto site_is_enabled = [&](StringView site) {
+                return !extension.revoked_hosts.contains(site) && (extension.allow_all_sites || extension.granted_extra_hosts.contains(site));
+            };
+            if (!site_is_enabled(host) || (initiator.has_value() && !site_is_enabled(initiator->serialized_host())))
+                continue;
+            if (should_block_declarative_request(extension.declarative_rulesets, request, initiator))
+                return true;
+        }
+        return false;
     });
     m_web_request_coordinator.set_dispatch_event_callback([this](
                                                               String const& ext_id,
@@ -146,6 +186,7 @@ ExtensionManager::~ExtensionManager()
 
 void ExtensionManager::shutdown()
 {
+    m_alarms.clear();
     m_pending_event_replies.clear();
     m_pending_script_executions.clear();
 
@@ -211,6 +252,15 @@ ErrorOr<void> ExtensionManager::load_registry()
             auto compat = Web::Extensions::SupportMatrix::evaluate_manifest(manifest.value(), sha256_hex.is_empty() ? Optional<StringView> {} : Optional<StringView> { sha256_hex });
             if (compat.status == Web::Extensions::CompatibilityStatus::Incompatible)
                 continue;
+            auto rulesets = read_declarative_rulesets(manifest.value(), dir_path);
+            if (rulesets.is_error()) {
+                warnln("ExtensionManager: could not load declarative rules for {}: {}", *id, rulesets.error());
+                continue;
+            }
+            if (auto enabled_ids = obj.get_array("enabled_static_rulesets"sv); enabled_ids.has_value()) {
+                for (auto& ruleset : rulesets.value())
+                    ruleset.enabled = any_of(enabled_ids->values(), [&](JsonValue const& value) { return value.is_string() && ruleset.id == value.as_string(); });
+            }
 
             InstalledExtension entry {
                 .extension_id = *id,
@@ -228,6 +278,8 @@ ErrorOr<void> ExtensionManager::load_registry()
                 .revoked_hosts = {},
                 .active_tab_ids = {},
                 .from_catalog = obj.get_bool("from_catalog"sv).value_or(false),
+                .network_prediction_setting = obj.get_bool("network_prediction_enabled"sv),
+                .declarative_rulesets = rulesets.release_value(),
             };
             if (auto granted = obj.get_array("granted_extra_hosts"sv); granted.has_value()) {
                 for (auto const& h : granted->values()) {
@@ -273,6 +325,16 @@ ErrorOr<void> ExtensionManager::save_registry(InstalledExtension const* replacem
         obj.set("enabled"sv, ext.enabled);
         obj.set("grant_generation"sv, ext.grant_generation);
         obj.set("allow_all_sites"sv, ext.allow_all_sites);
+        if (!ext.declarative_rulesets.is_empty()) {
+            JsonArray enabled;
+            for (auto const& ruleset : ext.declarative_rulesets) {
+                if (ruleset.enabled)
+                    enabled.must_append(ruleset.id);
+            }
+            obj.set("enabled_static_rulesets"sv, move(enabled));
+        }
+        if (ext.network_prediction_setting.has_value() && ext.enabled && ext.manifest.has_permission("privacy"sv))
+            obj.set("network_prediction_enabled"sv, *ext.network_prediction_setting);
 
         JsonArray granted;
         for (auto const& h : ext.granted_extra_hosts)
@@ -307,15 +369,20 @@ ErrorOr<void> ExtensionManager::save_registry(InstalledExtension const* replacem
 
 void ExtensionManager::register_extension_entry(InstalledExtension ext, bool first_install)
 {
+    bool prediction_was_enabled = network_prediction_enabled();
+    if (!ext.enabled || !ext.manifest.has_permission("privacy"sv))
+        ext.network_prediction_setting.clear();
     auto ext_id = ext.extension_id;
     auto uuid = ext.uuid;
     auto manifest = ext.manifest;
     bool enabled = ext.enabled;
     bool pinned = m_action_controller.resolved_state(ext_id, {}, {}).pinned;
 
+    m_page_menus.remove(ext_id);
     m_id_by_uuid.set(uuid, ext_id);
     m_persisted_uuid_by_id.set(ext_id, uuid);
     m_extensions_by_id.set(ext_id, move(ext));
+    refresh_declarative_watch_state();
 
     m_action_controller.configure_from_manifest(ext_id, manifest);
     m_action_controller.set_pinned(ext_id, pinned);
@@ -324,6 +391,7 @@ void ExtensionManager::register_extension_entry(InstalledExtension ext, bool fir
         if (manifest.background().has_value() && manifest.background()->has_background() && manifest.background()->persistent)
             ensure_background_started(ext_id, [](bool) { });
     }
+    notify_network_prediction_changed(prediction_was_enabled);
     notify_chrome_changed();
 }
 
@@ -353,6 +421,7 @@ ErrorOr<InstalledExtension> ExtensionManager::load_unpacked(ByteString const& di
             warnln("Unpacked extension {}: {}", manifest.name(), reason);
         return Error::from_string_literal("Extension manifest uses unsupported features");
     }
+    auto rulesets = TRY(read_declarative_rulesets(manifest, resolved_dir));
 
     String ext_id;
     if (manifest.gecko_id().has_value() && !manifest.gecko_id()->is_empty()) {
@@ -385,6 +454,7 @@ ErrorOr<InstalledExtension> ExtensionManager::load_unpacked(ByteString const& di
         .granted_extra_hosts = {},
         .revoked_hosts = {},
         .active_tab_ids = {},
+        .declarative_rulesets = move(rulesets),
     };
 
     m_extensions_enabled = true;
@@ -437,6 +507,7 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_install(StringView token)
     Optional<InstalledExtension> next;
     auto commit = TRY(m_installer.commit_staged(token, true, {}, [&](CommitResult const& committed) -> ErrorOr<void> {
         auto manifest = TRY(Web::Extensions::ExtensionManifest::parse(committed.manifest_json));
+        auto rulesets = TRY(read_declarative_rulesets(manifest, committed.install_directory));
         auto uuid = m_persisted_uuid_by_id.get(committed.addon_id).value_or(generate_random_uuid());
 
         next = InstalledExtension {
@@ -455,6 +526,7 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_install(StringView token)
             .revoked_hosts = {},
             .active_tab_ids = {},
             .from_catalog = from_catalog,
+            .declarative_rulesets = move(rulesets),
         };
         return save_registry(&*next);
     }));
@@ -496,9 +568,11 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_update(StringView token, b
     Optional<InstalledExtension> next;
     TRY(m_installer.commit_staged(token, user_consented, old_entry.install_directory, [&](CommitResult const& committed) -> ErrorOr<void> {
         auto manifest = TRY(Web::Extensions::ExtensionManifest::parse(committed.manifest_json));
+        auto rulesets = TRY(read_declarative_rulesets(manifest, committed.install_directory));
         InstalledExtension updated = old_entry;
         updated.install_directory = committed.install_directory;
         updated.manifest = move(manifest);
+        updated.declarative_rulesets = move(rulesets);
         updated.compatibility_status = committed.compatibility_status;
         updated.sha256_hex = committed.sha256_hex;
         updated.verified_signature = true;
@@ -508,6 +582,7 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_update(StringView token, b
         return save_registry(&*next);
     }));
 
+    m_alarms.clear_extension(ext_id);
     stop_background_page(ext_id);
     broadcast_world_revocation(ext_id, old_entry.grant_generation + 1);
     m_web_request_coordinator.remove_all_for_extension(ext_id);
@@ -525,13 +600,18 @@ ErrorOr<void> ExtensionManager::set_extension_enabled(StringView extension_id, b
     if (it->value.enabled == enabled)
         return {};
 
+    bool prediction_was_enabled = network_prediction_enabled();
     it->value.enabled = enabled;
+    refresh_declarative_watch_state();
     ++it->value.grant_generation;
     auto gen = it->value.grant_generation;
 
     if (!enabled) {
         it->value.active_tab_ids.clear();
+        it->value.network_prediction_setting.clear();
+        m_page_menus.remove(extension_id);
         m_sidebar_controller.remove_extension(extension_id);
+        m_alarms.clear_extension(extension_id);
         stop_background_page(extension_id);
         m_web_request_coordinator.remove_all_for_extension(extension_id);
         broadcast_world_revocation(extension_id, gen);
@@ -544,6 +624,7 @@ ErrorOr<void> ExtensionManager::set_extension_enabled(StringView extension_id, b
             ensure_background_started(it->value.extension_id, [](bool) { });
     }
 
+    notify_network_prediction_changed(prediction_was_enabled);
     notify_chrome_changed();
     return save_registry();
 }
@@ -630,13 +711,17 @@ ErrorOr<void> ExtensionManager::set_site_access(StringView extension_id, bool al
 
 ErrorOr<void> ExtensionManager::remove_extension(StringView extension_id)
 {
+    bool prediction_was_enabled = network_prediction_enabled();
     auto ext = m_extensions_by_id.take(extension_id);
     if (!ext.has_value())
         return Error::from_string_literal("Extension not found");
+    refresh_declarative_watch_state();
 
+    m_alarms.clear_extension(extension_id);
     stop_background_page(extension_id);
     m_web_request_coordinator.remove_all_for_extension(extension_id);
     broadcast_world_revocation(extension_id, ext->grant_generation + 1);
+    m_page_menus.remove(extension_id);
     m_action_controller.remove_extension(extension_id);
     m_sidebar_controller.remove_extension(extension_id);
     m_storage->delete_extension_data(extension_id);
@@ -646,6 +731,7 @@ ErrorOr<void> ExtensionManager::remove_extension(StringView extension_id)
     if (ext->source == Web::Extensions::InstallSource::SignedXpi)
         m_installer.remove_installed_package(ext->install_directory);
 
+    notify_network_prediction_changed(prediction_was_enabled);
     notify_chrome_changed();
     return save_registry();
 }
@@ -922,8 +1008,8 @@ void ExtensionManager::broadcast_world_revocation(StringView extension_id, u64 n
 
 void ExtensionManager::push_watch_filter_to_request_server(Requests::RequestControlClient& control_client, Web::Extensions::WebRequestWatchSnapshot const& snapshot)
 {
-    bool enabled = !snapshot.entries.is_empty();
-    bool match_all_urls = false;
+    bool enabled = snapshot.has_declarative_rules || !snapshot.entries.is_empty();
+    bool match_all_urls = snapshot.has_declarative_rules;
     Vector<String> exact_hosts;
     Vector<String> suffix_hosts;
     HashTable<String> seen_exact;
@@ -995,20 +1081,96 @@ void ExtensionManager::push_watch_filter_to_request_server(Requests::RequestCont
 void ExtensionManager::push_watch_snapshot_everywhere(Web::Extensions::WebRequestWatchSnapshot const& snapshot)
 {
     WebContentClient::for_each_client([&](WebContentClient& client) {
-        if (client.is_private() == IsPrivate::No)
+        if (client.session().extension_manager.ptr() == this)
             client.async_set_web_request_watch_snapshot(snapshot);
         return IterationDecision::Continue;
     });
     RequestServerManager::the().for_each_instance([&](RequestServerInstance& instance) {
-        if (instance.session().is_private() == IsPrivate::No)
+        if (instance.session().extension_manager.ptr() == this)
             push_watch_filter_to_request_server(instance.control_client(), snapshot);
         return IterationDecision::Continue;
     });
 }
 
+void ExtensionManager::refresh_declarative_watch_state()
+{
+    m_web_request_coordinator.set_has_declarative_rules(any_of(m_extensions_by_id, [](auto const& entry) {
+        return entry.value.enabled && any_of(entry.value.declarative_rulesets, [](auto const& ruleset) {
+            return ruleset.enabled && !ruleset.rules.is_empty();
+        });
+    }));
+}
+
 bool ExtensionManager::is_extension_background_view(ViewImplementation const& view)
 {
     return background_views().contains(&view);
+}
+
+Optional<InstalledExtension const&> ExtensionManager::network_prediction_owner() const
+{
+    for (auto const& [_, extension] : m_extensions_by_id) {
+        if (extension.enabled && extension.network_prediction_setting.has_value() && extension.manifest.has_permission("privacy"sv))
+            return extension;
+    }
+    return {};
+}
+
+bool ExtensionManager::network_prediction_enabled() const
+{
+    auto owner = network_prediction_owner();
+    return !owner.has_value() || *owner->network_prediction_setting;
+}
+
+JsonObject ExtensionManager::network_prediction_setting_for(StringView extension_id) const
+{
+    auto owner = network_prediction_owner();
+    StringView level_of_control = "controllable_by_this_extension"sv;
+    if (owner.has_value())
+        level_of_control = owner->extension_id == extension_id ? "controlled_by_this_extension"sv : "controlled_by_other_extensions"sv;
+
+    JsonObject setting;
+    setting.set("value"sv, !owner.has_value() || *owner->network_prediction_setting);
+    setting.set("levelOfControl"sv, MUST(String::from_utf8(level_of_control)));
+    return setting;
+}
+
+static JsonObject read_only_privacy_setting(bool value)
+{
+    JsonObject setting;
+    setting.set("value"sv, value);
+    setting.set("levelOfControl"sv, "not_controllable"_string);
+    return setting;
+}
+
+void ExtensionManager::global_privacy_control_changed()
+{
+    JsonArray arguments;
+    arguments.must_append(read_only_privacy_setting(Application::settings().global_privacy_control() == GlobalPrivacyControl::Yes));
+    auto serialized = arguments.serialized();
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (extension.enabled && extension.manifest.has_permission("privacy"sv))
+            dispatch_event_to_extension(id, "privacy.network.globalPrivacyControl"sv, "onChange"sv, serialized);
+    }
+}
+
+void ExtensionManager::notify_network_prediction_changed(bool previously_enabled)
+{
+    auto enabled = network_prediction_enabled();
+    if (enabled == previously_enabled)
+        return;
+
+    WebContentClient::for_each_client([&](WebContentClient& client) {
+        if (client.session().extension_manager.ptr() == this)
+            client.async_set_network_prediction_enabled(enabled);
+        return IterationDecision::Continue;
+    });
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (!extension.enabled || !extension.manifest.has_permission("privacy"sv))
+            continue;
+        JsonArray arguments;
+        arguments.must_append(network_prediction_setting_for(id));
+        dispatch_event_to_extension(id, "privacy.network.networkPredictionEnabled"sv, "onChange"sv, arguments.serialized());
+    }
 }
 
 Vector<ViewImplementation*> ExtensionManager::ordinary_tab_views() const
@@ -1661,6 +1823,86 @@ void ExtensionManager::handle_api_call(
     JsonArray empty_arr;
     JsonObject empty_obj;
 
+    if (namespace_name == "dns"sv) {
+        if (method_name != "resolve"sv || !ext->manifest.has_permission("dns"sv)) {
+            reply_err("Extension lacks the dns permission or called an unknown DNS method");
+            return;
+        }
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        if (arguments.is_empty() || arguments.size() > 2 || !arguments[0].is_string()) {
+            reply_err("dns.resolve requires a hostname and optional flags");
+            return;
+        }
+        auto hostname = arguments[0].as_string().bytes_as_string_view();
+        auto host = URL::Parser::parse_host(hostname);
+        if (!host.has_value()) {
+            if (auto ipv6 = IPv6Address::from_string(hostname); ipv6.has_value())
+                host = URL::Host { URL::Host::VariantType { *ipv6 } };
+        }
+        if (!host.has_value() || host->is_empty_host() || hostname.length() > 253
+            || hostname.starts_with('.') || hostname.contains(".."sv) || hostname.contains('*') || hostname.contains('%')) {
+            reply_err("Invalid DNS hostname");
+            return;
+        }
+
+        using Requests::HostLookupFlag;
+        auto flags = HostLookupFlag::IncludeLocalIPv6;
+        if (arguments.size() == 2 && !arguments[1].is_null()) {
+            if (!arguments[1].is_array() || arguments[1].as_array().size() > 10) {
+                reply_err("Invalid DNS options");
+                return;
+            }
+            for (auto const& option : arguments[1].as_array().values()) {
+                auto name = option.is_string() ? option.as_string().bytes_as_string_view() : StringView {};
+                if (name == "canonical_name"sv)
+                    flags |= HostLookupFlag::CanonicalName;
+                else if (name == "disable_ipv4"sv)
+                    flags |= HostLookupFlag::DisableIPv4;
+                else if (name == "disable_ipv6"sv)
+                    flags |= HostLookupFlag::DisableIPv6;
+                else if (name == "bypass_cache"sv)
+                    flags |= HostLookupFlag::BypassCache;
+                else if (name == "offline"sv)
+                    flags |= HostLookupFlag::CacheOnly;
+                else if (name == "allow_name_collisions"sv)
+                    flags |= HostLookupFlag::AllowNameCollisions;
+                else if (name != "disable_trr"sv) {
+                    // Ladyflock has no TRR resolver. Its resolver does not expose speculative or priority requests.
+                    reply_err("Unsupported DNS option");
+                    return;
+                }
+            }
+        }
+
+        auto request_server = RequestServerManager::the().browser_instance(caller.session());
+        if (request_server.is_error()) {
+            reply_err("DNS service is unavailable");
+            return;
+        }
+        request_server.value()->ui_client().resolve_host(host->serialize().to_byte_string(), flags,
+            [weak = caller.make_weak_ptr<WebContentClient>(), page_id, document_id, call_id](Vector<ByteString> addresses, Optional<ByteString> canonical_name) {
+                auto renderer = weak.strong_ref();
+                if (!renderer)
+                    return;
+                if (addresses.is_empty()) {
+                    renderer->async_extension_api_response(page_id, document_id, call_id, false, "\"DNS lookup failed\""_string);
+                    return;
+                }
+                JsonArray address_list;
+                for (auto const& address : addresses)
+                    address_list.must_append(MUST(String::from_byte_string(address)));
+                JsonObject record;
+                record.set("addresses"sv, move(address_list));
+                record.set("isTRR"sv, false);
+                if (canonical_name.has_value()) {
+                    if (auto name = String::from_byte_string(*canonical_name); !name.is_error())
+                        record.set("canonicalName"sv, name.release_value());
+                }
+                renderer->async_extension_api_response(page_id, document_id, call_id, true, record.serialized());
+            });
+        return;
+    }
+
     if (namespace_name == "runtime"sv) {
         if (method_name == "sendMessage"sv) {
             if (parsed_args.is_error() || !parsed_args.value().is_array() || parsed_args.value().as_array().is_empty()) {
@@ -1733,10 +1975,15 @@ void ExtensionManager::handle_api_call(
             JsonObject items;
             if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty() && parsed_args.value().as_array().at(0).is_object())
                 items = parsed_args.value().as_array().at(0).as_object();
-            auto changes = m_storage->set(extension_id, items);
-            if (!changes.is_empty()) {
+            auto quota = ext->manifest.has_permission("unlimitedStorage"sv) ? ExtensionStorage::Quota::Unlimited : ExtensionStorage::Quota::Limited;
+            auto changes = m_storage->set(extension_id, items, quota);
+            if (changes.is_error()) {
+                caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", changes.error()))).serialized());
+                return;
+            }
+            if (!changes.value().is_empty()) {
                 JsonArray ev_args;
-                ev_args.must_append(JsonValue(move(changes)));
+                ev_args.must_append(JsonValue(changes.release_value()));
                 ev_args.must_append("local"_string);
                 dispatch_event_to_extension(ext->extension_id, "storage"sv, "onChanged"sv, ev_args.serialized());
             }
@@ -1778,8 +2025,15 @@ void ExtensionManager::handle_api_call(
             return;
         }
         if (normalized_method == "getBytesInUse"sv) {
-            auto serialized = m_storage->get(extension_id, JsonValue {}).serialized();
-            reply_ok(JsonValue(static_cast<i64>(serialized.bytes().size())));
+            JsonValue keys_spec;
+            if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty())
+                keys_spec = parsed_args.value().as_array().at(0);
+            auto size = m_storage->get_bytes_in_use(extension_id, keys_spec);
+            if (size.is_error()) {
+                caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", size.error()))).serialized());
+                return;
+            }
+            reply_ok(JsonValue(size.release_value()));
             return;
         }
         reply_err("Unsupported storage method");
@@ -1789,6 +2043,107 @@ void ExtensionManager::handle_api_call(
     // Content scripts may only access runtime and storage!
     if (context_type == Web::Extensions::ContextType::ContentScript) {
         reply_err("API not available in content scripts");
+        return;
+    }
+
+    bool is_network_prediction = namespace_name == "privacy.network.networkPredictionEnabled"sv;
+    bool is_gpc = namespace_name == "privacy.network.globalPrivacyControl"sv;
+    bool is_hyperlink_auditing = namespace_name == "privacy.websites.hyperlinkAuditingEnabled"sv;
+    if (is_network_prediction || is_gpc || is_hyperlink_auditing) {
+        if (!ext->manifest.has_permission("privacy"sv)) {
+            reply_err("Extension lacks 'privacy' permission");
+            return;
+        }
+        if (parsed_args.is_error() || !parsed_args.value().is_array() || parsed_args.value().as_array().size() != 1 || !parsed_args.value().as_array().at(0).is_object()) {
+            reply_err("Privacy settings require an options object");
+            return;
+        }
+        auto const& options = parsed_args.value().as_array().at(0).as_object();
+        if (options.has("scope"sv) && options.get_string("scope"sv) != "regular"sv) {
+            reply_err("Only the regular profile scope is supported");
+            return;
+        }
+        if (method_name == "get"sv) {
+            if (is_gpc) {
+                reply_ok(read_only_privacy_setting(Application::settings().global_privacy_control() == GlobalPrivacyControl::Yes));
+            } else if (is_hyperlink_auditing) {
+                // Hyperlink audit pings are not implemented by the browser.
+                reply_ok(read_only_privacy_setting(false));
+            } else if (options.get_bool("incognito"sv) == true) {
+                reply_ok(read_only_privacy_setting(true));
+            } else {
+                reply_ok(network_prediction_setting_for(extension_id));
+            }
+            return;
+        }
+
+        bool setting_value = method_name == "set"sv;
+        if (!setting_value && method_name != "clear"sv) {
+            reply_err("Unsupported privacy setting method");
+            return;
+        }
+        if (!is_network_prediction) {
+            reply_ok(JsonValue(false));
+            return;
+        }
+        auto owner = network_prediction_owner();
+        if ((owner.has_value() && owner->extension_id != extension_id) || (!owner.has_value() && !setting_value)) {
+            reply_ok(JsonValue(false));
+            return;
+        }
+        auto value = options.get_bool("value"sv);
+        if (setting_value && !value.has_value()) {
+            reply_err("A boolean value is required");
+            return;
+        }
+        auto previous_setting = ext->network_prediction_setting;
+        bool prediction_was_enabled = network_prediction_enabled();
+        ext->network_prediction_setting = setting_value ? value : Optional<bool> {};
+        if (save_registry().is_error()) {
+            ext->network_prediction_setting = previous_setting;
+            reply_err("Could not save the network prediction setting");
+            return;
+        }
+        notify_network_prediction_changed(prediction_was_enabled);
+        reply_ok(JsonValue(true));
+        return;
+    }
+
+    if (namespace_name == "alarms"sv) {
+        if (!ext->manifest.has_permission("alarms"sv)) {
+            reply_err("Extension lacks 'alarms' permission");
+            return;
+        }
+        if (parsed_args.is_error() || !parsed_args.value().is_array()) {
+            reply_err("Invalid alarm arguments");
+            return;
+        }
+        auto result = m_alarms.invoke(extension_id, method_name, parsed_args.value().as_array());
+        if (result.is_error()) {
+            caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", result.error()))).serialized());
+        } else if (result.value().has_value()) {
+            reply_ok(*result.value());
+        } else {
+            caller.async_extension_api_response(page_id, document_id, call_id, true, String {});
+        }
+        return;
+    }
+
+    if (namespace_name == "webNavigation"sv) {
+        if (!ext->manifest.has_permission("webNavigation"sv)) {
+            reply_err("Requires webNavigation permission");
+            return;
+        }
+        if (parsed_args.is_error()) {
+            reply_err("Invalid webNavigation arguments");
+            return;
+        }
+        auto frames = navigation_frames(method_name, parsed_args.value());
+        if (frames.is_error()) {
+            caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", frames.error()))).serialized());
+            return;
+        }
+        reply_ok(frames.value());
         return;
     }
 
@@ -2193,6 +2548,24 @@ void ExtensionManager::handle_api_call(
         return;
     }
 
+    if (namespace_name == "menus"sv) {
+        if (!ext->manifest.has_permission("menus"sv) && !ext->manifest.has_permission("contextMenus"sv)) {
+            reply_err("Extension has no menus permission");
+            return;
+        }
+        if (parsed_args.is_error() || !parsed_args.value().is_array()) {
+            reply_err("Expected menu arguments");
+            return;
+        }
+        auto result = change_page_menu(extension_id, method_name, parsed_args.value().as_array());
+        if (result.is_error()) {
+            caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::from_utf8(result.error().string_literal()))).serialized());
+            return;
+        }
+        reply_ok(JsonValue {});
+        return;
+    }
+
     if (namespace_name == "sidebarAction"sv) {
         JsonObject arg_obj;
         if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty() && parsed_args.value().as_array().at(0).is_object())
@@ -2329,6 +2702,65 @@ void ExtensionManager::handle_api_call(
         if (request.has("data_collection"sv))
             ok = false;
         reply_ok(JsonValue(ok));
+        return;
+    }
+
+    if (namespace_name == "declarativeNetRequest"sv) {
+        if (!ext->manifest.has_permission("declarativeNetRequest"sv)) {
+            reply_err("Extension lacks declarativeNetRequest permission");
+            return;
+        }
+        if (method_name == "getEnabledRulesets"sv) {
+            JsonArray ids;
+            for (auto const& ruleset : ext->declarative_rulesets) {
+                if (ruleset.enabled)
+                    ids.must_append(ruleset.id);
+            }
+            reply_ok(JsonValue(move(ids)));
+            return;
+        }
+        if (method_name != "updateEnabledRulesets"sv || parsed_args.is_error() || !parsed_args.value().is_array()) {
+            reply_err("Unsupported declarativeNetRequest call");
+            return;
+        }
+        auto const& arguments = parsed_args.value().as_array();
+        if (arguments.size() != 1 || !arguments.at(0).is_object()) {
+            reply_err("Ruleset update requires an options object");
+            return;
+        }
+        auto const& options = arguments.at(0).as_object();
+        auto& mutable_extension = *m_extensions_by_id.get(extension_id);
+        Vector<bool> enabled;
+        for (auto const& ruleset : mutable_extension.declarative_rulesets)
+            enabled.append(ruleset.enabled);
+        auto apply_ids = [&](StringView key, bool value) {
+            if (!options.has(key))
+                return true;
+            auto ids = options.get_array(key);
+            if (!ids.has_value() || ids->size() > 100)
+                return false;
+            for (auto const& id : ids->values()) {
+                auto index = id.is_string() ? mutable_extension.declarative_rulesets.find_first_index_if([&](auto const& ruleset) { return ruleset.id == id.as_string(); }) : Optional<size_t> {};
+                if (!index.has_value())
+                    return false;
+                enabled[*index] = value;
+            }
+            return true;
+        };
+        if (!apply_ids("disableRulesetIds"sv, false) || !apply_ids("enableRulesetIds"sv, true)) {
+            reply_err("Ruleset update contains an invalid or unknown ruleset ID");
+            return;
+        }
+        for (size_t i = 0; i < enabled.size(); ++i)
+            swap(enabled[i], mutable_extension.declarative_rulesets[i].enabled);
+        if (auto saved = save_registry(); saved.is_error()) {
+            for (size_t i = 0; i < enabled.size(); ++i)
+                mutable_extension.declarative_rulesets[i].enabled = enabled[i];
+            reply_err("Could not save enabled rulesets");
+            return;
+        }
+        refresh_declarative_watch_state();
+        reply_ok(JsonValue {});
         return;
     }
 
@@ -2552,6 +2984,83 @@ ExtensionActionController::InvokeOutcome ExtensionManager::invoke_action_for_tab
         });
 }
 
+static CanonicalNavigable const* extension_menu_frame(ViewImplementation const& view, Web::HTML::CrossProcessId document)
+{
+    if (view.is_private() == IsPrivate::Yes || view.owner_view_id().has_value() || ExtensionManager::is_extension_background_view(view)
+        || !view.has_traversable() || !view.url().scheme().is_one_of("http"sv, "https"sv))
+        return nullptr;
+    CanonicalNavigable const* result = nullptr;
+    view.traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
+        if (frame.active_document().id() != document || !frame.active_document_url().scheme().is_one_of("http"sv, "https"sv))
+            return IterationDecision::Continue;
+        for (auto const* ancestor = &frame; ancestor; ancestor = ancestor->parent()) {
+            if (!ancestor->active_document().host() || ancestor->active_document().unload_counter()
+                || (ancestor->parent() && ancestor->container_document() != &ancestor->parent()->active_document()))
+                return IterationDecision::Break;
+        }
+        result = &frame;
+        return IterationDecision::Break;
+    });
+    return result;
+}
+
+Vector<ExtensionMenuItem> ExtensionManager::page_menu_items(ViewImplementation const& view, Web::HTML::CrossProcessId document, ExtensionMenuTarget const& target) const
+{
+    Vector<ExtensionMenuItem> result;
+    auto* frame = extension_menu_frame(view, document);
+    if (!extensions_enabled() || !frame)
+        return result;
+    for (auto const& [id, items] : m_page_menus) {
+        auto ext = extension_by_id(id);
+        if (!ext.has_value() || !ext->enabled)
+            continue;
+        for (auto const& item : items) {
+            if (item.matches(*frame, target))
+                result.append({ id, MUST(String::formatted("{} — {}", ext->manifest.name(), item.title)), item.token });
+        }
+    }
+    return result;
+}
+
+void ExtensionManager::activate_page_menu_item(ViewImplementation const& view, Web::HTML::CrossProcessId document, u64 token, ExtensionMenuTarget const& target)
+{
+    auto* frame = extension_menu_frame(view, document);
+    if (!extensions_enabled() || !frame)
+        return;
+    for (auto const& [id, items] : m_page_menus) {
+        auto ext = extension_by_id(id);
+        if (!ext.has_value() || !ext->enabled || (!ext->manifest.has_permission("menus"sv) && !ext->manifest.has_permission("contextMenus"sv)))
+            continue;
+        for (auto const& item : items) {
+            if (item.token != token || !item.matches(*frame, target))
+                continue;
+            if (ext->manifest.has_permission("activeTab"sv))
+                grant_active_tab(id, view.view_id());
+            auto tab = tab_info_for_extension(id, view);
+            if (!tab.has_value())
+                return;
+            JsonObject info;
+            info.set("menuItemId"sv, item.id);
+            info.set("pageUrl"sv, view.url().serialize());
+            info.set("editable"sv, target.editable);
+            info.set("frameId"sv, frame->extension_frame_id());
+            if (frame->parent())
+                info.set("frameUrl"sv, frame->active_document_url().serialize());
+            if (target.link_url.has_value())
+                info.set("linkUrl"sv, target.link_url->serialize());
+            if (target.source_url.has_value())
+                info.set("srcUrl"sv, target.source_url->serialize());
+            if (target.media_type.has_value())
+                info.set("mediaType"sv, *target.media_type);
+            JsonArray args;
+            args.must_append(move(info));
+            args.must_append(serialize_tab(*tab));
+            dispatch_event_to_extension(id, "menus"sv, "onClicked"sv, args.serialized());
+            return;
+        }
+    }
+}
+
 JsonObject ExtensionManager::summary_json() const
 {
     JsonObject root;
@@ -2565,6 +3074,8 @@ JsonObject ExtensionManager::summary_json() const
         item.set("uuid"sv, ext.uuid);
         item.set("name"sv, ext.manifest.name());
         item.set("version"sv, ext.manifest.version());
+        if (ext.manifest.package_icon_path().has_value())
+            item.set("icon_key"sv, MUST(String::formatted("installed:{}:{}", ext.uuid, ext.manifest.version())));
         item.set("enabled"sv, ext.enabled);
         item.set("allow_all_sites"sv, ext.allow_all_sites);
         item.set("verified_signature"sv, ext.verified_signature);
@@ -2593,6 +3104,97 @@ JsonObject ExtensionManager::summary_json() const
     root.set("extensions"sv, move(list));
     root.set("support_matrix"sv, Web::Extensions::SupportMatrix::to_json());
     return root;
+}
+
+static JsonObject navigation_frame_details(CanonicalNavigable const& frame)
+{
+    JsonObject result;
+    result.set("url"sv, frame.active_document_url().serialize());
+    result.set("frameId"sv, frame.extension_frame_id());
+    result.set("parentFrameId"sv, frame.parent() ? frame.parent()->extension_frame_id() : -1);
+    result.set("frameType"sv, frame.parent() ? "sub_frame"sv : "outermost_frame"sv);
+    result.set("documentId"sv, frame.active_document().extension_document_id());
+    result.set("documentLifecycle"sv, "active"sv);
+    if (frame.parent())
+        result.set("parentDocumentId"sv, frame.parent()->active_document().extension_document_id());
+    return result;
+}
+
+ErrorOr<JsonValue> ExtensionManager::navigation_frames(StringView method, JsonValue const& arguments) const
+{
+    bool single = method == "getFrame"sv;
+    if ((!single && method != "getAllFrames"sv) || !arguments.is_array() || arguments.as_array().size() != 1 || !arguments.as_array().at(0).is_object())
+        return Error::from_string_literal("Invalid webNavigation method or arguments");
+    auto const& details = arguments.as_array().at(0).as_object();
+    auto tab_id = details.get_u64("tabId"sv);
+    auto frame_id = details.get_i64("frameId"sv);
+    auto document_id = details.get_string("documentId"sv);
+    if ((single ? !document_id.has_value() && (!frame_id.has_value() || !tab_id.has_value()) : !tab_id.has_value())
+        || (details.has("tabId"sv) && !tab_id.has_value())
+        || (details.has("frameId"sv) && (!frame_id.has_value() || *frame_id < 0))
+        || (details.has("documentId"sv) && !document_id.has_value()))
+        return Error::from_string_literal("Invalid tab, frame or document identifier");
+    for (auto* tab : ordinary_tab_views()) {
+        if ((tab_id.has_value() && tab->view_id() != *tab_id) || tab->session().extension_manager.ptr() != this)
+            continue;
+        if (!tab->has_traversable()) {
+            if (tab_id.has_value())
+                return JsonValue {};
+            continue;
+        }
+        JsonArray frames;
+        JsonValue match;
+        tab->traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
+            auto const& doc = frame.active_document();
+            if (!doc.host() || doc.unload_counter() || (frame.parent() && frame.container_document() != &frame.parent()->active_document()))
+                return IterationDecision::Continue;
+            if (single && ((frame_id.has_value() && frame.extension_frame_id() != *frame_id) || (document_id.has_value() && doc.extension_document_id() != *document_id)))
+                return IterationDecision::Continue;
+            auto result = navigation_frame_details(frame);
+            result.set("errorOccurred"sv, doc.creation_url() == URL::about_error());
+            if (single) {
+                match = move(result);
+                return IterationDecision::Break;
+            }
+            frames.must_append(move(result));
+            return IterationDecision::Continue;
+        });
+        if (!single)
+            return JsonValue(move(frames));
+        if (!match.is_null())
+            return match;
+    }
+    return Error::from_string_literal("No matching tab or frame");
+}
+
+void ExtensionManager::dispatch_navigation_event(CanonicalNavigable const& frame, StringView event, JsonObject extra)
+{
+    auto tab = frame.top_level_traversable().view();
+    if (!m_extensions_enabled || !tab.has_value() || tab->is_private() == IsPrivate::Yes || tab->owner_view_id().has_value()
+        || is_extension_background_view(*tab) || tab->session().extension_manager.ptr() != this)
+        return;
+    Optional<String> arguments;
+    for (auto const& [id, ext] : m_extensions_by_id) {
+        if (!ext.enabled || !ext.manifest.has_permission("webNavigation"sv))
+            continue;
+        if (!arguments.has_value()) {
+            JsonObject details;
+            if (event != "onCreatedNavigationTarget"sv) {
+                details = navigation_frame_details(frame);
+                if (event == "onBeforeNavigate"sv) {
+                    details.remove("documentId"sv);
+                    details.remove("documentLifecycle"sv);
+                }
+            }
+            extra.for_each_member([&](String const& key, JsonValue const& value) { details.set(key, value); });
+            details.set("timeStamp"sv, UnixDateTime::now().milliseconds_since_epoch());
+            details.set("tabId"sv, tab->view_id());
+            JsonArray args;
+            args.must_append(move(details));
+            arguments = args.serialized();
+        }
+        dispatch_event_to_extension(id, "webNavigation"sv, event, *arguments);
+    }
 }
 
 }
