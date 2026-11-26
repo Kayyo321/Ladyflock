@@ -36,11 +36,12 @@ struct QueryParameter {
 
 }
 
-// Query parameters that only say where a visit came from never change the page. The navigation sanitizer strips the
-// same list.
+// Query parameters that only say where a visit came from, or keep a cache from answering, and never change the page.
+// The navigation sanitizer strips the tracking ones; a cache buster such as zx is only ignored here, since a page may
+// depend on it.
 static bool is_tracking_query_parameter(StringView name)
 {
-    return Privacy::is_tracking_query_parameter(name);
+    return Privacy::is_tracking_query_parameter(name) || name.equals_ignoring_ascii_case("zx"sv);
 }
 
 static QueryParameter split_query_parameter(StringView parameter)

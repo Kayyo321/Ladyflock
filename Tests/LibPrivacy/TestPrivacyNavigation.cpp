@@ -23,8 +23,8 @@ TEST_CASE(tracking_parameter_names)
              "wbraid"sv, "srsltid"sv, "msclkid"sv, "_ga"sv, "mc_eid"sv, "yclid"sv }) {
         EXPECT(Privacy::is_tracking_query_parameter(name));
     }
-    // Names that only look alike are the site's own.
-    for (auto name : { "utmost"sv, "utm"sv, "xutm_source"sv, "fbclid2"sv, "gclid_"sv, "code"sv, "state"sv, "id"sv, ""sv }) {
+    // Names that only look alike are the site's own, and a cache buster is not a tracker.
+    for (auto name : { "utmost"sv, "utm"sv, "xutm_source"sv, "fbclid2"sv, "gclid_"sv, "code"sv, "state"sv, "id"sv, "zx"sv, ""sv }) {
         EXPECT(!Privacy::is_tracking_query_parameter(name));
     }
 }

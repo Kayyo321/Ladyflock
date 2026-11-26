@@ -15,7 +15,7 @@ bool is_tracking_query_parameter(StringView raw_name)
 {
     static constexpr Array tracking_parameter_names {
         "_ga"sv, "_gl"sv, "dclid"sv, "fbclid"sv, "gbraid"sv, "gclid"sv, "igshid"sv, "mc_cid"sv, "mc_eid"sv, "msclkid"sv,
-        "srsltid"sv, "wbraid"sv, "yclid"sv, "zx"sv
+        "srsltid"sv, "wbraid"sv, "yclid"sv
     };
 
     // A name may be percent-encoded (utm%5Fsource), which does not make it a different parameter.
