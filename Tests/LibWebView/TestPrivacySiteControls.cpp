@@ -243,3 +243,49 @@ TEST_CASE(scripting_can_be_turned_off_for_a_site_and_its_frames)
     EXPECT(requested(first, "/inline-beacon"sv));
     EXPECT(!requested(first, "/noscript-pixel"sv));
 }
+
+// Not an assertion on speed: records what the per-site scripting check costs a page load on this machine, by loading the
+// same script-heavy page with no site turned off (the check returns at once) and with an unrelated site turned off (each
+// environment looks its top-level site up once per policy).
+TEST_CASE(site_scripting_cost)
+{
+    PrivacyTest::MockRouteServer origin(PrivacyTest::MockRouteServer::Mode::DirectHTTP);
+    StringBuilder page;
+    page.append("<!doctype html><body>"sv);
+    for (size_t i = 0; i < 200; ++i)
+        page.appendff("<button onclick=\"void {}\">b</button><script>window.n = (window.n || 0) + 1;</script>", i);
+    page.append("<script>document.title = 'done:' + window.n;</script>"sv);
+    origin.set_html_for_path("/heavy"sv, page.to_byte_string());
+
+    Test::HeadlessTestEnvironment environment { "Milestone4SiteScriptingCost"sv, 300 };
+    Array arguments { "--temporary-profile"sv };
+    auto app = TRY_OR_FAIL(environment.create_application<SiteControlsApplication>(arguments));
+    auto view = WebView::HeadlessWebView::create(load_theme(), { 800, 600 });
+    static constexpr size_t loads = 40;
+
+    auto measure = [&](StringView label) {
+        // One warm-up load, then the measured ones.
+        for (size_t i = 0; i <= loads; ++i) {
+            if (i == 1) {
+                auto start = MonotonicTime::now();
+                for (size_t j = 0; j < loads; ++j) {
+                    view->load_from_browser_ui(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/heavy?{}-{}", origin.port(), label, j)).release_value());
+                    auto expected_query = ByteString::formatted("{}-{}", label, j);
+                    VERIFY(spin_until([&] { return view->title() == "done:200"_utf16 && view->url().query() == expected_query.view(); }));
+                }
+                auto elapsed = MonotonicTime::now() - start;
+                outln("Page with 200 scripts and 200 handlers, {}: {} us per load over {} loads", label, elapsed.to_microseconds() / static_cast<i64>(loads), loads);
+                return;
+            }
+            view->load_from_browser_ui(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/heavy?warmup-{}", origin.port(), label)).release_value());
+            VERIFY(spin_until([&] { return view->title() == "done:200"_utf16; }));
+        }
+    };
+
+    // A, B, A: the second run without the check tells drift from cost.
+    measure("no-sites-off"sv);
+    TRY_OR_FAIL(WebView::Application::settings().set_scripting_enabled_for_site("unrelated.example"sv, false));
+    measure("unrelated-site-off"sv);
+    TRY_OR_FAIL(WebView::Application::settings().set_scripting_enabled_for_site("unrelated.example"sv, true));
+    measure("no-sites-off-again"sv);
+}
