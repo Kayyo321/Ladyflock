@@ -1500,7 +1500,7 @@ TEST_CASE(extension_dns_resolves_localhost_with_permission)
 }
 
 // Turning scripting off for a site stops the page's own script, not the isolated content scripts of an extension the
-// user installed for it, as in Firefox.
+// user installed for it, as in Firefox, nor the extension's own page in a frame there.
 TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
 {
     Test::HeadlessTestEnvironment env { "TestExtSiteScriptingOff"sv, 90 };
@@ -1508,7 +1508,13 @@ TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
     auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
     auto theme = TRY_OR_FAIL(load_default_theme());
 
-    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+    Atomic<bool> extension_frame_ran { false };
+    ByteString extension_uuid;
+    LoopbackHttpServer server([&](ByteString const& path) -> HttpResponseSpec {
+        if (path.starts_with("/extension-frame-beacon"sv))
+            extension_frame_ran.store(true);
+        if (path == "/framing"sv)
+            return { .body = ByteString::formatted("<!DOCTYPE html><title>Framing</title><iframe src=\"moz-extension://{}/frame.html\"></iframe>", extension_uuid) };
         return { .body = "<!DOCTYPE html><title>Plain</title><script>document.title = 'PAGE-RAN';</script>" };
     });
 
@@ -1518,22 +1524,33 @@ TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
         "name": "Content Script On Script-Free Site",
         "version": "1.0",
         "browser_specific_settings": { "gecko": { "id": "noscript-site@ladyflock.example" } },
-        "content_scripts": [{ "matches": ["http://127.0.0.1/*"], "run_at": "document_idle", "js": ["content.js"] }]
+        "content_scripts": [{ "matches": ["http://127.0.0.1/plain"], "run_at": "document_idle", "js": ["content.js"] }],
+        "web_accessible_resources": ["frame.html", "frame.js"]
     })"sv);
     write_ext_file(ext_dir, "content.js"sv, "document.title = 'EXT:' + document.title;"sv);
-    TRY_OR_FAIL(app->default_session().extension_manager->load_unpacked(ext_dir, true));
+    write_ext_file(ext_dir, "frame.html"sv, "<!DOCTYPE html><script src=\"frame.js\"></script>"sv);
+    write_ext_file(ext_dir, "frame.js"sv, ByteString::formatted("new Image().src = 'http://127.0.0.1:{}/extension-frame-beacon';", server.port()));
+    auto const& extension = TRY_OR_FAIL(app->default_session().extension_manager->load_unpacked(ext_dir, true));
+    extension_uuid = extension.uuid.to_byte_string();
 
     TRY_OR_FAIL(WebView::Application::settings().set_scripting_enabled_for_site("127.0.0.1"sv, false));
 
     auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    auto wait = [&](Function<bool()> condition) {
+        bool expired = false;
+        auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(8), [&] { expired = true; });
+        timeout->start();
+        Core::EventLoop::current().spin_until([&] { return expired || condition(); });
+        timeout->stop();
+        return !expired;
+    };
+
     view->load_from_browser_ui(URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/plain", server.port()))).release_value());
-
-    bool expired = false;
-    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(8), [&] { expired = true; });
-    timeout->start();
-    Core::EventLoop::current().spin_until([&] { return expired || view->title().starts_with("EXT:"sv); });
-    timeout->stop();
-
+    wait([&] { return view->title().starts_with("EXT:"sv); });
     // The page's script never ran (its title would read PAGE-RAN); the extension's content script did.
     EXPECT_EQ(view->title(), "EXT:Plain"_utf16);
+
+    // The extension's own page, framed by the turned-off site, runs its script.
+    view->load_from_browser_ui(URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/framing", server.port()))).release_value());
+    EXPECT(wait([&] { return extension_frame_ran.load(); }));
 }

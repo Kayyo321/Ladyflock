@@ -114,6 +114,9 @@ TEST_CASE(dashboard_shows_its_own_identity_and_never_a_secret)
     auto tor_secret = coordinator.snapshot_for_session(*tor_session).network.route->isolation_secret;
     VERIFY(!tor_secret.is_empty());
 
+    // Positive control: the route that the dashboard must redact does carry the marker credentials.
+    EXPECT(coordinator.snapshot_for_session(*default_session).network.route->credentials.contains("markeruser"sv));
+
     auto default_dashboard = open_dashboard(default_session);
     auto tor_dashboard = open_dashboard(tor_session);
 
@@ -152,6 +155,8 @@ TEST_CASE(tab_capture_keeps_hosts_only_and_expires)
 {
     PrivacyTest::MockRouteServer origin(PrivacyTest::MockRouteServer::Mode::DirectHTTP);
     origin.set_html_for_path("/page"sv, ByteString::formatted("<!doctype html><img src=\"http://127.0.0.1:{}/pixel?q=IPMARKER\">", origin.port()));
+    origin.set_html_for_path("/framing"sv, ByteString::formatted("<!doctype html><iframe src=\"http://127.0.0.1:{}/framed\"></iframe>", origin.port()));
+    origin.set_html_for_path("/framed"sv, "<!doctype html><img src=\"/frame-pixel\">"sv);
 
     Test::HeadlessTestEnvironment environment { "Milestone4DashboardCapture"sv, 120 };
     Array arguments { "--temporary-profile"sv };
@@ -191,6 +196,17 @@ TEST_CASE(tab_capture_keeps_hosts_only_and_expires)
     EXPECT(!capture.contains(ByteString::number(origin.port())));
     auto capture_text = run_in_dashboard(*dashboard, "done(document.querySelector('#capture-entries').innerText);"sv);
     EXPECT(!capture_text.contains("QUERYMARKER"sv));
+
+    // A cross-site frame's requests belong to its tab too, even though another WebContent page makes them. This page
+    // contacts 127.0.0.1 only through its frame.
+    activity.start_capture(*tab, AK::Duration::from_seconds(10));
+    origin.reset_counts();
+    tab->load_from_browser_ui(URL::Parser::basic_parse(ByteString::formatted("http://localhost:{}/framing", origin.port())).release_value());
+    VERIFY(spin_until([&] { return any_of(origin.request_targets(), [](auto const& target) { return target.starts_with("/frame-pixel"sv); }); }));
+    EXPECT(spin_until([&] {
+        auto framed = dashboard_message(*dashboard, "loadCapture"sv, ByteString::formatted("{{ tabId: {} }}", tab->view_id()));
+        return framed.contains("\"host\":\"localhost\""sv) && framed.contains("(IPv4 address)"sv);
+    }));
 
     // Once its time is up, the capture and everything in it is discarded, whether or not the page asks again.
     fake_now = fake_now + AK::Duration::from_seconds(11);

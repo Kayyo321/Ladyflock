@@ -224,6 +224,17 @@ TEST_CASE(scripting_can_be_turned_off_for_a_site_and_its_frames)
     EXPECT(!requested(second, "/frame-beacon"sv));
     EXPECT(WebView::Application::privacy_activity().counters_for(WebView::Application::default_session()).navigations_with_scripting_blocked >= 1u);
 
+    // A redirect from another site, as a link shortener sends, lands on the turned-off site without script.
+    first.reset_counts();
+    second.reset_counts();
+    view->load_from_browser_ui(URL::Parser::basic_parse(ByteString::formatted("{}/redirect?to={}/page?via-redirect", second_base, first_base)).release_value());
+    VERIFY(spin_until([&] { return requested(first, "/always-pixel"sv); }));
+    spin_for(AK::Duration::from_milliseconds(500));
+    EXPECT(requested(first, "/page?via-redirect"sv));
+    EXPECT(!requested(first, "/script.js"sv));
+    EXPECT(!requested(first, "/inline-beacon"sv));
+    EXPECT(requested(first, "/noscript-pixel"sv));
+
     // Compatibility: another site is unaffected, including its frame from the turned-off site.
     first.reset_counts();
     second.reset_counts();
