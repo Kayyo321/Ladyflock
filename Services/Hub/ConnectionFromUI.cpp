@@ -791,6 +791,7 @@ void ConnectionFromUI::send_extension_state(View& view)
             .sidebar_title = sidebar.title,
             .sidebar_icon = move(sidebar_icon),
             .sidebar_url = move(sidebar_url),
+            .update_version = manager->available_update_version(ext->extension_id),
         });
     }
     async_view_extension_state(tab_id, true, move(items), manager->sidebar_controller().window_state(window_id).width_px);

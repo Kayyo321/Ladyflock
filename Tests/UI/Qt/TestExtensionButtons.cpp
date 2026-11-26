@@ -75,6 +75,7 @@ static Hub::ExtensionItem toolbar_item(String id, String title)
         .sidebar_title = "Sidebar"_string,
         .sidebar_icon = {},
         .sidebar_url = {},
+        .update_version = {},
     };
 }
 
@@ -201,5 +202,119 @@ TEST_CASE(publisher_theme_icons_follow_the_toolbar_appearance)
     menu->setPalette(palette);
     buttons.update_icons();
     EXPECT_EQ(menu->actions().first()->icon().pixmap(16, 16).toImage().pixelColor(8, 8), QColor(Qt::black));
+    menu->close();
+}
+
+static bool colors_are_close(QColor a, QColor b)
+{
+    return qAbs(a.red() - b.red()) <= 24 && qAbs(a.green() - b.green()) <= 24 && qAbs(a.blue() - b.blue()) <= 24;
+}
+
+TEST_CASE(available_updates_mark_pinned_buttons_and_the_extensions_button)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(2);
+    auto current = toolbar_item("current"_string, "Current"_string);
+    current.badge = {};
+    auto outdated = toolbar_item("outdated"_string, "Outdated"_string);
+    outdated.badge = {};
+    outdated.update_version = "2.0"_string;
+    buttons.set_items({ current, outdated });
+    buttons.show();
+
+    auto& outdated_button = static_cast<QToolButton&>(buttons.anchor_for(outdated.id));
+    auto& current_button = static_cast<QToolButton&>(buttons.anchor_for(current.id));
+    EXPECT_EQ(outdated_button.accessibleDescription(), QString("Update available: version 2.0"));
+    EXPECT(outdated_button.toolTip().contains(QStringLiteral("Update available: version 2.0")));
+    EXPECT(current_button.accessibleDescription().isEmpty());
+
+    auto* launcher = buttons.findChild<QToolButton*>("LadybirdExtensionsButton");
+    VERIFY(launcher);
+    EXPECT_EQ(launcher->accessibleDescription(), QString("1 extension update available"));
+
+    // The hint is an accent circle in the top-right corner, where the extension's badge never goes.
+    auto image = outdated_button.grab().toImage();
+    QPoint inside_circle(static_cast<int>(outdated_button.width() - 8.5 + 2.5), static_cast<int>(7.5 + 2));
+    EXPECT(colors_are_close(image.pixelColor(inside_circle * image.devicePixelRatio()), Ladybird::Theme::accent()));
+    auto current_image = current_button.grab().toImage();
+    EXPECT(!colors_are_close(current_image.pixelColor(inside_circle * current_image.devicePixelRatio()), Ladybird::Theme::accent()));
+
+    // For visual review: LADYFLOCK_UI_CAPTURE_DIR=<dir> saves what this test draws.
+    if (auto directory = qEnvironmentVariable("LADYFLOCK_UI_CAPTURE_DIR"); !directory.isEmpty()) {
+        buttons.grab().save(directory + "/extension-buttons-update-hint.png");
+        outdated_button.grab().save(directory + "/extension-button-update-hint.png");
+    }
+
+    // Updating clears the hint everywhere.
+    outdated.update_version = {};
+    buttons.set_items({ current, outdated });
+    EXPECT(outdated_button.accessibleDescription().isEmpty());
+    EXPECT(launcher->accessibleDescription().isEmpty());
+}
+
+TEST_CASE(extensions_menu_offers_available_updates)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(0);
+    auto outdated = toolbar_item("outdated"_string, "Outdated"_string);
+    outdated.update_version = "2.0"_string;
+    auto other = toolbar_item("zulu"_string, "Zulu"_string);
+    other.update_version = "3.1"_string;
+    buttons.set_items({ outdated, other });
+    buttons.show();
+    size_t update_requests = 0;
+    buttons.on_update = [&] { ++update_requests; };
+
+    buttons.findChild<QToolButton*>("LadybirdExtensionsButton")->click();
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    VERIFY(menu);
+    auto* submenu = menu->actions().first()->menu();
+    VERIFY(submenu);
+    EXPECT(submenu->menuAction()->toolTip().contains(QStringLiteral("Update available: version 2.0")));
+    auto* update = submenu->actions().first();
+    EXPECT_EQ(update->text(), QString("Update to Version 2.0..."));
+    update->trigger();
+    EXPECT_EQ(update_requests, 1u);
+
+    // "Manage extensions" stays last, after the action that reviews every update.
+    auto actions = menu->actions();
+    EXPECT_EQ(actions.at(actions.size() - 2)->text(), QString("Review 2 Updates..."));
+    actions.at(actions.size() - 2)->trigger();
+    EXPECT_EQ(update_requests, 2u);
+    EXPECT_EQ(actions.last()->text(), QString("Manage extensions"));
+    menu->close();
+}
+
+TEST_CASE(extensions_without_a_usable_icon_get_a_monogram_unlike_the_extensions_button)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(1);
+    buttons.set_items({ toolbar_item("noicon"_string, "Zebra Notes"_string) });
+    buttons.show();
+    auto& pinned = static_cast<QToolButton&>(buttons.anchor_for("noicon"_string));
+    auto* launcher = buttons.findChild<QToolButton*>("LadybirdExtensionsButton");
+    VERIFY(launcher);
+    EXPECT(!pinned.icon().isNull());
+    EXPECT(pinned.icon().pixmap(18, 18).toImage() != launcher->icon().pixmap(18, 18).toImage());
+
+    auto first = Ladybird::ExtensionButtons::monogram_icon(QStringLiteral("Zebra"), Qt::black, Qt::white).pixmap(18, 18).toImage();
+    auto second = Ladybird::ExtensionButtons::monogram_icon(QStringLiteral("Apple"), Qt::black, Qt::white).pixmap(18, 18).toImage();
+    EXPECT(first != second);
+}
+
+TEST_CASE(extensions_menu_elides_long_names_but_keeps_them_in_the_tooltip)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(0);
+    auto name = "An Extension With A Deliberately Very Long Name That Would Otherwise Stretch The Whole Menu"_string;
+    buttons.set_items({ toolbar_item("long"_string, name) });
+    buttons.show();
+    buttons.findChild<QToolButton*>("LadybirdExtensionsButton")->click();
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    VERIFY(menu);
+    auto* entry = menu->actions().first();
+    EXPECT(entry->text().endsWith(QChar(0x2026)));
+    EXPECT(QFontMetrics(menu->font()).horizontalAdvance(entry->text()) <= 280);
+    EXPECT(entry->toolTip().contains(qstring_from_ak_string(name)));
     menu->close();
 }

@@ -41,6 +41,12 @@ public:
     void set_pin_capacity(int);
     void update_icons();
     static QIcon package_icon(Optional<Gfx::ShareableBitmap> const&);
+    // A placeholder for an extension without an icon Ladyflock can show: the first letter of its name on a tile, so
+    // that it can't be mistaken for the Extensions button or for another extension.
+    static QIcon monogram_icon(QString const& name, QColor tile, QColor letter);
+    // Marks a button or icon whose extension has a newer version: an up arrow in an accent circle at its top-right,
+    // cut out of the surface it sits on.
+    static void paint_update_hint(QPainter&, QPointF center, qreal radius, QColor surface);
     void close_menu();
     QWidget& anchor_for(String const&) const;
 
@@ -49,10 +55,13 @@ public:
     Function<void(String const&)> on_sidebar;
     Function<void(String const&)> on_options;
     Function<void()> on_manage;
+    // Opens the Add-ons page to review and install available updates.
+    Function<void()> on_update;
 
 private:
     void update_buttons();
     void open_menu();
+    int count_updates() const;
 
     QHBoxLayout* m_layout { nullptr };
     QToolButton* m_menu_button { nullptr };

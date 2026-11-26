@@ -5,6 +5,8 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <QApplication>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QMenu>
@@ -67,6 +69,65 @@ QIcon ExtensionButtons::package_icon(Optional<Gfx::ShareableBitmap> const& icon)
     return QIcon(QPixmap::fromImage(image));
 }
 
+QIcon ExtensionButtons::monogram_icon(QString const& name, QColor tile, QColor letter)
+{
+    auto initial = name.trimmed().left(1).toUpper();
+    if (initial.isEmpty() || !initial.at(0).isLetterOrNumber())
+        initial = QStringLiteral("?");
+    QIcon icon;
+    for (qreal scale : { 1.0, 2.0, 3.0 }) {
+        QPixmap pixmap(QSize(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE) * scale);
+        pixmap.setDevicePixelRatio(scale);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QRectF rect(1, 1, TOOLBAR_ICON_SIZE - 2, TOOLBAR_ICON_SIZE - 2);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(tile);
+        painter.drawRoundedRect(rect, 4, 4);
+        auto font = QApplication::font();
+        font.setPixelSize(11);
+        font.setBold(true);
+        painter.setFont(font);
+        painter.setPen(letter);
+        painter.drawText(rect, Qt::AlignCenter, initial);
+        painter.end();
+        icon.addPixmap(pixmap);
+    }
+    return icon;
+}
+
+void ExtensionButtons::paint_update_hint(QPainter& painter, QPointF center, qreal radius, QColor surface)
+{
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    // NB: The ring in the surface's color keeps the circle apart from the icon underneath, as the feedback dot does.
+    painter.setBrush(surface);
+    painter.drawEllipse(center, radius + 1.5, radius + 1.5);
+    auto accent = Theme::accent();
+    painter.setBrush(accent);
+    painter.drawEllipse(center, radius, radius);
+
+    auto ink = accent.lightnessF() > 0.6 ? QColor(Qt::black) : QColor(Qt::white);
+    QPen pen(ink, qMax<qreal>(1.2, radius * 0.28), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+    auto arm = radius * 0.42;
+    QPointF top(center.x(), center.y() - radius * 0.52);
+    QPointF bottom(center.x(), center.y() + radius * 0.52);
+    painter.drawLine(bottom, top);
+    painter.drawPolyline(QList<QPointF> { { top.x() - arm, top.y() + arm }, top, { top.x() + arm, top.y() + arm } });
+    painter.restore();
+}
+
+static QString update_description(Optional<String> const& version)
+{
+    if (!version.has_value())
+        return {};
+    return QObject::tr("Update available: version %1").arg(qstring_from_ak_string(*version));
+}
+
 static void setup_button(QToolButton& button, QString const& title)
 {
     button.setAccessibleName(title);
@@ -90,6 +151,8 @@ public:
     QIcon package_icon;
     QIcon light_icon;
     QIcon dark_icon;
+    QString name;
+    bool update_available { false };
 
 private:
     virtual void paintEvent(QPaintEvent*) override
@@ -101,6 +164,9 @@ private:
         painter.drawComplexControl(QStyle::CC_ToolButton, option);
         if (hasFocus())
             ChromeStyle::paint_focus_ring(painter, QRectF(rect()).adjusted(1, 1, -1, -1), ChromeStyle::CONTROL_FRAME_RADIUS);
+        // The extension's own badge owns the bottom corner, so the update hint takes the top one.
+        if (update_available)
+            ExtensionButtons::paint_update_hint(painter, { width() - 8.5, 7.5 }, 4.5, Theme::chrome(Theme::chrome_palette(*this)).toolbar);
         if (badge.isEmpty())
             return;
         painter.setRenderHint(QPainter::Antialiasing);
@@ -175,7 +241,16 @@ void ExtensionButtons::update_buttons()
         button->badge = qstring_from_ak_string(item.badge);
         auto badge_color = Gfx::Color::from_string(item.badge_color);
         button->badge_color = badge_color.has_value() ? QColor::fromRgba(badge_color->value()) : QColor {};
-        button->setAccessibleDescription(button->badge);
+        button->name = qstring_from_ak_string(item.name);
+        button->update_available = item.update_version.has_value();
+        QStringList description;
+        if (!button->badge.isEmpty())
+            description.append(button->badge);
+        if (auto update = update_description(item.update_version); !update.isEmpty()) {
+            description.append(update);
+            button->setToolTip(QString("%1\n%2").arg(title, update).toHtmlEscaped());
+        }
+        button->setAccessibleDescription(description.join(QStringLiteral(", ")));
         button->setProperty("extensionId", qstring_from_ak_string(item.id));
         button->package_icon = package_icon(item.icon);
         button->light_icon = package_icon(item.light_icon);
@@ -185,7 +260,41 @@ void ExtensionButtons::update_buttons()
     }
     while (m_layout->count() > index + 1)
         delete m_layout->itemAt(index)->widget();
+
+    auto updates = count_updates();
+    auto* menu_button = static_cast<ActionButton*>(m_menu_button);
+    menu_button->update_available = updates > 0;
+    auto available = updates == 1 ? tr("1 extension update available") : tr("%1 extension updates available").arg(updates);
+    menu_button->setAccessibleDescription(updates > 0 ? available : QString {});
+    menu_button->setToolTip(updates > 0 ? QString("%1\n%2").arg(tr("Extensions"), available).toHtmlEscaped() : tr("Extensions"));
+    menu_button->update();
     update_icons();
+}
+
+int ExtensionButtons::count_updates() const
+{
+    int count = 0;
+    for (auto const& item : m_items) {
+        if (item.update_version.has_value())
+            ++count;
+    }
+    return count;
+}
+
+static QIcon with_update_hint(QIcon const& icon, QColor surface)
+{
+    QIcon hinted;
+    for (qreal scale : { 1.0, 2.0, 3.0 }) {
+        QPixmap pixmap(QSize(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE) * scale);
+        pixmap.setDevicePixelRatio(scale);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        icon.paint(&painter, QRect(0, 0, TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE));
+        ExtensionButtons::paint_update_hint(painter, { TOOLBAR_ICON_SIZE - 4.5, 4.5 }, 3.5, surface);
+        painter.end();
+        hinted.addPixmap(pixmap);
+    }
+    return hinted;
 }
 
 static QIcon menu_icon(Hub::ExtensionItem const& item, QPalette const& palette)
@@ -194,14 +303,20 @@ static QIcon menu_icon(Hub::ExtensionItem const& item, QPalette const& palette)
     auto icon = ExtensionButtons::package_icon(color.lightness() >= 128 ? item.light_icon : item.dark_icon);
     if (icon.isNull())
         icon = ExtensionButtons::package_icon(item.icon);
-    return icon.isNull() ? create_chrome_icon(ChromeIcon::Extensions, color) : icon;
+    if (icon.isNull())
+        icon = ExtensionButtons::monogram_icon(qstring_from_ak_string(item.name), color, palette.color(QPalette::Window));
+    if (item.update_version.has_value())
+        icon = with_update_hint(icon, palette.color(QPalette::Window));
+    return icon;
 }
 
 void ExtensionButtons::update_icons()
 {
-    auto icon = create_chrome_icon(ChromeIcon::Extensions, Theme::chrome_palette(*this), ChromeStyle::window_activity(*this), TOOLBAR_ICON_SIZE);
+    auto chrome_palette = Theme::chrome_palette(*this);
+    auto icon = create_chrome_icon(ChromeIcon::Extensions, chrome_palette, ChromeStyle::window_activity(*this), TOOLBAR_ICON_SIZE);
     m_menu_button->setIcon(icon);
     auto dark = Theme::is_dark(*this);
+    auto const& chrome = Theme::chrome(chrome_palette);
     if (m_menu) {
         for (auto* entry : m_menu->actions()) {
             if (!entry->menu())
@@ -216,7 +331,7 @@ void ExtensionButtons::update_icons()
         auto* button = static_cast<ActionButton*>(m_layout->itemAt(i)->widget());
         auto const& themed_icon = dark ? button->light_icon : button->dark_icon;
         auto const& package_icon = themed_icon.isNull() ? button->package_icon : themed_icon;
-        button->setIcon(package_icon.isNull() ? icon : package_icon);
+        button->setIcon(package_icon.isNull() ? monogram_icon(button->name, chrome.icon, chrome.toolbar) : package_icon);
     }
 }
 
@@ -235,6 +350,14 @@ static QString menu_label(QString text)
     return text.replace('&', "&&");
 }
 
+// Firefox's extensions panel keeps long names to one line, so a single long name doesn't widen the whole menu.
+static constexpr int MENU_NAME_MAXIMUM_WIDTH = 280;
+
+static QString elided_menu_label(QString const& text, QFont const& font)
+{
+    return menu_label(QFontMetrics(font).elidedText(text, Qt::ElideRight, MENU_NAME_MAXIMUM_WIDTH));
+}
+
 void ExtensionButtons::close_menu()
 {
     if (m_menu)
@@ -247,12 +370,22 @@ void ExtensionButtons::open_menu()
     auto* menu = new QMenu(this);
     m_menu = menu;
     menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->setToolTipsVisible(true);
     for (auto const& item : m_items) {
-        auto name = menu_label(qstring_from_ak_string(item.name));
-        auto* actions = menu->addMenu(menu_icon(item, menu->palette()), name);
+        auto full_name = qstring_from_ak_string(item.name);
+        auto name = menu_label(full_name);
+        auto* actions = menu->addMenu(menu_icon(item, menu->palette()), elided_menu_label(full_name, menu->font()));
         actions->menuAction()->setData(qstring_from_ak_string(item.id));
         actions->menuAction()->setIconVisibleInMenu(true);
+        QStringList tooltip { full_name };
+        if (auto update = update_description(item.update_version); !update.isEmpty())
+            tooltip.append(update);
+        actions->menuAction()->setToolTip(tooltip.join('\n').toHtmlEscaped());
         auto id = item.id;
+        if (item.update_version.has_value()) {
+            actions->addAction(tr("Update to Version %1...").arg(menu_label(qstring_from_ak_string(*item.update_version))), this, [this] { if (on_update) on_update(); });
+            actions->addSeparator();
+        }
         if (item.has_action) {
             auto title = menu_label(qstring_from_ak_string(item.title));
             auto badge = menu_label(qstring_from_ak_string(item.badge));
@@ -280,6 +413,8 @@ void ExtensionButtons::open_menu()
     if (m_items.is_empty())
         menu->addAction(tr("No enabled extensions"))->setEnabled(false);
     menu->addSeparator();
+    if (auto updates = count_updates(); updates > 0)
+        menu->addAction(updates == 1 ? tr("Review 1 Update...") : tr("Review %1 Updates...").arg(updates), this, [this] { if (on_update) on_update(); });
     menu->addAction(tr("Manage extensions"), this, [this] { if (on_manage) on_manage(); });
     menu->popup(m_menu_button->mapToGlobal(m_menu_button->rect().bottomLeft()));
 }

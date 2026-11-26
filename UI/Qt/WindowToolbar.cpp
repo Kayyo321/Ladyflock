@@ -1247,6 +1247,9 @@ WindowToolbar::WindowToolbar(WebView::IsPrivate is_private, QWidget* parent)
     m_extension_buttons->on_manage = [this] {
         browser_window().new_tab_from_url(URL::URL::about("addons"sv), Web::HTML::ActivateTab::Yes, BrowserWindow::TabLocation::after_current_tab());
     };
+    m_extension_buttons->on_update = [this] {
+        browser_window().new_tab_from_url(URL::URL::about("addons"sv), Web::HTML::ActivateTab::Yes, BrowserWindow::TabLocation::after_current_tab());
+    };
 
     m_downloads_button = new DownloadsButton(m_toolbar);
     QObject::connect(m_downloads_button, &QToolButton::clicked, this, [this] {
