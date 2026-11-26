@@ -997,7 +997,8 @@ void HTMLParserEndState::advance_to_dom_content_loaded_phase()
             HighResolutionTime::current_high_resolution_time(relevant_global_object(*document)));
         content_loaded_event->set_bubbles(true);
         document->dispatch_event(content_loaded_event);
-        if (auto navigable = document->navigable(); navigable && !document->is_initial_about_blank())
+        // Decoded SVG images use a navigable for rendering but have no browser-owned document ID.
+        if (auto navigable = document->navigable(); navigable && !document->is_initial_about_blank() && !document->is_decoded_svg())
             document->page().client().page_did_reach_dom_content_loaded(navigable->id(), document->id());
 
         // https://wicg.github.io/scroll-to-text-fragment/#invoking-text-directives
