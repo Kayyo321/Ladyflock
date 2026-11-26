@@ -496,8 +496,14 @@ private:
     Web::CSS::PreferredContrast m_preferred_contrast { Web::CSS::PreferredContrast::NoPreference };
     Web::CSS::PreferredMotion m_preferred_motion { Web::CSS::PreferredMotion::NoPreference };
     bool m_sizes_to_content { false };
-    bool m_applied_sizes_to_content_style { false };
+    // The top-level document that has the preferred-width style; frames it embeds keep their own layout.
+    GC::Weak<Web::DOM::Document> m_sized_document;
     Optional<Gfx::IntSize> m_reported_preferred_size;
+    struct ViewportOverflow {
+        double viewport_height { 0 };
+        double overflow { 0 };
+    };
+    Optional<ViewportOverflow> m_viewport_overflow;
     void report_preferred_size_if_changed();
 
     Core::AnonymousBuffer m_document_cookie_version_buffer;

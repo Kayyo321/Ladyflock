@@ -2258,6 +2258,10 @@ void WebContentPage::did_change_preferred_size(Gfx::IntSize size)
         return;
     if (size.width() <= 0 || size.height() <= 0)
         return;
+    // The renderer isn't trusted with the size of browser UI. Popups are far smaller than this, but the UI still learns
+    // when the document is taller than the popup it can show.
+    static constexpr int largest_reported_dimension = 16384;
+    size = { min(size.width(), largest_reported_dimension), min(size.height(), largest_reported_dimension) };
     if (view().on_preferred_size_change)
         view().on_preferred_size_change(size);
 }

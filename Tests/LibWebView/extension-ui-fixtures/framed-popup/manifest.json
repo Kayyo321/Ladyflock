@@ -1,0 +1,23 @@
+{
+    "manifest_version": 3,
+    "name": "Fixture: Framed Popup",
+    "version": "1.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "framed-popup@ui-fixtures.ladyflock.test"
+        }
+    },
+    "icons": {
+        "32": "icon.svg"
+    },
+    "background": {
+        "scripts": [
+            "background.js"
+        ]
+    },
+    "action": {
+        "default_title": "Framed popup",
+        "default_popup": "popup.html",
+        "default_icon": "icon.svg"
+    }
+}

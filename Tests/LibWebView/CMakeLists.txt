@@ -161,6 +161,7 @@ if (NOT WIN32)
         TestCrashReportSubmission.cpp
         TestExtensionCore.cpp
         TestExtensionInstaller.cpp
+        TestExtensionPopupSizing.cpp
         TestExtensionRuntime.cpp
         TestFavicon.cpp
         TestFileDownloader.cpp
