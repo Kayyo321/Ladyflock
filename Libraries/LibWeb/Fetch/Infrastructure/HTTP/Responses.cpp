@@ -189,6 +189,8 @@ NonnullRefPtr<Response> Response::clone() const
     // 2. Let newResponse be a copy of response, except for its body.
     auto new_response = Infrastructure::Response::create();
     new_response->set_type(m_type);
+    if (is_extension_redirect())
+        new_response->set_extension_redirect();
     new_response->set_aborted(m_aborted);
     new_response->set_url_list(m_url_list);
     new_response->set_status(m_status);

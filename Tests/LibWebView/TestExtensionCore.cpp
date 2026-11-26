@@ -17,9 +17,11 @@
 #include <LibDatabase/Database.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibTest/TestCase.h>
+#include <LibURL/Parser.h>
 #include <LibWebCommon/Extensions/ExtensionManifest.h>
 #include <LibWebCommon/Extensions/SupportMatrix.h>
 #include <LibWebView/Extensions/CatalogClient.h>
+#include <LibWebView/Extensions/DeclarativeRequestRules.h>
 #include <LibWebView/Extensions/ExtensionActionController.h>
 #include <LibWebView/Extensions/ExtensionAlarms.h>
 #include <LibWebView/Extensions/ExtensionSidebarController.h>
@@ -70,6 +72,58 @@ SignedEnvelope sign_json_payload_ed25519(StringView payload_json)
     return { env.serialized(), move(pub_pem) };
 }
 
+}
+
+TEST_CASE(declarative_rules_match_anchored_filters_parties_and_methods)
+{
+    auto manifest = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
+        "manifest_version": 3,
+        "name": "Declarative filter test",
+        "version": "1.0",
+        "permissions": ["declarativeNetRequest"],
+        "declarative_net_request": { "rule_resources": [
+            { "id": "filters", "enabled": true, "path": "/rules.json" }
+        ] }
+    })"sv));
+    auto rulesets = TRY_OR_FAIL(load_declarative_rulesets(manifest, [](StringView path) -> ErrorOr<String> {
+        EXPECT_EQ(path, "rules.json"sv);
+        return String::from_utf8(R"([
+            {"id":1, "action":{"type":"block"}, "condition":{"urlFilter":"||ads.example.test/ads/*^key=", "domainType":"thirdParty","requestMethods":["get"],"resourceTypes":["script"]}},
+            {"id":2, "action":{"type":"allow"}, "condition":{"urlFilter":"||ads.example.test/ads/allowed^key="}},
+            {"id":3, "action":{"type":"redirect","redirect":{"transform":{"queryTransform":{"removeParams":["track"]}}}}, "condition":{"urlFilter":"||pix.example.test^","requestDomains":["example.test"]}},
+            {"id":4, "action":{"type":"modifyHeaders","responseHeaders":[{"header":"content-security-policy","operation":"append","value":"script-src 'none'"}]}, "condition":{"requestDomains":["example.test"],"resourceTypes":["main_frame"]}}
+        ])"sv);
+    }));
+    using ResourceType = Web::Extensions::WebRequestResourceType;
+    using Action = DeclarativeRequestRule::Action;
+    auto check = [&](StringView url, StringView source, String method = "GET"_string, bool has_host_access = true, ResourceType type = ResourceType::Script) {
+        Web::Extensions::WebRequestBeforeRequestDetails details;
+        details.url = URL::Parser::basic_parse(url).release_value();
+        details.method = move(method);
+        details.type = type;
+        return match_declarative_request(rulesets, details, URL::Parser::basic_parse(source), has_host_access);
+    };
+    auto match = check("https://cache.ads.example.test/ads/pre-roll?key=1"sv, "https://news.example.com"sv);
+    VERIFY(match.winner);
+    EXPECT_EQ(match.winner->action, Action::Block);
+    match = check("https://ads.example.test/ads/allowed?key=1"sv, "https://news.example.com"sv);
+    VERIFY(match.winner);
+    EXPECT_EQ(match.winner->action, Action::Allow);
+    EXPECT(!check("https://ads.example.test.evil/ads/pre-roll?key=1"sv, "https://news.example.com"sv).winner);
+    EXPECT(!check("https://ads.example.test@unrelated.test/ads/pre-roll?key=1"sv, "https://news.example.com"sv).winner);
+    EXPECT(!check("https://ads.example.test/ads/pre-roll?key=1"sv, "https://news.example.test"sv).winner);
+    EXPECT(!check("https://ads.example.test/ads/pre-roll?key=1"sv, "https://news.example.com"sv, "POST"_string).winner);
+
+    auto redirect = "https://pix.example.test/a?track=1&ok=a+b&tr%61ck=2&ok=%20"sv;
+    match = check(redirect, "https://news.example.com"sv);
+    VERIFY(match.winner);
+    EXPECT_EQ(match.winner->action, Action::Redirect);
+    auto rewritten = declarative_redirect(*match.winner, URL::Parser::basic_parse(redirect).release_value(), ""sv);
+    VERIFY(rewritten.has_value());
+    EXPECT_EQ(rewritten->serialize(), "https://pix.example.test/a?ok=a+b&ok=%20"sv);
+    EXPECT(!check(redirect, "https://news.example.com"sv, "GET"_string, false).winner);
+    EXPECT_EQ(check("https://example.test"sv, "https://news.example.com"sv, "GET"_string, true, ResourceType::MainFrame).response_header_rules.size(), 1u);
+    EXPECT(check("https://example.test"sv, "https://news.example.com"sv, "GET"_string, false, ResourceType::MainFrame).response_header_rules.is_empty());
 }
 
 TEST_CASE(extension_storage_sqlite_persistence_and_changes)

@@ -30,8 +30,9 @@ public:
 
     void attach_scripts(Vector<AttachedContentScript>);
     void run_scripts_for(RunAt);
+    void inject_attached_script(AttachedContentScript const&);
 
-    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json);
+    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
 
     // Dynamic execution (tabs.executeScript / scripting.executeScript) in the isolated realm.
     void execute_script_dynamically(u64 call_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json);

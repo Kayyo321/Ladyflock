@@ -2139,14 +2139,6 @@ void WindowToolbar::fit_feedback_popover()
     move_popover_to_button(*m_feedback_popover, *m_feedback_button);
 }
 
-class ExtensionPopup final : public Popover {
-public:
-    explicit ExtensionPopup(QWidget* parent)
-        : Popover(parent)
-    {
-    }
-};
-
 static WebContentView& create_extension_view(QWidget& parent, BrowserWindow& window, Tab& tab, URL::URL const& url)
 {
     auto* view = new WebContentView(&parent, {}, {
@@ -2173,7 +2165,9 @@ void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL co
         return;
     if (m_extension_popup)
         m_extension_popup->close();
-    auto* popup = new ExtensionPopup(this);
+    auto& anchor = m_extension_buttons->anchor_for(id);
+    auto* screen = QGuiApplication::screenAt(anchor.mapToGlobal(anchor.rect().center()));
+    auto* popup = new ExtensionPopup(this, (screen ? screen : anchor.screen())->availableGeometry().size());
     m_extension_popup = popup;
     m_popup_extension_id = id;
     popup->setAttribute(Qt::WA_DeleteOnClose);
@@ -2184,10 +2178,6 @@ void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL co
     layout->addWidget(&view);
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), popup);
     QObject::connect(escape, &QShortcut::activated, popup, &QWidget::close);
-    // The popup stays inside the current screen even when the window spans monitors.
-    auto available = m_extension_buttons->screen()->availableGeometry().size();
-    popup->resize(QSize(380, 420).boundedTo(available));
-    auto& anchor = m_extension_buttons->anchor_for(id);
     move_popover_to_button(*popup, anchor);
     popup->on_visibility_change = [popup](bool visible) {
         if (!visible)

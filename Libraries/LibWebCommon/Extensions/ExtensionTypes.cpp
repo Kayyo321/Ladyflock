@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibWebCommon/Extensions/ExtensionTypes.h>
@@ -55,6 +56,10 @@ Optional<WebRequestResourceType> web_request_resource_type_from_string(StringVie
         return WebRequestResourceType::XmlHttpRequest;
     if (value == "media"sv)
         return WebRequestResourceType::Media;
+    if (value == "ping"sv)
+        return WebRequestResourceType::Ping;
+    if (value == "websocket"sv)
+        return WebRequestResourceType::WebSocket;
     if (value == "other"sv)
         return WebRequestResourceType::Other;
     return {};
@@ -81,6 +86,10 @@ StringView to_string(WebRequestResourceType type)
         return "xmlhttprequest"sv;
     case WebRequestResourceType::Media:
         return "media"sv;
+    case WebRequestResourceType::Ping:
+        return "ping"sv;
+    case WebRequestResourceType::WebSocket:
+        return "websocket"sv;
     case WebRequestResourceType::Other:
         return "other"sv;
     }
@@ -119,15 +128,45 @@ StringView to_string(ContextType type)
     VERIFY_NOT_REACHED();
 }
 
-bool WebRequestWatchSnapshot::matches(URL::URL const& url, WebRequestResourceType type) const
+static constexpr Array web_request_events {
+    "onBeforeRequest"sv,
+    "onSendHeaders"sv,
+    "onHeadersReceived"sv,
+    "onBeforeRedirect"sv,
+    "onResponseStarted"sv,
+    "onCompleted"sv,
+    "onErrorOccurred"sv,
+};
+
+Optional<WebRequestEvent> web_request_event_from_string(StringView value)
 {
-    if (url.scheme() != "http"sv && url.scheme() != "https"sv)
+    for (size_t index = 0; index < web_request_events.size(); ++index) {
+        if (web_request_events[index] == value)
+            return static_cast<WebRequestEvent>(index);
+    }
+    return {};
+}
+
+StringView to_string(WebRequestEvent event)
+{
+    return web_request_events[to_underlying(event)];
+}
+
+bool WebRequestWatchSnapshot::matches(URL::URL const& url, WebRequestResourceType type, WebRequestEvent event) const
+{
+    if (url.scheme().is_one_of("ws"sv, "wss"sv))
+        return has_declarative_rules && type == WebRequestResourceType::WebSocket && event == WebRequestEvent::BeforeRequest;
+
+    bool is_http = url.scheme().is_one_of("http"sv, "https"sv);
+    if (!is_http && !(event == WebRequestEvent::BeforeRequest && url.scheme() == "moz-extension"sv))
         return false;
 
-    if (has_declarative_rules)
+    if (is_http && has_declarative_rules && (event == WebRequestEvent::BeforeRequest || event == WebRequestEvent::HeadersReceived))
         return true;
 
     for (auto const& entry : entries) {
+        if (entry.event != event)
+            continue;
         if (!entry.types.is_empty() && !entry.types.contains_slow(type))
             continue;
         for (auto const& raw_pattern : entry.url_patterns) {
@@ -169,6 +208,7 @@ ErrorOr<void> IPC::encode(Encoder& encoder, Web::Extensions::AttachedContentScri
     TRY(encoder.encode(script.css_files));
     TRY(encoder.encode(script.all_frames));
     TRY(encoder.encode(script.match_about_blank));
+    TRY(encoder.encode(script.run_in_main_world));
     return {};
 }
 
@@ -184,6 +224,7 @@ ErrorOr<Web::Extensions::AttachedContentScript> IPC::decode(Decoder& decoder)
     auto css_files = TRY(decoder.decode<Vector<Web::Extensions::NamedSource>>());
     auto all_frames = TRY(decoder.decode<bool>());
     auto match_about_blank = TRY(decoder.decode<bool>());
+    auto run_in_main_world = TRY(decoder.decode<bool>());
     return Web::Extensions::AttachedContentScript {
         move(extension_id),
         move(extension_uuid),
@@ -194,6 +235,7 @@ ErrorOr<Web::Extensions::AttachedContentScript> IPC::decode(Decoder& decoder)
         move(css_files),
         all_frames,
         match_about_blank,
+        run_in_main_world,
     };
 }
 
@@ -234,7 +276,8 @@ ErrorOr<void> IPC::encode(Encoder& encoder, Web::Extensions::WebRequestWatchEntr
     TRY(encoder.encode(entry.url_patterns));
     TRY(encoder.encode(entry.types));
     TRY(encoder.encode(entry.blocking));
-    return {};
+    TRY(encoder.encode(entry.event));
+    return encoder.encode(entry.include_headers);
 }
 
 template<>
@@ -246,6 +289,8 @@ ErrorOr<Web::Extensions::WebRequestWatchEntry> IPC::decode(Decoder& decoder)
     auto url_patterns = TRY(decoder.decode<Vector<String>>());
     auto types = TRY(decoder.decode<Vector<Web::Extensions::WebRequestResourceType>>());
     auto blocking = TRY(decoder.decode<bool>());
+    auto event = TRY(decoder.decode<Web::Extensions::WebRequestEvent>());
+    auto include_headers = TRY(decoder.decode<bool>());
     return Web::Extensions::WebRequestWatchEntry {
         move(extension_id),
         listener_id,
@@ -253,6 +298,8 @@ ErrorOr<Web::Extensions::WebRequestWatchEntry> IPC::decode(Decoder& decoder)
         move(url_patterns),
         move(types),
         blocking,
+        event,
+        include_headers,
     };
 }
 
@@ -287,7 +334,11 @@ ErrorOr<void> IPC::encode(Encoder& encoder, Web::Extensions::WebRequestBeforeReq
     TRY(encoder.encode(details.document_url));
     TRY(encoder.encode(details.is_navigation));
     TRY(encoder.encode(details.source_document_id));
-    return {};
+    TRY(encoder.encode(details.event));
+    TRY(encoder.encode(details.headers));
+    TRY(encoder.encode(details.status_code));
+    TRY(encoder.encode(details.redirect_url));
+    return encoder.encode(details.error);
 }
 
 template<>
@@ -316,6 +367,11 @@ ErrorOr<Web::Extensions::WebRequestBeforeRequestDetails> IPC::decode(Decoder& de
         move(document_url),
         is_navigation,
         source_document_id,
+        TRY(decoder.decode<Web::Extensions::WebRequestEvent>()),
+        TRY(decoder.decode<Web::Extensions::WebRequestHeaders>()),
+        TRY(decoder.decode<Optional<u16>>()),
+        TRY(decoder.decode<Optional<URL::URL>>()),
+        TRY(decoder.decode<Optional<String>>()),
     };
 }
 
@@ -323,14 +379,15 @@ template<>
 ErrorOr<void> IPC::encode(Encoder& encoder, Web::Extensions::WebRequestDecision const& decision)
 {
     TRY(encoder.encode(decision.cancel));
-    return {};
+    TRY(encoder.encode(decision.redirect_url));
+    return encoder.encode(decision.response_headers);
 }
 
 template<>
 ErrorOr<Web::Extensions::WebRequestDecision> IPC::decode(Decoder& decoder)
 {
     auto cancel = TRY(decoder.decode<bool>());
-    return Web::Extensions::WebRequestDecision { cancel };
+    return Web::Extensions::WebRequestDecision { cancel, TRY(decoder.decode<Optional<URL::URL>>()), TRY(decoder.decode<Optional<Web::Extensions::WebRequestHeaders>>()) };
 }
 
 template<>

@@ -1051,7 +1051,7 @@ ErrorOr<NonnullRefPtr<WebContentPage>> CanonicalNavigable::obtain_page_to_host(C
         page->client().set_hosted_extension_id(*ext_id);
         if (auto const* ext_manager = Application::default_session().extension_manager.ptr()) {
             if (auto ext = ext_manager->extension_by_id(*ext_id); ext.has_value())
-                page->client().async_set_hosted_extension_context(page->id(), ext->extension_id, ext->uuid, ext->manifest.raw_json());
+                page->client().async_set_hosted_extension_context(page->id(), ext->extension_id, ext->uuid, ext->manifest.raw_json(), ext_manager->locale_messages_for(*ext));
         }
     }
     return page;

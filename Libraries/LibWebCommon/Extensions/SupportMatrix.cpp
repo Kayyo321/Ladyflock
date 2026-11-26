@@ -30,6 +30,7 @@ static constexpr Array s_supported_manifest_keys {
     "optional_host_permissions"sv,
     "content_scripts"sv,
     "background"sv,
+    "commands"sv,
     "browser_action"sv,
     "action"sv,
     "sidebar_action"sv,
@@ -64,6 +65,12 @@ static constexpr Array s_supported_api_methods {
     "runtime.getManifest"sv,
     "runtime.sendMessage"sv,
     "runtime.onMessage"sv,
+    "runtime.connect"sv,
+    "runtime.onConnect"sv,
+    "runtime.Port.postMessage"sv,
+    "runtime.Port.disconnect"sv,
+    "runtime.Port.onMessage"sv,
+    "runtime.Port.onDisconnect"sv,
     "runtime.onInstalled"sv,
     "runtime.openOptionsPage"sv,
     "runtime.lastError"sv,
@@ -73,9 +80,19 @@ static constexpr Array s_supported_api_methods {
     "alarms.clear"sv,
     "alarms.clearAll"sv,
     "alarms.onAlarm"sv,
+    "commands.getAll"sv,
+    "commands.onCommand"sv,
+    "i18n.getMessage"sv,
+    "i18n.getUILanguage"sv,
     "dns.resolve"sv,
     "declarativeNetRequest.getEnabledRulesets"sv,
     "declarativeNetRequest.updateEnabledRulesets"sv,
+    "declarativeNetRequest.getAvailableStaticRuleCount"sv,
+    "declarativeNetRequest.getDynamicRules"sv,
+    "declarativeNetRequest.updateDynamicRules"sv,
+    "declarativeNetRequest.getSessionRules"sv,
+    "declarativeNetRequest.updateSessionRules"sv,
+    "declarativeNetRequest.isRegexSupported"sv,
     "menus.create"sv,
     "menus.update"sv,
     "menus.remove"sv,
@@ -103,11 +120,20 @@ static constexpr Array s_supported_api_methods {
     "storage.local.remove"sv,
     "storage.local.clear"sv,
     "storage.local.getBytesInUse"sv,
+    "storage.local.getKeys"sv,
+    "storage.session.get"sv,
+    "storage.session.set"sv,
+    "storage.session.remove"sv,
+    "storage.session.clear"sv,
+    "storage.session.getBytesInUse"sv,
+    "storage.session.getKeys"sv,
+    "storage.session.setAccessLevel"sv,
     "storage.onChanged"sv,
     "tabs.query"sv,
     "tabs.get"sv,
     "tabs.create"sv,
     "tabs.update"sv,
+    "tabs.reload"sv,
     "tabs.remove"sv,
     "tabs.sendMessage"sv,
     "tabs.executeScript"sv,
@@ -121,6 +147,12 @@ static constexpr Array s_supported_api_methods {
     "scripting.executeScript"sv,
     "scripting.insertCSS"sv,
     "scripting.removeCSS"sv,
+    "scripting.registerContentScripts"sv,
+    "scripting.getRegisteredContentScripts"sv,
+    "scripting.updateContentScripts"sv,
+    "scripting.unregisterContentScripts"sv,
+    "contentScripts.register"sv,
+    "contentScripts.RegisteredContentScript.unregister"sv,
     "action.setTitle"sv,
     "action.getTitle"sv,
     "action.setBadgeText"sv,
@@ -163,6 +195,15 @@ static constexpr Array s_supported_api_methods {
     "publicSuffix.getKnownSuffix"sv,
     "publicSuffix.getDomain"sv,
     "webRequest.onBeforeRequest"sv,
+    "webRequest.onSendHeaders"sv,
+    "webRequest.onHeadersReceived"sv,
+    "webRequest.onBeforeRedirect"sv,
+    "webRequest.onResponseStarted"sv,
+    "webRequest.onCompleted"sv,
+    "webRequest.onErrorOccurred"sv,
+    "webRequest.handlerBehaviorChanged"sv,
+    "runtime.onUpdateAvailable"sv,
+    "windows.onFocusChanged"sv,
 };
 
 // Each entry must have a verified package and a passing behavior test for the same bytes.
@@ -171,6 +212,16 @@ static constexpr Array s_tested_extension_versions {
         .addon_id = "scrolltotop-lite@pratikabu"sv,
         .version = "1.0"sv,
         .sha256 = "3641b7d768842222e4b0c8dfc391504e53a5512a6b067406ba110bc3d7f9c97e"sv,
+    },
+    TestedExtensionVersion {
+        .addon_id = "uBlock0@raymondhill.net"sv,
+        .version = "1.77.2"sv,
+        .sha256 = "c9186bcbb5ef542465187ce52aa7d76b5315e8a020c360e3e701f678ad47d776"sv,
+    },
+    TestedExtensionVersion {
+        .addon_id = "uBOLiteRedux@raymondhill.net"sv,
+        .version = "2026.1124.1811"sv,
+        .sha256 = "9f714dd6480de7be085de094693478a9143cac1fa24af30b76c999fe9d031bac"sv,
     },
 };
 
@@ -253,14 +304,29 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
             evaluation.unsupported_reasons.append("Background service_worker without scripts or page is not supported"_string);
     }
     if (auto background = root.get_object("background"sv); background.has_value()) {
-        if (background->has("type"sv) && background->get_string("type"sv) != "classic"sv)
-            reject("background.type"sv);
+        if (background->has("type"sv)) {
+            auto type = background->get_string("type"sv);
+            if (type != "classic"sv && (type != "module"sv || !manifest.background().has_value() || manifest.background()->scripts.is_empty() || manifest.background()->page.has_value()))
+                reject("background.type"sv);
+        }
+    }
+    if (root.has("commands"sv)) {
+        if (auto commands = root.get_object("commands"sv); commands.has_value()) {
+            commands->for_each_member([&](String const& name, JsonValue const& options) {
+                if (name.is_empty() || !options.is_object()) {
+                    reject("commands"sv);
+                    return;
+                }
+                if (options.as_object().has("suggested_key"sv))
+                    reject("commands.suggested_key"sv);
+            });
+        } else {
+            reject("commands"sv);
+        }
     }
     if (auto scripts = root.get_array("content_scripts"sv); scripts.has_value()) {
         for (auto const& script : scripts->values()) {
             auto const& options = script.as_object();
-            if (options.has("match_about_blank"sv) && options.get_bool("match_about_blank"sv) != false)
-                reject("content_scripts.match_about_blank"sv);
             if (options.has("match_origin_as_fallback"sv) && options.get_bool("match_origin_as_fallback"sv) != false)
                 reject("content_scripts.match_origin_as_fallback"sv);
             if (options.has("world"sv) && options.get_string("world"sv) != "ISOLATED"sv)
@@ -275,6 +341,10 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
     for (auto const& perm : manifest.permissions()) {
         if (!is_permission_supported(perm))
             evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported permission '{}'", perm)));
+    }
+    for (auto const& pattern : manifest.host_permissions()) {
+        if (!pattern.is_web_host_permission())
+            evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported host permission '{}'", pattern.raw())));
     }
 
     if (manifest.has_permission("webRequestBlocking"sv) && !manifest.has_permission("webRequest"sv))

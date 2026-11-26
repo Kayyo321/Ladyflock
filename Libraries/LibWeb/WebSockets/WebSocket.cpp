@@ -5,8 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
 #include <AK/ByteBuffer.h>
 #include <AK/QuickSort.h>
+#include <LibCore/System.h>
 #include <LibGC/Heap.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/FunctionObject.h>
@@ -23,6 +25,7 @@
 #include <LibWeb/DOM/EventDispatcher.h>
 #include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/DOMURL/DOMURL.h>
+#include <LibWeb/Extensions/WebRequestClient.h>
 #include <LibWeb/Fetch/Fetching/ClientContextSnapshots.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
@@ -35,6 +38,7 @@
 #include <LibWeb/HTML/MessageEvent.h>
 #include <LibWeb/HTML/PolicyContainers.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Loader/LoaderConfig.h>
@@ -224,6 +228,31 @@ ErrorOr<void> WebSocket::establish_web_socket_connection(URL::URL const& url_rec
     auto connection_url = request->current_url();
     connection_url.set_scheme(connection_url.scheme() == "http"sv ? "ws"sv : "wss"sv);
 
+    auto& page = Bindings::principal_host_defined_page(client.realm());
+    auto* window = HTML::window_from_global_object(client.global_object());
+    if (window && Extensions::WebRequestClient::matches_watch_snapshot(connection_url, Extensions::WebRequestResourceType::WebSocket)) {
+        static Atomic<u64> next_id { 1 };
+        Extensions::WebRequestBeforeRequestDetails details;
+        details.request_id = (static_cast<u64>(Core::System::getpid()) << 32) | 0x80000000 | (next_id.fetch_add(1) & 0x7fffffff);
+        details.url = connection_url;
+        details.method = "GET"_string;
+        details.type = Extensions::WebRequestResourceType::WebSocket;
+        details.source_document_id = window->associated_document().id();
+        page.check_web_request_before_request(move(details), GC::create_function(client.realm().heap(), GC::captures(GC::Ref { *this }, move(connection_url), protocols, GC::Ref { client }, request), [](auto& socket, auto& target, auto& protocols, auto& client, auto& request, Extensions::WebRequestDecision decision) {
+            if (socket->m_ready_state != Requests::WebSocket::ReadyState::Connecting || socket->m_has_disappeared)
+                return;
+            if (decision.cancel || decision.redirect_url.has_value() || socket->connect_web_socket(target, protocols, *client, request).is_error()) {
+                socket->on_error();
+                socket->on_close(to_underlying(::WebSocket::CloseStatusCode::AbnormalClosure), Utf16String {}, false);
+            }
+        }));
+        return {};
+    }
+    return connect_web_socket(connection_url, protocols, client, request);
+}
+
+ErrorOr<void> WebSocket::connect_web_socket(URL::URL const& connection_url, Vector<Utf16String> const& protocols, HTML::EnvironmentSettingsObject& client, NonnullRefPtr<Fetch::Infrastructure::Request> const& request)
+{
     if (m_has_disappeared)
         return Error::from_string_literal("The document of the WebSocket was unloaded before it connected");
 
@@ -235,11 +264,11 @@ ErrorOr<void> WebSocket::establish_web_socket_connection(URL::URL const& url_rec
     for (auto const& protocol : protocols)
         TRY(protocol_byte_strings.try_append(protocol.to_utf8().to_byte_string()));
 
-    auto user_agent = Fetch::Infrastructure::default_user_agent_value(loader_config->config, request);
+    auto user_agent = Fetch::Infrastructure::default_user_agent_value(current_loader_config()->config, request);
     request->header_list()->append({ "User-Agent"sv, user_agent.to_byte_string() });
 
     if (ResourceLoader::proxy_autoconfig_url().has_value()) {
-        dbgln("FIXME: Evaluate the PAC file to find the proxy for {}; failing the WebSocket connection", url_record);
+        dbgln("FIXME: Evaluate the PAC file to find the proxy for {}; failing the WebSocket connection", connection_url);
         return Error::from_string_literal("PAC proxy configurations are not supported");
     }
 

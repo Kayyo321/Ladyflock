@@ -9,8 +9,11 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <AK/Random.h>
 #include <AK/RefCounted.h>
 #include <AK/ScopeGuard.h>
+#include <AK/StringBuilder.h>
+#include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/FunctionObject.h>
@@ -228,7 +231,8 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_extension_page(
     DOM::Document& document,
     String extension_id,
     String extension_uuid,
-    String manifest_json)
+    String manifest_json,
+    String locale_messages_json)
 {
     auto& vm = main_thread_vm();
     auto& window = *document.window();
@@ -244,6 +248,8 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_extension_page(
         world,
         realm);
 
+    if (auto messages = JsonValue::from_string(locale_messages_json); !messages.is_error() && messages.value().is_object())
+        context->m_locale_messages = messages.release_value().as_object();
     context->install_extension_namespaces(true);
     return context;
 }
@@ -307,6 +313,8 @@ void ExtensionRealmContext::visit_edges(Cell::Visitor& visitor)
         for (auto& listener : listeners)
             visitor.visit(listener.callback);
     }
+    for (auto& [id, port] : m_runtime_ports)
+        visitor.visit(port);
 }
 
 void ExtensionRealmContext::revoke_and_detach()
@@ -318,6 +326,7 @@ void ExtensionRealmContext::revoke_and_detach()
     auto pending = move(m_pending_calls);
     m_pending_calls.clear();
     m_event_listeners.clear();
+    m_runtime_ports.clear();
 
     if (!pending.is_empty()) {
         HTML::TemporaryExecutionContext execution_context(*m_realm);
@@ -410,11 +419,11 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
     auto& vm = main_thread_vm();
     auto event_obj = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
     auto event_key = MUST(String::formatted("{}.{}", ns_name, event_name));
-    bool is_web_request = (ns_name == "webRequest"sv && event_name == "onBeforeRequest"sv);
+    auto web_request_event = ns_name == "webRequest"sv ? Extensions::web_request_event_from_string(event_name) : Optional<Extensions::WebRequestEvent> {};
 
     auto add_listener = JS::NativeFunction::create(
         *m_realm,
-        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, event_key, is_web_request), [](auto& self, auto const& event_key, bool is_web_request, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, event_key, web_request_event), [](auto& self, auto const& event_key, auto web_request_event, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
             if (self->m_revoked)
                 return JS::js_undefined();
             auto cb_val = vm.argument(0);
@@ -441,7 +450,7 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                     return vm.throw_completion<JS::TypeError>("Invalid navigation URL filter"_utf16);
                 listener.navigation_filter = filter.release_value();
             }
-            if (is_web_request) {
+            if (web_request_event.has_value()) {
                 JsonObject args_obj;
                 args_obj.set("listener_id"sv, listener_id);
 
@@ -463,12 +472,21 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                     }
                 }
                 bool blocking = false;
-                if (vm.argument_count() > 2 && vm.argument(2).is_object()) {
-                    auto json_extra = js_value_to_json_string(vm, vm.argument(2));
-                    if (auto parsed = JsonValue::from_string(json_extra); !parsed.is_error() && parsed.value().is_array()) {
-                        for (auto const& item : parsed.value().as_array().values()) {
-                            if (item.is_string() && item.as_string() == "blocking"sv)
-                                blocking = true;
+                bool include_headers = false;
+                if (vm.argument_count() > 2 && !vm.argument(2).is_undefined()) {
+                    auto parsed = JsonValue::from_string(js_value_to_json_string(vm, vm.argument(2)));
+                    if (parsed.is_error() || !parsed.value().is_array())
+                        return vm.throw_completion<JS::TypeError>("webRequest extraInfoSpec must be an array"_utf16);
+                    for (auto const& item : parsed.value().as_array().values()) {
+                        auto option = item.is_string() ? item.as_string().bytes_as_string_view() : StringView {};
+                        if (option == "blocking"sv && (*web_request_event == Extensions::WebRequestEvent::BeforeRequest || *web_request_event == Extensions::WebRequestEvent::HeadersReceived)) {
+                            blocking = true;
+                        } else if (option == "requestHeaders"sv && *web_request_event == Extensions::WebRequestEvent::SendHeaders) {
+                            include_headers = true;
+                        } else if (option == "responseHeaders"sv && *web_request_event == Extensions::WebRequestEvent::HeadersReceived) {
+                            include_headers = true;
+                        } else if (option != "extraHeaders"sv || *web_request_event != Extensions::WebRequestEvent::SendHeaders) {
+                            return vm.throw_completion<JS::TypeError>("Unsupported webRequest extraInfoSpec option"_utf16);
                         }
                     }
                 }
@@ -489,6 +507,9 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                     listener.types.append(*type);
                 }
                 listener.blocking = blocking;
+                listener.include_headers = include_headers;
+                args_obj.set("event"sv, MUST(String::from_utf8(Extensions::to_string(*web_request_event))));
+                args_obj.set("includeHeaders"sv, include_headers);
                 args_obj.set("urls"sv, move(urls_arr));
                 args_obj.set("types"sv, move(types_arr));
                 args_obj.set("blocking"sv, blocking);
@@ -512,7 +533,7 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
 
     auto remove_listener = JS::NativeFunction::create(
         *m_realm,
-        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, event_key, is_web_request), [](auto& self, auto const& event_key, bool is_web_request, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, event_key, web_request_event), [](auto& self, auto const& event_key, auto web_request_event, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
             auto cb_val = vm.argument(0);
             if (!cb_val.is_function())
                 return JS::js_undefined();
@@ -529,7 +550,7 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                 return false;
             });
 
-            if (is_web_request) {
+            if (web_request_event.has_value()) {
                 for (auto listener_id : removed_ids) {
                     JsonObject args_obj;
                     args_obj.set("listener_id"sv, listener_id);
@@ -570,6 +591,89 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
     event_obj->define_direct_property("removeListener"_utf16_fly_string, remove_listener, JS::default_attributes);
     event_obj->define_direct_property("hasListener"_utf16_fly_string, has_listener, JS::default_attributes);
     return event_obj;
+}
+
+void ExtensionRealmContext::notify_runtime_port(StringView method, String const& id, Optional<String> payload)
+{
+    JsonArray arguments;
+    arguments.must_append(id);
+    if (payload.has_value())
+        arguments.must_append(payload.release_value());
+    m_document->page().client().page_did_call_extension_api(s_next_api_call_id.fetch_add(1), m_extension_id, m_context_type,
+        m_document->id(), m_grant_generation, "runtime"_string, MUST(String::from_utf8(method)), arguments.serialized());
+}
+
+void ExtensionRealmContext::forget_runtime_port(String const& id)
+{
+    m_runtime_ports.remove(id);
+    m_event_listeners.remove(MUST(String::formatted("runtimePortMessage.{}", id)));
+    m_event_listeners.remove(MUST(String::formatted("runtimePortDisconnect.{}", id)));
+}
+
+JS::Value ExtensionRealmContext::create_runtime_port(String const& id, String const& name, JS::Value sender)
+{
+    auto& vm = m_realm->vm();
+    auto port = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+    port->define_direct_property("name"_utf16_fly_string, JS::PrimitiveString::create(vm, Utf16String::from_utf8(name)), JS::Attribute::Enumerable);
+    port->define_direct_property("sender"_utf16_fly_string, sender, JS::default_attributes);
+    port->define_direct_property("onMessage"_utf16_fly_string, create_event_object("runtimePortMessage"sv, id), JS::Attribute::Enumerable);
+    port->define_direct_property("onDisconnect"_utf16_fly_string, create_event_object("runtimePortDisconnect"sv, id), JS::Attribute::Enumerable);
+    auto post_message = JS::NativeFunction::create(*m_realm,
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, id), [](auto& self, auto const& id, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+            if (!self->m_runtime_ports.contains(id))
+                return vm.throw_completion<JS::TypeError>("Extension port is disconnected"_utf16);
+            auto encoded = serialize_extension_message(vm, vm.argument(0));
+            if (encoded.is_error() || encoded.value().byte_count() > 4 * MiB)
+                return vm.throw_completion<JS::TypeError>("Unable to clone the extension port message"_utf16);
+            self->notify_runtime_port("postPortMessage"sv, id, encoded.release_value());
+            return JS::js_undefined();
+        }),
+        1, "postMessage"_utf16_fly_string, m_realm);
+    auto disconnect = JS::NativeFunction::create(*m_realm,
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, id), [](auto& self, auto const& id, JS::VM&) -> JS::ThrowCompletionOr<JS::Value> {
+            if (self->m_runtime_ports.contains(id)) {
+                self->forget_runtime_port(id);
+                self->notify_runtime_port("disconnectPort"sv, id);
+            }
+            return JS::js_undefined();
+        }),
+        0, "disconnect"_utf16_fly_string, m_realm);
+    port->define_direct_property("postMessage"_utf16_fly_string, post_message, JS::Attribute::Enumerable);
+    port->define_direct_property("disconnect"_utf16_fly_string, disconnect, JS::Attribute::Enumerable);
+    m_runtime_ports.set(id, port);
+    return port;
+}
+
+JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::connect_runtime_port(JS::VM& vm)
+{
+    if (m_revoked || m_runtime_ports.size() >= 128)
+        return vm.throw_completion<JS::TypeError>("Extension port is unavailable"_utf16);
+    size_t options_index = 0;
+    if (vm.argument(0).is_string()) {
+        if (vm.argument(0).as_string().utf16_string().to_utf8() != m_extension_id)
+            return vm.throw_completion<JS::TypeError>("Only connections within this extension are supported"_utf16);
+        options_index = 1;
+    }
+    if (vm.argument_count() > options_index + 1)
+        return vm.throw_completion<JS::TypeError>("Expected optional extension port options"_utf16);
+    auto options = vm.argument(options_index);
+    String name;
+    if (!options.is_nullish()) {
+        if (!options.is_object())
+            return vm.throw_completion<JS::TypeError>("Extension port options must be an object"_utf16);
+        auto requested_name = TRY(options.as_object().get("name"_utf16_fly_string));
+        if (!requested_name.is_undefined()) {
+            if (!requested_name.is_string())
+                return vm.throw_completion<JS::TypeError>("Extension port name must be a string"_utf16);
+            name = requested_name.as_string().utf16_string().to_utf8();
+            if (name.byte_count() > 1024)
+                return vm.throw_completion<JS::TypeError>("Extension port name is too long"_utf16);
+        }
+    }
+    auto id = generate_random_uuid();
+    auto port = create_runtime_port(id, name, JS::js_undefined());
+    notify_runtime_port("connectPort"sv, id, name);
+    return port;
 }
 
 JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& vm, StringView ns_name, StringView method_name, bool is_chrome)
@@ -659,6 +763,7 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
                                      .is_chrome = is_chrome,
                                      .clone_response = message_index.has_value(),
                                      .creates_menu = creates_menu,
+                                     .registers_legacy_content_script = ns_name == "contentScripts"sv && method_name == "register"sv,
                                  });
 
     m_document->page().client().page_did_call_extension_api(
@@ -695,6 +800,92 @@ JS::Value ExtensionRealmContext::create_namespace_object(StringView ns_name, Rea
         ns_obj->define_direct_property(Utf16FlyString::from_utf8(method), fn, JS::default_attributes);
     }
     return ns_obj;
+}
+
+static void append_localized_text(StringBuilder& output, StringView text, Vector<String> const& substitutions, Optional<JsonObject const&> placeholders)
+{
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] != '$' || i + 1 == text.length()) {
+            output.append(text[i]);
+            continue;
+        }
+        char next = text[i + 1];
+        if (next == '$') {
+            output.append('$');
+            ++i;
+            continue;
+        }
+        if (next >= '1' && next <= '9') {
+            size_t index = next - '1';
+            if (index < substitutions.size())
+                output.append(substitutions[index]);
+            ++i;
+            continue;
+        }
+        if (placeholders.has_value()) {
+            if (auto end = text.find('$', i + 1); end.has_value()) {
+                auto name = text.substring_view(i + 1, *end - i - 1);
+                Optional<String const&> content;
+                placeholders->for_each_member([&](String const& key, JsonValue const& value) {
+                    if (!content.has_value() && key.bytes_as_string_view().equals_ignoring_ascii_case(name) && value.is_object())
+                        content = value.as_object().get_string("content"sv);
+                });
+                if (content.has_value()) {
+                    append_localized_text(output, *content, substitutions, {});
+                    i = *end;
+                    continue;
+                }
+            }
+        }
+        output.append('$');
+    }
+}
+
+JS::Value ExtensionRealmContext::create_i18n_object()
+{
+    auto& vm = m_realm->vm();
+    auto object = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+    auto get_message = JS::NativeFunction::create(
+        *m_realm,
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+            auto name = TRY(vm.argument(0).to_utf16_string(vm)).to_utf8().to_ascii_lowercase();
+            auto entry = self->m_locale_messages.get_object(name);
+            if (!entry.has_value())
+                return JS::PrimitiveString::create(vm, Utf16String {});
+            auto text = entry->get_string("message"sv);
+            if (!text.has_value())
+                return JS::PrimitiveString::create(vm, Utf16String {});
+
+            Vector<String> substitutions;
+            auto argument = vm.argument(1);
+            if (argument.is_object() && is<JS::Array>(argument.as_object())) {
+                auto const& array = argument.as_object();
+                auto size = min(TRY(JS::length_of_array_like(vm, array)), 9uz);
+                for (u32 i = 0; i < size; ++i) {
+                    auto value = TRY(array.get(JS::PropertyKey { i }));
+                    substitutions.append(TRY(value.to_utf16_string(vm)).to_utf8());
+                }
+            } else if (!argument.is_undefined()) {
+                substitutions.append(TRY(argument.to_utf16_string(vm)).to_utf8());
+            }
+            StringBuilder output;
+            append_localized_text(output, *text, substitutions, entry->get_object("placeholders"sv));
+            return JS::PrimitiveString::create(vm, Utf16String::from_utf8(MUST(output.to_string())));
+        }),
+        1, "getMessage"_utf16_fly_string, m_realm);
+    object->define_direct_property("getMessage"_utf16_fly_string, get_message, JS::default_attributes);
+
+    auto get_ui_language = JS::NativeFunction::create(
+        *m_realm,
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+            auto locale_entry = self->m_locale_messages.get_object("@@ui_locale"sv);
+            auto locale = locale_entry.has_value() ? locale_entry->get_string("message"sv) : Optional<String const&> {};
+            auto language = locale.has_value() ? MUST(locale->replace("_"sv, "-"sv, ReplaceMode::All)) : "en"_string;
+            return JS::PrimitiveString::create(vm, Utf16String::from_utf8(language));
+        }),
+        0, "getUILanguage"_utf16_fly_string, m_realm);
+    object->define_direct_property("getUILanguage"_utf16_fly_string, get_ui_language, JS::default_attributes);
+    return object;
 }
 
 void ExtensionRealmContext::install_extension_namespaces(bool full_extension_page_apis)
@@ -737,6 +928,15 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
 
         runtime_js_obj.define_direct_property("onMessage"_utf16_fly_string, create_event_object("runtime"sv, "onMessage"sv), JS::default_attributes);
         runtime_js_obj.define_direct_property("onInstalled"_utf16_fly_string, create_event_object("runtime"sv, "onInstalled"sv), JS::default_attributes);
+        runtime_js_obj.define_direct_property("onConnect"_utf16_fly_string, create_event_object("runtime"sv, "onConnect"sv), JS::default_attributes);
+        auto connect = JS::NativeFunction::create(*m_realm,
+            GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+                return self->connect_runtime_port(vm);
+            }),
+            1, "connect"_utf16_fly_string, m_realm);
+        runtime_js_obj.define_direct_property("connect"_utf16_fly_string, connect, JS::default_attributes);
+        if (full_extension_page_apis)
+            runtime_js_obj.define_direct_property("onUpdateAvailable"_utf16_fly_string, create_event_object("runtime"sv, "onUpdateAvailable"sv), JS::default_attributes);
 
         auto last_error_getter = GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(
             vm.heap(),
@@ -751,15 +951,27 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         runtime_js_obj.define_native_accessor(*m_realm, "lastError"_utf16_fly_string, last_error_getter, nullptr, JS::Attribute::Configurable);
         root->define_direct_property("runtime"_utf16_fly_string, runtime_obj, JS::default_attributes);
 
-        // storage.local + storage.onChanged
+        // Storage access is checked in the browser against each document's current grant.
         auto storage_obj = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
-        static constexpr Array storage_local_methods { "get"sv, "set"sv, "remove"sv, "clear"sv, "getBytesInUse"sv };
-        storage_obj->define_direct_property("local"_utf16_fly_string, create_namespace_object("storage.local"sv, storage_local_methods.span(), is_chrome), JS::default_attributes);
+        static constexpr Array storage_area_methods { "get"sv, "getKeys"sv, "set"sv, "remove"sv, "clear"sv, "getBytesInUse"sv };
+        storage_obj->define_direct_property("local"_utf16_fly_string, create_namespace_object("storage.local"sv, storage_area_methods.span(), is_chrome), JS::default_attributes);
+        static constexpr Array privileged_session_methods { "get"sv, "getKeys"sv, "set"sv, "remove"sv, "clear"sv, "getBytesInUse"sv, "setAccessLevel"sv };
+        auto session_methods = full_extension_page_apis ? privileged_session_methods.span() : storage_area_methods.span();
+        auto session = create_namespace_object("storage.session"sv, session_methods, is_chrome);
+        session.as_object().define_direct_property("QUOTA_BYTES"_utf16_fly_string, JS::Value(10 * MiB), JS::Attribute::Enumerable);
+        storage_obj->define_direct_property("session"_utf16_fly_string, session, JS::default_attributes);
         storage_obj->define_direct_property("onChanged"_utf16_fly_string, create_event_object("storage"sv, "onChanged"sv), JS::default_attributes);
         root->define_direct_property("storage"_utf16_fly_string, storage_obj, JS::default_attributes);
 
         if (!full_extension_page_apis)
             return root;
+
+        root->define_direct_property("i18n"_utf16_fly_string, create_i18n_object(), JS::default_attributes);
+
+        static constexpr Array command_methods { "getAll"sv };
+        auto commands = create_namespace_object("commands"sv, command_methods.span(), is_chrome);
+        commands.as_object().define_direct_property("onCommand"_utf16_fly_string, create_event_object("commands"sv, "onCommand"sv), JS::default_attributes);
+        root->define_direct_property("commands"_utf16_fly_string, commands, JS::default_attributes);
 
         if (manifest_has_permission(manifest, "alarms"sv)) {
             static constexpr Array alarms_methods { "create"sv, "get"sv, "getAll"sv, "clear"sv, "clearAll"sv };
@@ -777,8 +989,11 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         }
 
         if (manifest_has_permission(manifest, "declarativeNetRequest"sv)) {
-            static constexpr Array request_methods { "getEnabledRulesets"sv, "updateEnabledRulesets"sv };
-            root->define_direct_property("declarativeNetRequest"_utf16_fly_string, create_namespace_object("declarativeNetRequest"sv, request_methods.span(), is_chrome), JS::default_attributes);
+            static constexpr Array request_methods { "getEnabledRulesets"sv, "updateEnabledRulesets"sv, "getAvailableStaticRuleCount"sv,
+                "getDynamicRules"sv, "updateDynamicRules"sv, "getSessionRules"sv, "updateSessionRules"sv, "isRegexSupported"sv };
+            auto declarative_api = create_namespace_object("declarativeNetRequest"sv, request_methods.span(), is_chrome);
+            declarative_api.as_object().define_direct_property("MAX_NUMBER_OF_REGEX_RULES"_utf16_fly_string, JS::Value(0), JS::Attribute::Enumerable);
+            root->define_direct_property("declarativeNetRequest"_utf16_fly_string, declarative_api, JS::default_attributes);
         }
 
         if (manifest_has_permission(manifest, "privacy"sv)) {
@@ -799,9 +1014,10 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         }
 
         // tabs
-        static constexpr Array tabs_methods { "query"sv, "get"sv, "create"sv, "update"sv, "remove"sv, "sendMessage"sv, "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
+        static constexpr Array tabs_methods { "query"sv, "get"sv, "create"sv, "update"sv, "reload"sv, "remove"sv, "sendMessage"sv, "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
         auto tabs_obj = create_namespace_object("tabs"sv, tabs_methods.span(), is_chrome);
         auto& tabs_js_obj = tabs_obj.as_object();
+        tabs_js_obj.define_direct_property("TAB_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::Attribute::Enumerable);
         tabs_js_obj.define_direct_property("onUpdated"_utf16_fly_string, create_event_object("tabs"sv, "onUpdated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onActivated"_utf16_fly_string, create_event_object("tabs"sv, "onActivated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onCreated"_utf16_fly_string, create_event_object("tabs"sv, "onCreated"sv), JS::default_attributes);
@@ -817,11 +1033,18 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         }
 
         static constexpr Array window_methods { "getCurrent"sv };
-        root->define_direct_property("windows"_utf16_fly_string, create_namespace_object("windows"sv, window_methods.span(), is_chrome), JS::default_attributes);
+        auto windows = create_namespace_object("windows"sv, window_methods.span(), is_chrome);
+        windows.as_object().define_direct_property("onFocusChanged"_utf16_fly_string, create_event_object("windows"sv, "onFocusChanged"sv), JS::default_attributes);
+        windows.as_object().define_direct_property("WINDOW_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::default_attributes);
+        root->define_direct_property("windows"_utf16_fly_string, windows, JS::default_attributes);
 
         // scripting
-        static constexpr Array scripting_methods { "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
+        static constexpr Array scripting_methods { "executeScript"sv, "insertCSS"sv, "removeCSS"sv, "registerContentScripts"sv, "getRegisteredContentScripts"sv, "updateContentScripts"sv, "unregisterContentScripts"sv };
         root->define_direct_property("scripting"_utf16_fly_string, create_namespace_object("scripting"sv, scripting_methods.span(), is_chrome), JS::default_attributes);
+        if (manifest.is_object() && manifest.as_object().get_u32("manifest_version"sv) == 2u) {
+            static constexpr Array content_script_methods { "register"sv };
+            root->define_direct_property("contentScripts"_utf16_fly_string, create_namespace_object("contentScripts"sv, content_script_methods.span(), is_chrome), JS::default_attributes);
+        }
 
         // action + browserAction
         static constexpr Array action_methods { "setTitle"sv, "getTitle"sv, "setBadgeText"sv, "getBadgeText"sv, "setBadgeBackgroundColor"sv, "getBadgeBackgroundColor"sv, "setPopup"sv, "getPopup"sv, "setIcon"sv, "enable"sv, "disable"sv };
@@ -852,10 +1075,18 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         perms_obj.as_object().define_direct_property("onRemoved"_utf16_fly_string, create_event_object("permissions"sv, "onRemoved"sv), JS::default_attributes);
         root->define_direct_property("permissions"_utf16_fly_string, perms_obj, JS::default_attributes);
 
-        // webRequest
-        auto web_request_obj = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
-        web_request_obj->define_direct_property("onBeforeRequest"_utf16_fly_string, create_event_object("webRequest"sv, "onBeforeRequest"sv), JS::default_attributes);
-        root->define_direct_property("webRequest"_utf16_fly_string, web_request_obj, JS::default_attributes);
+        if (manifest_has_permission(manifest, "webRequest"sv)) {
+            static constexpr Array methods { "handlerBehaviorChanged"sv };
+            auto web_request = create_namespace_object("webRequest"sv, methods.span(), is_chrome);
+            for (auto event : Array { "onBeforeRequest"sv, "onSendHeaders"sv, "onHeadersReceived"sv, "onBeforeRedirect"sv, "onResponseStarted"sv, "onCompleted"sv, "onErrorOccurred"sv })
+                web_request.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("webRequest"sv, event), JS::default_attributes);
+
+            auto resource_types = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+            for (auto type : Array { "main_frame"sv, "sub_frame"sv, "stylesheet"sv, "script"sv, "image"sv, "font"sv, "object"sv, "xmlhttprequest"sv, "media"sv, "other"sv })
+                resource_types->define_direct_property(Utf16FlyString::from_utf8(type.to_byte_string().to_uppercase()), JS::PrimitiveString::create(vm, Utf16String::from_utf8(type)), JS::default_attributes);
+            web_request.as_object().define_direct_property("ResourceType"_utf16_fly_string, resource_types, JS::default_attributes);
+            root->define_direct_property("webRequest"_utf16_fly_string, web_request, JS::default_attributes);
+        }
 
         return root;
     };
@@ -886,11 +1117,32 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
         }
     };
 
-    auto decode_response = [&]() {
+    auto decode_response = [&]() -> JS::Value {
         auto value = json_value_to_js_value(vm, *m_realm, result_or_error_json);
-        if (!pending->clone_response)
+        if (pending->clone_response)
+            return deserialize_extension_message(vm, *m_realm, value).value_or(JS::js_undefined());
+        if (!pending->registers_legacy_content_script || !value.is_string())
             return value;
-        return deserialize_extension_message(vm, *m_realm, value).value_or(JS::js_undefined());
+        auto id = value.as_string().utf16_string().to_utf8();
+        auto handle = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+        auto unregister = JS::NativeFunction::create(*m_realm,
+            GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, move(id)), [](auto& self, auto const& id, JS::VM&) -> JS::ThrowCompletionOr<JS::Value> {
+                auto promise = WebIDL::create_promise(*self->m_realm);
+                if (self->m_revoked) {
+                    WebIDL::reject_promise(*self->m_realm, *promise, JS::Error::create(*self->m_realm, "Extension context invalidated"_utf16));
+                    return promise->promise();
+                }
+                JsonArray arguments;
+                arguments.must_append(id);
+                auto unregister_call_id = s_next_api_call_id.fetch_add(1);
+                self->m_pending_calls.set(unregister_call_id, PendingCall { .promise = promise, .callback = nullptr });
+                self->m_document->page().client().page_did_call_extension_api(unregister_call_id, self->m_extension_id, self->m_context_type,
+                    self->m_document->id(), self->m_grant_generation, "contentScripts"_string, "unregister"_string, arguments.serialized());
+                return promise->promise();
+            }),
+            0, "unregister"_utf16_fly_string, m_realm);
+        handle->define_direct_property("unregister"_utf16_fly_string, unregister, JS::default_attributes);
+        return handle;
     };
     if (pending->callback) {
         if (success) {
@@ -936,6 +1188,22 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
     }
 
     auto event_key = MUST(String::formatted("{}.{}", namespace_name, event_name));
+    Optional<String> runtime_port_id;
+    bool port_message = event_key == "runtime.onPortMessage"sv;
+    bool port_disconnect = event_key == "runtime.onPortDisconnect"sv;
+    if (port_message || port_disconnect) {
+        auto arguments = JsonValue::from_string(args_json);
+        if (arguments.is_error() || !arguments.value().is_array() || arguments.value().as_array().is_empty() || !arguments.value().as_array().at(0).is_string())
+            return;
+        runtime_port_id = arguments.value().as_array().at(0).as_string();
+        if (!m_runtime_ports.contains(*runtime_port_id))
+            return;
+        event_key = MUST(String::formatted("{}.{}", port_message ? "runtimePortMessage"sv : "runtimePortDisconnect"sv, *runtime_port_id));
+    }
+    ScopeGuard cleanup_port = [&] {
+        if (port_disconnect && runtime_port_id.has_value())
+            forget_runtime_port(*runtime_port_id);
+    };
     auto it = m_event_listeners.find(event_key);
     if (it == m_event_listeners.end() || it->value.is_empty()) {
         if (reply_id.has_value())
@@ -972,6 +1240,42 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
     }
 
     auto listeners = it->value;
+
+    if (event_key == "runtime.onConnect"sv) {
+        if (args.size() != 3 || !args[0].is_string() || !args[1].is_string() || !args[2].is_object() || m_runtime_ports.size() >= 128) {
+            if (reply_id.has_value())
+                m_document->page().client().page_did_reply_extension_event(*reply_id, false, "null"_string);
+            return;
+        }
+        auto id = args[0].as_string().utf16_string().to_utf8();
+        auto name = args[1].as_string().utf16_string().to_utf8();
+        auto port = create_runtime_port(id, name, args[2]);
+        for (auto const& listener : listeners) {
+            auto result = JS::call(vm, *listener.callback, JS::js_undefined(), port);
+            if (result.is_throw_completion())
+                HTML::report_exception_to_console(result.release_error().value(), *m_realm, HTML::ErrorInPromise::No);
+        }
+        if (reply_id.has_value())
+            m_document->page().client().page_did_reply_extension_event(*reply_id, true, "null"_string);
+        return;
+    }
+    if (runtime_port_id.has_value()) {
+        auto port = m_runtime_ports.get(*runtime_port_id).value();
+        if (port_disconnect) {
+            if (args.size() == 2 && args[1].is_string())
+                port->define_direct_property("error"_utf16_fly_string, JS::Error::create(*m_realm, args[1].as_string().utf16_string()), JS::Attribute::Enumerable);
+            forget_runtime_port(*runtime_port_id);
+            for (auto const& listener : listeners)
+                (void)JS::call(vm, *listener.callback, JS::js_undefined(), port);
+        } else if (args.size() == 2) {
+            auto message = deserialize_extension_message(vm, *m_realm, args[1]);
+            if (message.has_value()) {
+                for (auto const& listener : listeners)
+                    (void)JS::call(vm, *listener.callback, JS::js_undefined(), *message, port);
+            }
+        }
+        return;
+    }
 
     if (event_key == "runtime.onMessage"sv) {
         auto message = args.is_empty() ? Optional<JS::Value> {} : deserialize_extension_message(vm, *m_realm, args[0]);
@@ -1059,8 +1363,13 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
         return;
     }
 
-    if (event_key == "webRequest.onBeforeRequest"sv) {
+    if (namespace_name == "webRequest"sv) {
         auto parsed = JsonValue::from_string(args_json);
+        if (parsed.is_error() || !parsed.value().is_array() || parsed.value().as_array().is_empty() || !parsed.value().as_array().at(0).is_object()) {
+            if (reply_id.has_value())
+                m_document->page().client().page_did_reply_extension_event(*reply_id, false, "null"_string);
+            return;
+        }
         auto const& details = parsed.value().as_array().at(0).as_object();
         auto url = URL::Parser::basic_parse(details.get_string("url"sv).value_or({}));
         auto type = Extensions::web_request_resource_type_from_string(details.get_string("type"sv).value_or({}));
@@ -1068,19 +1377,26 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
         struct DecisionState : public RefCounted<DecisionState> {
             GC_HOLDS_NO_CELL_EDGES;
             size_t pending { 1 };
-            bool cancel { false };
+            JsonObject decision;
             void complete(ExtensionRealmContext& context, u64 reply_id, JS::Value value)
             {
                 if (value.is_object()) {
                     auto cancellation = value.as_object().get("cancel"_utf16_fly_string);
                     if (!cancellation.is_error() && cancellation.value().to_boolean())
-                        cancel = true;
+                        decision.set("cancel"sv, true);
+                    auto redirect = value.as_object().get("redirectUrl"_utf16_fly_string);
+                    if (!decision.has("redirectUrl"sv) && !redirect.is_error() && redirect.value().is_string())
+                        decision.set("redirectUrl"sv, redirect.value().as_string().utf16_string().to_utf8());
+                    auto headers = value.as_object().get("responseHeaders"_utf16_fly_string);
+                    if (!decision.has("responseHeaders"sv) && !headers.is_error() && headers.value().is_object()) {
+                        auto parsed = JsonValue::from_string(js_value_to_json_string(main_thread_vm(), headers.value()));
+                        if (!parsed.is_error() && parsed.value().is_array())
+                            decision.set("responseHeaders"sv, parsed.release_value());
+                    }
                 }
                 if (--pending != 0 || context.is_revoked())
                     return;
-                JsonObject result;
-                result.set("cancel"sv, cancel);
-                context.m_document->page().client().page_did_reply_extension_event(reply_id, true, result.serialized());
+                context.m_document->page().client().page_did_reply_extension_event(reply_id, true, decision.serialized());
             }
         };
         auto state = make_ref_counted<DecisionState>();
@@ -1090,8 +1406,18 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
                 continue;
             if (!listener.types.is_empty() && (!type.has_value() || !listener.types.contains_slow(*type)))
                 continue;
-            auto result = JS::call(vm, *listener.callback, JS::js_undefined(), args.span());
-            if (result.is_throw_completion() || !listener.blocking || !reply_id.has_value())
+            auto listener_details = details;
+            if (!listener.include_headers) {
+                listener_details.remove("requestHeaders"sv);
+                listener_details.remove("responseHeaders"sv);
+            }
+            auto argument = json_value_to_js_value(vm, *m_realm, listener_details.serialized());
+            auto result = JS::call(vm, *listener.callback, JS::js_undefined(), argument);
+            if (result.is_throw_completion()) {
+                HTML::report_exception_to_console(result.release_error().value(), *m_realm, HTML::ErrorInPromise::No);
+                continue;
+            }
+            if (!listener.blocking || !reply_id.has_value())
                 continue;
             auto val = result.release_value();
             ++state->pending;

@@ -22,6 +22,7 @@ public:
         AllHttpHttps,
         Http,
         Https,
+        File,
         MozExtension,
     };
 
@@ -31,6 +32,7 @@ public:
     bool covers_origin(MatchPattern const&) const;
     bool covers_host(StringView) const;
     String const& raw() const { return m_raw; }
+    bool is_web_host_permission() const { return m_scheme != Scheme::File && m_scheme != Scheme::MozExtension; }
 
     static bool is_valid_host_permission_pattern(StringView pattern);
     static bool matches_glob(StringView text, StringView glob_pattern);

@@ -11,6 +11,7 @@
 #include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
+#include <LibHTTP/Header.h>
 #include <LibIPC/Forward.h>
 #include <LibURL/URL.h>
 #include <LibWebCommon/Export.h>
@@ -59,7 +60,19 @@ enum class WebRequestResourceType : u8 {
     Object,
     XmlHttpRequest,
     Media,
+    Ping,
+    WebSocket,
     Other,
+};
+
+enum class WebRequestEvent : u8 {
+    BeforeRequest,
+    SendHeaders,
+    HeadersReceived,
+    BeforeRedirect,
+    ResponseStarted,
+    Completed,
+    ErrorOccurred,
 };
 
 struct WEBCOMMON_API NamedSource {
@@ -77,6 +90,7 @@ struct WEBCOMMON_API AttachedContentScript {
     Vector<NamedSource> css_files;
     bool all_frames { false };
     bool match_about_blank { false };
+    bool run_in_main_world { false };
 };
 
 struct WEBCOMMON_API ExtensionResourceResponse {
@@ -139,6 +153,8 @@ struct WEBCOMMON_API WebRequestWatchEntry {
     Vector<String> url_patterns;
     Vector<WebRequestResourceType> types;
     bool blocking { false };
+    WebRequestEvent event { WebRequestEvent::BeforeRequest };
+    bool include_headers { false };
 };
 
 struct WEBCOMMON_API WebRequestWatchSnapshot {
@@ -146,8 +162,10 @@ struct WEBCOMMON_API WebRequestWatchSnapshot {
     Vector<WebRequestWatchEntry> entries;
     bool has_declarative_rules { false };
 
-    bool matches(URL::URL const& url, WebRequestResourceType type) const;
+    bool matches(URL::URL const& url, WebRequestResourceType type, WebRequestEvent = WebRequestEvent::BeforeRequest) const;
 };
+
+using WebRequestHeaders = Vector<HTTP::Header>;
 
 struct WEBCOMMON_API WebRequestBeforeRequestDetails {
     u64 request_id { 0 };
@@ -161,10 +179,17 @@ struct WEBCOMMON_API WebRequestBeforeRequestDetails {
     Optional<String> document_url;
     bool is_navigation { false };
     Optional<HTML::CrossProcessId> source_document_id {};
+    WebRequestEvent event { WebRequestEvent::BeforeRequest };
+    WebRequestHeaders headers {};
+    Optional<u16> status_code {};
+    Optional<URL::URL> redirect_url {};
+    Optional<String> error {};
 };
 
 struct WEBCOMMON_API WebRequestDecision {
     bool cancel { false };
+    Optional<URL::URL> redirect_url {};
+    Optional<WebRequestHeaders> response_headers {};
 };
 
 struct WEBCOMMON_API XpiVerificationResult {
@@ -184,6 +209,8 @@ WEBCOMMON_API Optional<RunAt> run_at_from_string(StringView);
 WEBCOMMON_API StringView to_string(RunAt);
 WEBCOMMON_API Optional<WebRequestResourceType> web_request_resource_type_from_string(StringView);
 WEBCOMMON_API StringView to_string(WebRequestResourceType);
+WEBCOMMON_API Optional<WebRequestEvent> web_request_event_from_string(StringView);
+WEBCOMMON_API StringView to_string(WebRequestEvent);
 WEBCOMMON_API StringView to_string(CompatibilityStatus);
 WEBCOMMON_API StringView to_string(ContextType);
 

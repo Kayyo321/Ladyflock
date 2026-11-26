@@ -1044,6 +1044,10 @@ ErrorOr<void> Application::connect_to_hub(Main::Arguments const& arguments)
         m_default_browser->refresh();
     }
 
+    QObject::connect(qGuiApp, &QGuiApplication::applicationStateChanged, [this] {
+        report_active_view();
+    });
+
     // NB: The UI info holds the interface color scheme, which changes with the interface theme as well as with the
     //     system's appearance. The views take it from the Hub only after this, as they update their palettes later.
     auto send_ui_info = [this] {
@@ -3065,7 +3069,7 @@ void Application::report_active_view() const
     auto* hub = HubConnection::the_if_connected();
     if (!hub)
         return;
-    auto* tab = active_tab();
+    auto* tab = QGuiApplication::applicationState() == Qt::ApplicationActive ? active_tab() : nullptr;
     hub->async_active_view_changed(tab && tab->is_loaded() ? Optional<u64> { tab->view().view_id() } : Optional<u64> {});
 }
 

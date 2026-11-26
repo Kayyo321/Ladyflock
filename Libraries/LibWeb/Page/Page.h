@@ -549,10 +549,11 @@ public:
     void set_viewport_is_fullscreen(ViewportIsFullscreen);
     void did_deny_fullscreen_window();
 
-    void set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json);
+    void set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
     Optional<String> const& hosted_extension_id() const { return m_hosted_extension_id; }
     Optional<String> const& hosted_extension_uuid() const { return m_hosted_extension_uuid; }
     Optional<String> const& hosted_extension_manifest_json() const { return m_hosted_extension_manifest_json; }
+    String const& hosted_extension_locale_messages_json() const { return m_hosted_extension_locale_messages_json; }
 
     void register_extension_document(DOM::Document&);
     void unregister_extension_document(HTML::CrossProcessId);
@@ -788,6 +789,7 @@ private:
     Optional<String> m_hosted_extension_id;
     Optional<String> m_hosted_extension_uuid;
     Optional<String> m_hosted_extension_manifest_json;
+    String m_hosted_extension_locale_messages_json;
 
     HashMap<HTML::CrossProcessId, GC::Weak<DOM::Document>> m_extension_documents;
     HashMap<HTML::CrossProcessId, Vector<Extensions::AttachedContentScript>> m_pending_extension_scripts;

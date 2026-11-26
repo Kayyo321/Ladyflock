@@ -9,11 +9,23 @@
 #include <LibTest/TestCase.h>
 #include <LibWebView/Settings.h>
 #include <QApplication>
+#include <QFrame>
 #include <QMenu>
 #include <QToolButton>
 #include <UI/Qt/ExtensionButtons.h>
 #include <UI/Qt/StringUtils.h>
 #include <UI/Qt/Theme.h>
+
+TEST_CASE(extension_popup_reserves_its_size_for_the_card_and_fits_smaller_screens)
+{
+    Ladybird::ExtensionPopup popup(nullptr, { 1280, 800 });
+    EXPECT_EQ(popup.card().size(), QSize(380, 420));
+    EXPECT(popup.width() > popup.card().width());
+    EXPECT(popup.height() > popup.card().height());
+
+    Ladybird::ExtensionPopup constrained(nullptr, { 320, 360 });
+    EXPECT_EQ(constrained.card().size(), QSize(320, 360));
+}
 
 static Hub::ExtensionItem toolbar_item(String id, String title)
 {

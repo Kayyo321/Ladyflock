@@ -218,6 +218,7 @@ private:
     RedirectTaint m_redirect_taint { RedirectTaint::SameOrigin };
 
     // Non-standard
+    bool m_extension_redirect { false };
     ByteString m_method;
     MonotonicTime m_monotonic_response_time;
 
@@ -225,6 +226,10 @@ private:
     Optional<NetworkTransport> m_network_transport;
 
 public:
+    // Only a browser-validated extension decision may redirect to an extension resource.
+    bool is_extension_redirect() const { return m_extension_redirect; }
+    void set_extension_redirect() { m_extension_redirect = true; }
+
     [[nodiscard]] ByteString const& method() const { return m_method; }
     void set_method(ByteString method) { m_method = move(method); }
 };

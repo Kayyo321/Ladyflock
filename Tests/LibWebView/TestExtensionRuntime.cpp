@@ -211,6 +211,8 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
     LoopbackHttpServer server([](ByteString const& path) -> HttpResponseSpec {
         if (path == "/origin-a"sv)
             return { .body = "<!DOCTYPE html><title>Origin A</title><script>window.pageGlobal = 'secret';</script><p id='msg'>A</p>" };
+        if (path == "/child-documents"sv)
+            return { .body = "<!DOCTYPE html><title>Child documents</title><iframe id='blank'></iframe><iframe id='inline' srcdoc='<p>Frame</p>'></iframe>" };
         return { .body = "<!DOCTYPE html><title>Origin B</title><p id='msg'>B</p>" };
     });
 
@@ -226,6 +228,12 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
             "run_at": "document_idle",
             "css": ["inject.css"],
             "js": ["content.js"]
+        }, {
+            "matches": ["http://127.0.0.1/child-documents", "file://*/*"],
+            "all_frames": true,
+            "match_about_blank": true,
+            "run_at": "document_idle",
+            "js": ["child.js"]
         }]
     })"sv);
     write_ext_file(ext_dir, "inject.css"sv, "body { background-color: rgb(12, 34, 56); }"sv);
@@ -245,6 +253,7 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
             document.title = result instanceof Map && result.get("cloned") && result.get("tab") > 0 ? "CLONED:" + isolated : "MESSAGE:BAD";
         }, () => { document.title = "MESSAGE:ERROR"; });
     )"sv);
+    write_ext_file(ext_dir, "child.js"sv, "document.documentElement.dataset.childScript = 'matched';"sv);
 
     auto& mgr = *app->default_session().extension_manager;
     auto const& ext = TRY_OR_FAIL(mgr.load_unpacked(ext_dir, true));
@@ -309,6 +318,25 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
     }))
         return;
 
+    auto child_url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/child-documents", server.port()))).release_value();
+    view->load_from_browser_ui(child_url);
+    if (!wait_for_page("the document containing blank and inline child frames"sv, [&] {
+            auto const& document = view->traversable().active_document();
+            return document.creation_url() == child_url && document.is_completely_loaded();
+        }))
+        return;
+    view->run_javascript(R"(
+        const getChildMarker = id => document.getElementById(id).contentDocument.documentElement.dataset.childScript;
+        const timer = setInterval(() => {
+            if (getChildMarker('blank') === 'matched' && getChildMarker('inline') === 'matched') {
+                document.title = 'BOTH CHILD SCRIPTS RAN';
+                clearInterval(timer);
+            }
+        }, 25);
+    )"_string);
+    if (!wait_for_page("content scripts in both same-origin blank children"sv, [&] { return titles.contains_slow("BOTH CHILD SCRIPTS RAN"_utf16); }))
+        return;
+
     // 2. Non-matching second origin does NOT receive content script.
     expect_no_injection(*view, url_b, titles);
 
@@ -364,8 +392,8 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
         "name": "Beastify Fixture",
         "version": "1.0",
         "browser_specific_settings": { "gecko": { "id": "beastify@ladyflock.example" } },
-        "permissions": ["activeTab", "scripting"],
-        "background": { "scripts": ["bg.js"] },
+        "permissions": ["activeTab", "scripting", "storage"],
+        "background": { "scripts": ["bg.js"], "type": "module" },
         "action": { "default_title": "Beastify" },
         "web_accessible_resources": [{
             "resources": ["beasts/frog.txt"],
@@ -374,15 +402,21 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
     })"sv);
     write_ext_file(mv3_dir, "beasts/frog.txt"sv, "ribbit"sv);
     write_ext_file(mv3_dir, "secret.txt"sv, "internal-only"sv);
+    write_ext_file(mv3_dir, "signal.mjs"sv, "export default 'MV3_SCRIPTED';"sv);
     write_ext_file(mv3_dir, "bg.js"sv, R"(
+        import title from './signal.mjs';
+
         chrome.action.onClicked.addListener(async (tab) => {
+            await browser.storage.session.set({ title });
+            const saved = await browser.storage.session.get('title');
             await chrome.scripting.insertCSS({
                 target: { tabId: tab.id },
                 css: "body { border-top: 4px solid rgb(200, 10, 20); }"
             });
             await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
-                func: () => { document.title = 'MV3_SCRIPTED'; }
+                func: (title) => { document.title = title; },
+                args: [saved.title],
             });
         });
     )"sv);
@@ -435,6 +469,168 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
     EXPECT(!mgr.has_host_permission(mv3_ext.extension_id, url_local, view->view_id()));
 }
 
+TEST_CASE(registered_scripts_honor_host_access_world_and_session_storage)
+{
+    Test::HeadlessTestEnvironment env { "TestRegisteredExtensionScripts"sv, 90 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+        return { .body = R"(<!doctype html><title>Page</title>
+            <script>
+                new MutationObserver(() => {
+                    if (globalThis.mainMarker && document.documentElement.dataset.session) {
+                        document.title = `${globalThis.mainMarker}:${document.documentElement.dataset.session}:${typeof globalThis.isolatedMarker}`;
+                    }
+                }).observe(document.documentElement, {attributes: true});
+            </script>)" };
+    });
+
+    auto extension_directory = LexicalPath::join(env.directory(), "registered-scripts"sv).string();
+    write_ext_file(extension_directory, "manifest.json"sv, R"({
+        "manifest_version": 3,
+        "name": "Registered Script Fixture",
+        "version": "1.0",
+        "browser_specific_settings": { "gecko": { "id": "registered-scripts@ladyflock.example" } },
+        "permissions": ["scripting", "storage"],
+        "host_permissions": ["http://127.0.0.1/*"],
+        "background": { "scripts": ["bg.js"], "type": "module" },
+        "action": {}
+    })"sv);
+    write_ext_file(extension_directory, "bg.js"sv, R"(
+        browser.action.onClicked.addListener(async () => {
+            await browser.storage.session.set({ marker: 'session-ok' });
+            await browser.scripting.registerContentScripts([
+                { id: 'main', matches: ['<all_urls>'], js: ['main.js'], world: 'MAIN' },
+                { id: 'isolated', matches: ['<all_urls>'], js: ['isolated.js'] },
+            ]);
+            const registered = await browser.scripting.getRegisteredContentScripts({ ids: ['isolated'] });
+            await browser.storage.local.set({ installed: registered[0].id });
+        });
+        browser.runtime.onConnect.addListener(port => {
+            port.onMessage.addListener(async message => {
+                const valid = port.name === 'session-fixture' && port.sender.frameId === 0 && message instanceof Set && message.has('request');
+                if (valid) await browser.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+                port.postMessage({ granted: valid });
+                port.disconnect();
+            });
+        });
+    )"sv);
+    write_ext_file(extension_directory, "main.js"sv, R"(
+        globalThis.mainMarker = typeof browser === 'undefined' ? 'main-ok' : 'leak';
+    )"sv);
+    write_ext_file(extension_directory, "isolated.js"sv, R"(
+        (async () => {
+            globalThis.isolatedMarker = true;
+            const denied = await browser.storage.session.get('marker').then(() => false, () => true);
+            const { granted, disconnected } = await new Promise(resolve => {
+                const port = browser.runtime.connect({ name: 'session-fixture' });
+                let granted = false;
+                port.onMessage.addListener(message => granted = message.granted);
+                port.onDisconnect.addListener(() => resolve({ granted, disconnected: true }));
+                port.postMessage(new Set(['request']));
+            });
+            const { marker } = await browser.storage.session.get('marker');
+            document.documentElement.dataset.session = denied && granted && disconnected ? marker : 'denial-failed';
+        })();
+    )"sv);
+
+    auto& manager = *app->default_session().extension_manager;
+    auto extension = TRY_OR_FAIL(manager.load_unpacked(extension_directory));
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    size_t loads = 0;
+    Vector<Utf16String> titles;
+    view->on_load_finish = [&](auto const&) { ++loads; };
+    view->on_title_change = [&](auto const& title) { titles.append(title); };
+    Core::EventLoop::current().spin_until([&] { return loads >= 1; });
+    auto load = [&](StringView host) {
+        auto url = URL::Parser::basic_parse(MUST(String::formatted("http://{}:{}/page", host, server.port()))).release_value();
+        auto previous_loads = loads;
+        view->load_from_browser_ui(url);
+        Core::EventLoop::current().spin_until([&] { return loads > previous_loads; });
+    };
+    load("127.0.0.1"sv);
+    EXPECT_EQ(manager.invoke_action_for_tab(extension.extension_id, view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
+    Core::EventLoop::current().spin_until([&] {
+        return manager.storage().get(extension.extension_id, {}).get_string("installed"sv) == "isolated"sv;
+    });
+    load("localhost"sv);
+    EXPECT(!titles.contains_slow("main-ok:session-ok:undefined"_utf16));
+    load("127.0.0.1"sv);
+    Core::EventLoop::current().spin_until([&] { return titles.contains_slow("main-ok:session-ok:undefined"_utf16); });
+}
+
+TEST_CASE(mv2_content_script_handle_registers_ordered_sources_and_unregisters)
+{
+    Test::HeadlessTestEnvironment env { "TestMV2ScriptHandle"sv, 90 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+        return { .body = "<!doctype html><title>Unmodified</title>" };
+    });
+
+    auto directory = LexicalPath::join(env.directory(), "mv2-scripts"sv).string();
+    write_ext_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2,
+        "name": "MV2 Script Handle Fixture",
+        "version": "1.0",
+        "permissions": ["storage", "http://127.0.0.1/*"],
+        "background": { "scripts": ["bg.js"] },
+        "browser_action": {}
+    })"sv);
+    write_ext_file(directory, "file.js"sv, "globalThis.fromFile = 'MV2';"sv);
+    write_ext_file(directory, "bg.js"sv, R"(
+        let handle;
+        browser.browserAction.onClicked.addListener(async () => {
+            if (handle) {
+                await handle.unregister();
+                handle = undefined;
+                await browser.storage.local.set({ state: 'unregistered' });
+                return;
+            }
+            let denied = false;
+            try {
+                await browser.contentScripts.register({
+                    matches: ['http://localhost/*'], js: [{ code: 'document.title = "Unexpected";' }],
+                });
+            } catch { denied = true; }
+            handle = await browser.contentScripts.register({
+                allFrames: true, matchOriginAsFallback: true, matches: ['http://127.0.0.1/*'],
+                js: [{ file: 'file.js' }, { code: 'document.title = `${fromFile}:${typeof browser}`;' }],
+                runAt: 'document_end', world: 'MAIN',
+            });
+            await browser.storage.local.set({ state: denied ? 'registered' : 'host-denial-failed' });
+        });
+    )"sv);
+
+    auto& manager = *app->default_session().extension_manager;
+    auto extension = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    size_t loads = 0;
+    Utf16String title;
+    view->on_load_finish = [&](auto const&) { ++loads; };
+    view->on_title_change = [&](auto const& new_title) { title = new_title; };
+    Core::EventLoop::current().spin_until([&] { return loads >= 1; });
+    auto load = [&](StringView query) {
+        auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/page?{}", server.port(), query))).release_value();
+        auto previous_loads = loads;
+        view->load_from_browser_ui(url);
+        Core::EventLoop::current().spin_until([&] { return loads > previous_loads; });
+    };
+    auto toggle_and_wait = [&](StringView state) {
+        EXPECT_EQ(manager.invoke_action_for_tab(extension.extension_id, view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
+        Core::EventLoop::current().spin_until([&] { return manager.storage().get(extension.extension_id, {}).get_string("state"sv) == state; });
+    };
+    load("before"sv);
+    toggle_and_wait("registered"sv);
+    load("registered"sv);
+    Core::EventLoop::current().spin_until([&] { return title == "MV2:undefined"_utf16; });
+    toggle_and_wait("unregistered"sv);
+    load("unregistered"sv);
+    EXPECT_EQ(title, "Unmodified"_utf16);
+}
+
 TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
 {
     Test::HeadlessTestEnvironment env { "TestExtWebRequest"sv, 90 };
@@ -454,6 +650,14 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
                     }
                 };
             </script>)" };
+        }
+        if (path == "/observe-headers"sv) {
+            return {
+                .extra_headers = "Cache-Control: public, max-age=3600\r\n"
+                                 "Content-Security-Policy: default-src 'none'\r\n"
+                                 "Set-Cookie: hidden=1\r\n",
+                .body = "observed",
+            };
         }
         if (path == "/redirect-to-blocked"sv) {
             return {
@@ -494,14 +698,18 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
         "name": "WebRequest Blocker",
         "version": "1.0",
         "browser_specific_settings": { "gecko": { "id": "wr-blocker@ladyflock.example" } },
-        "permissions": ["webRequest", "webRequestBlocking", "http://127.0.0.1/*"],
-        "background": { "scripts": ["bg.js"] }
+        "permissions": ["webRequest", "webRequestBlocking", "storage", "http://127.0.0.1/*"],
+        "background": { "scripts": ["bg.js"] },
+        "web_accessible_resources": ["guarded.txt"]
     })"sv);
+    write_ext_file(wr_dir, "guarded.txt"sv, "guarded body"sv);
     write_ext_file(wr_dir, "bg.js"sv, R"(
         browser.webRequest.onBeforeRequest.addListener(
             async (details) => {
                 if (details.url.includes('/blocked'))
                     return { cancel: true };
+                if (details.url.endsWith('/extension-redirect'))
+                    return { redirectUrl: browser.runtime.getURL('guarded.txt?allow=1') };
                 return {};
             },
             { urls: ["http://127.0.0.1/*"] },
@@ -516,6 +724,31 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
             () => ({ cancel: true }),
             { urls: ["http://127.0.0.1/*"] }
         );
+        browser.webRequest.onBeforeRequest.addListener(
+            details => ({ cancel: !details.url.endsWith('?allow=1') }),
+            { urls: [browser.runtime.getURL('guarded.txt*')] },
+            ['blocking']
+        );
+        let sent;
+        let observed;
+        let started;
+        browser.webRequest.onSendHeaders.addListener(details => {
+            sent = details.requestId;
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['requestHeaders']);
+        browser.webRequest.onHeadersReceived.addListener(details => {
+            observed = sent === details.requestId && Array.isArray(details.responseHeaders)
+                && !details.responseHeaders.some(header => header.name.toLowerCase() === 'set-cookie');
+            const responseHeaders = details.responseHeaders.filter(header =>
+                !['content-security-policy', 'cache-control'].includes(header.name.toLowerCase()));
+            responseHeaders.push({ name: 'Cache-Control', value: 'no-cache' });
+            return { responseHeaders };
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['blocking', 'responseHeaders']);
+        browser.webRequest.onResponseStarted.addListener(details => {
+            started = sent === details.requestId && !('responseHeaders' in details);
+        }, { urls: ["http://127.0.0.1/observe-headers"] });
+        browser.webRequest.onCompleted.addListener(details => {
+            browser.storage.local.set({ goodEvents: observed && started && sent === details.requestId });
+        }, { urls: ["http://127.0.0.1/observe-headers"] });
     )"sv);
 
     auto const& wr_ext = TRY_OR_FAIL(mgr.load_unpacked(wr_dir, true));
@@ -523,7 +756,7 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
     bool bg_ready = false;
     mgr.ensure_background_started(wr_ext.extension_id, [&](bool ready) { bg_ready = ready; });
     Core::EventLoop::current().spin_until([&] {
-        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 3;
+        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 8;
     });
 
     // 1. Allowed page loads and hits server; fetch('/blocked-fetch') cancels without hitting server.
@@ -544,6 +777,36 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
     view->run_javascript("window.testBlockedFetch('/blocked-fetch', 'F1');"_string);
     Core::EventLoop::current().spin_until([&] { return titles.contains_slow("F1:BLOCKED"_utf16); });
     EXPECT_EQ(server.hits("/blocked-fetch"sv), 0u);
+
+    titles.clear();
+    view->run_javascript(R"(
+        fetch('/observe-headers').then(async response => {
+            await response.text();
+            document.title = response.headers.get('cache-control') + ':' + response.headers.get('content-security-policy');
+        });
+    )"_string);
+    Core::EventLoop::current().spin_until([&] { return !titles.is_empty(); });
+    EXPECT(titles.contains_slow("no-cache:default-src 'none'"_utf16));
+    Core::EventLoop::current().spin_until([&] {
+        return mgr.storage().get(wr_ext.extension_id, {}).has("goodEvents"sv);
+    });
+    EXPECT_EQ(mgr.storage().get(wr_ext.extension_id, {}).get_bool("goodEvents"sv), true);
+
+    titles.clear();
+    view->run_javascript(R"(
+        fetch('/extension-redirect').then(response => response.text()).then(text => {
+            document.title = text;
+        }).catch(() => { document.title = 'redirect-failed'; });
+    )"_string);
+    Core::EventLoop::current().spin_until([&] { return !titles.is_empty(); });
+    EXPECT(titles.contains_slow("guarded body"_utf16));
+    EXPECT_EQ(server.hits("/extension-redirect"sv), 0u);
+
+    titles.clear();
+    view->run_javascript(MUST(String::formatted(
+        "window.testBlockedFetch('moz-extension://{}/guarded.txt', 'WAR')", wr_ext.uuid)));
+    Core::EventLoop::current().spin_until([&] { return !titles.is_empty(); });
+    EXPECT(titles.contains_slow("WAR:BLOCKED"_utf16));
 
     // 2. Redirect target '/blocked-redirect' is cancelled before hitting server.
     titles.clear();
@@ -675,6 +938,8 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
     LoopbackHttpServer server([](ByteString const& path) -> HttpResponseSpec {
         if (path == "/dnr-redirect"sv)
             return { .status_code = 302, .status_text = "Found", .extra_headers = "Location: /dnr-block-redirect-target\r\n", .body = "redirect" };
+        if (path == "/dnr-csp"sv)
+            return { .extra_headers = "Content-Security-Policy: object-src 'none'\r\n", .body = "<!DOCTYPE html><title>DNR policy</title><script>document.title = 'DNR inline script'</script>" };
         if (path.starts_with("/dnr-block"sv))
             return { .extra_headers = "Cache-Control: public, max-age=3600\r\n", .body = "<!DOCTYPE html><title>Block target</title>" };
         return { .body = "<!DOCTYPE html><title>Test document</title>" };
@@ -704,6 +969,7 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
         "name": "Declarative Request Test",
         "version": "1.0",
         "permissions": ["declarativeNetRequest", "storage"],
+        "host_permissions": ["http://127.0.0.1/*"],
         "background": { "scripts": ["background.js"] },
         "declarative_net_request": { "rule_resources": [
             { "id": "blocking", "enabled": true, "path": "rules.json" }
@@ -713,7 +979,13 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
         { "id": 1, "action": { "type": "block" },
           "condition": { "urlFilter": "/dnr-block", "resourceTypes": ["main_frame", "xmlhttprequest"], "requestDomains": ["127.0.0.1"] } },
         { "id": 2, "action": { "type": "allow" },
-          "condition": { "urlFilter": "/dnr-block-exception", "resourceTypes": ["xmlhttprequest"] } }
+          "condition": { "urlFilter": "/dnr-block-exception", "resourceTypes": ["xmlhttprequest"] } },
+        { "id": 3, "action": { "type": "redirect", "redirect": { "transform": { "queryTransform": { "removeParams": ["tracking"] } } } },
+          "condition": { "urlFilter": "/dnr-strip?", "resourceTypes": ["xmlhttprequest"] } },
+        { "id": 4, "action": { "type": "modifyHeaders", "responseHeaders": [{ "header": "content-security-policy", "operation": "append", "value": "script-src 'none'" }] },
+          "condition": { "urlFilter": "/dnr-csp", "resourceTypes": ["main_frame"] } },
+        { "id": 5, "action": { "type": "block" },
+          "condition": { "urlFilter": "/dnr-socket", "resourceTypes": ["websocket"] } }
     ])"sv);
     write_ext_file(rules_directory, "background.js"sv, R"(
         browser.runtime.onInstalled.addListener(async () => {
@@ -726,7 +998,14 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
                 await api.updateEnabledRulesets({ disableRulesetIds: ['blocking'] });
                 const disabled = await api.getEnabledRulesets();
                 await api.updateEnabledRulesets({ enableRulesetIds: ['blocking'] });
-                await browser.storage.local.set({ rulesets: [enabled, disabled, await api.getEnabledRulesets()] });
+                await api.updateDynamicRules({ addRules: [{ id: 1, action: { type: 'block' }, condition: { urlFilter: '/dnr-dynamic' } }] });
+                await api.updateSessionRules({ addRules: [{ id: 1, action: { type: 'allow' }, condition: { urlFilter: '/dnr-dynamic-allowed' } }] });
+                const dynamicRules = await api.getDynamicRules({ ruleIds: [1] });
+                const sessionRules = await api.getSessionRules();
+                await browser.storage.local.set({
+                    rulesets: [enabled, disabled, await api.getEnabledRulesets()],
+                    mutableRules: [dynamicRules.length, sessionRules.length],
+                });
             }
         });
     )"sv);
@@ -741,6 +1020,7 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
     if (!wait_for("the background ruleset API result"sv, [&] { return read_ruleset_result().has_value(); }))
         return;
     EXPECT_EQ(*read_ruleset_result(), R"([["blocking"],[],["blocking"]])"sv);
+    EXPECT_EQ(manager.storage().get(extension.extension_id, JsonValue("mutableRules"_string)).get("mutableRules"sv)->serialized(), "[1,1]"sv);
 
     title = {};
     if (!navigate(url("/dnr-block-cached"sv)))
@@ -767,6 +1047,20 @@ TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
     EXPECT_EQ(server.hits("/dnr-block-redirect-target"sv), 0u);
     fetch_and_wait("/dnr-block-exception"sv, "allowed"sv);
     EXPECT_EQ(server.hits("/dnr-block-exception"sv), 1u);
+    fetch_and_wait("/dnr-dynamic"sv, "blocked"sv);
+    EXPECT_EQ(server.hits("/dnr-dynamic"sv), 0u);
+    fetch_and_wait("/dnr-dynamic-allowed"sv, "allowed"sv);
+    EXPECT_EQ(server.hits("/dnr-dynamic-allowed"sv), 1u);
+    fetch_and_wait("/dnr-strip?tracking=1&keep=2"sv, "allowed"sv);
+    EXPECT_EQ(server.hits("/dnr-strip?tracking=1&keep=2"sv), 0u);
+    EXPECT_EQ(server.hits("/dnr-strip?keep=2"sv), 1u);
+    view->run_javascript("new WebSocket('ws://' + location.host + '/dnr-socket').onerror = () => document.title = 'DNR socket error'"_string);
+    if (!wait_for("the blocked WebSocket"sv, [&] { return title == "DNR socket error"_utf16; }))
+        return;
+    EXPECT_EQ(server.hits("/dnr-socket"sv), 0u);
+    if (!navigate(url("/dnr-csp"sv)))
+        return;
+    EXPECT_EQ(title, "DNR policy"_utf16);
 
     auto private_view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::Yes);
     size_t private_loads = 0;

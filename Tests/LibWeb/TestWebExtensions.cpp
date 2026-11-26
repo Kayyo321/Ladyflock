@@ -230,6 +230,16 @@ TEST_CASE(match_patterns_and_globs)
     EXPECT(all_urls.matches(http_sub));
     EXPECT(!all_urls.matches(URL::Parser::basic_parse("about:blank"sv).release_value()));
 
+    auto file_url = URL::Parser::basic_parse("file:///tmp/report.html"sv).release_value();
+    auto file = TRY_OR_FAIL(Web::Extensions::MatchPattern::parse("file:///*"sv));
+    auto file_with_wildcard = TRY_OR_FAIL(Web::Extensions::MatchPattern::parse("file://*/*"sv));
+    EXPECT(file.matches(file_url));
+    EXPECT(file_with_wildcard.matches(file_url));
+    EXPECT(!file.matches(https_app));
+    EXPECT(!all_urls.matches(file_url));
+    EXPECT(!all_urls.covers_origin(file));
+    EXPECT(!Web::Extensions::MatchPattern::is_valid_host_permission_pattern("file:///*"sv));
+
     auto excl = Web::Extensions::MatchPattern::parse("https://sub.example.com/app/private/*"sv).release_value();
     auto priv_url = URL::Parser::basic_parse("https://sub.example.com/app/private/secret"sv).release_value();
     EXPECT(Web::Extensions::MatchPattern::matches_url_with_rules(https_app, { sub_pat }, { excl }, { "*index*"_string }, { "*secret*"_string }));
@@ -411,7 +421,21 @@ TEST_CASE(support_matrix_classification)
     })"sv));
     auto eval_options = Web::Extensions::SupportMatrix::evaluate_manifest(unsupported_options);
     EXPECT_EQ(eval_options.status, Web::Extensions::CompatibilityStatus::Incompatible);
-    EXPECT_EQ(eval_options.unsupported_reasons.size(), 3u);
+    EXPECT_EQ(eval_options.unsupported_reasons.size(), 1u);
+    EXPECT(eval_options.unsupported_reasons.first().contains("content_scripts.world"sv));
+    EXPECT(unsupported_options.background()->is_module);
+    EXPECT(unsupported_options.content_scripts().first().match_about_blank);
+
+    auto unbound_commands = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
+        "manifest_version": 3, "name": "Commands", "version": "1",
+        "commands": { "unbound": { "description": "Unbound command" } }
+    })"sv));
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(unbound_commands).status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+    auto bound_commands = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
+        "manifest_version": 3, "name": "Commands", "version": "1",
+        "commands": { "bound": { "suggested_key": { "default": "Ctrl+Shift+Y" } } }
+    })"sv));
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(bound_commands).status, Web::Extensions::CompatibilityStatus::Incompatible);
 }
 
 TEST_CASE(zip_reader_hardening)
@@ -551,4 +575,30 @@ TEST_CASE(extension_public_suffix_api_requires_permission)
     )"sv,
         "public-suffix.js"sv, true);
     EXPECT_EQ(present, Optional<String> { R"({"result":true})"_string });
+}
+
+TEST_CASE(extension_page_localized_messages)
+{
+    install_test_font_plugin();
+    auto principal_realm = Web::Bindings::create_a_principal_javascript_realm();
+    VERIFY(principal_realm.ptr());
+    auto& vm = Web::Bindings::main_thread_vm();
+    auto client = vm.heap().allocate<ExtensionTestPageClient>();
+    auto page = Web::Page::create(client);
+    client->m_page = page.ptr();
+    auto traversable = Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {});
+    page->set_top_level_traversable(traversable);
+
+    auto context = Web::Bindings::ExtensionRealmContext::create_for_extension_page(*traversable->active_document(),
+        "messages@test"_string, "11111111-2222-4333-8444-555555555555"_string, "{}"_string, R"({
+            "@@ui_locale": {"message":"fr_CA"},
+            "welcome": {"message":"$GUEST$: $$ $2", "placeholders":{"guest":{"content":"$1"}}}
+        })"_string);
+    auto result = context->evaluate_script(R"(
+        browser.i18n.getMessage('Welcome', ['Josée', 'bonjour']) === 'Josée: $ bonjour'
+            && chrome.i18n.getUILanguage() === 'fr-CA'
+            && browser.i18n.getMessage('missing') === ''
+    )"sv,
+        "messages.js"sv, true);
+    EXPECT_EQ(result, Optional<String> { R"({"result":true})"_string });
 }

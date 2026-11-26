@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <AK/JsonObject.h>
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
 #include <AK/String.h>
@@ -40,7 +41,8 @@ public:
         DOM::Document&,
         String extension_id,
         String extension_uuid,
-        String manifest_json);
+        String manifest_json,
+        String locale_messages_json = {});
 
     virtual ~ExtensionRealmContext() override;
 
@@ -88,6 +90,11 @@ private:
     virtual void visit_edges(Cell::Visitor&) override;
 
     void install_extension_namespaces(bool full_extension_page_apis);
+    JS::Value create_i18n_object();
+    JS::Value create_runtime_port(String const& id, String const& name, JS::Value sender);
+    JS::ThrowCompletionOr<JS::Value> connect_runtime_port(JS::VM&);
+    void notify_runtime_port(StringView method, String const& id, Optional<String> payload = {});
+    void forget_runtime_port(String const& id);
     JS::Value create_namespace_object(StringView ns_name, ReadonlySpan<StringView> methods, bool is_chrome);
     JS::Value create_event_object(StringView ns_name, StringView event_name);
     JS::ThrowCompletionOr<JS::Value> invoke_api_call(JS::VM&, StringView ns_name, StringView method_name, bool is_chrome);
@@ -98,6 +105,7 @@ private:
     u64 m_grant_generation { 0 };
     Extensions::ContextType m_context_type { Extensions::ContextType::ContentScript };
     String m_manifest_json;
+    JsonObject m_locale_messages;
     bool m_owns_realm_and_world { false };
     bool m_revoked { false };
 
@@ -111,6 +119,7 @@ private:
         bool is_chrome { false };
         bool clone_response { false };
         bool creates_menu { false };
+        bool registers_legacy_content_script { false };
     };
     HashMap<u64, PendingCall> m_pending_calls;
     String m_last_error;
@@ -119,11 +128,13 @@ private:
         GC::Ref<JS::FunctionObject> callback;
         u64 listener_id { 0 };
         bool blocking { false };
+        bool include_headers { false };
         RefPtr<Extensions::NavigationURLFilter> navigation_filter {};
         Vector<Extensions::MatchPattern> urls;
         Vector<Extensions::WebRequestResourceType> types;
     };
     HashMap<String, Vector<EventListener>> m_event_listeners;
+    HashMap<String, GC::Ref<JS::Object>> m_runtime_ports;
 };
 
 }

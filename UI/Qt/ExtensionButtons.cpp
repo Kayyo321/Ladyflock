@@ -5,6 +5,7 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QMenu>
 #include <QPainter>
@@ -17,6 +18,14 @@
 #include <UI/Qt/Theme.h>
 
 namespace Ladybird {
+
+ExtensionPopup::ExtensionPopup(QWidget* parent, QSize available_size)
+    : Popover(parent)
+{
+    // The popover adds transparent space around its card for the shadow.
+    card().setFixedSize(QSize(380, 420).boundedTo(available_size));
+    adjustSize();
+}
 
 QIcon ExtensionButtons::package_icon(Optional<Gfx::ShareableBitmap> const& icon)
 {

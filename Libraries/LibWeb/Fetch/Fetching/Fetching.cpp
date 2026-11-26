@@ -14,6 +14,7 @@
 #include <AK/QuickSort.h>
 #include <AK/ScopeGuard.h>
 #include <AK/kmalloc.h>
+#include <LibCore/System.h>
 #include <LibGC/Heap.h>
 #include <LibHTTP/Cache/MemoryCache.h>
 #include <LibHTTP/Cache/Utilities.h>
@@ -1119,6 +1120,59 @@ static StorageAPI::StorageKey obtain_a_storage_key_for_non_storage_purposes(Requ
     return { move(origin) };
 }
 
+static Optional<Extensions::WebRequestBeforeRequestDetails> web_request_details(Infrastructure::FetchParams const& params, Extensions::WebRequestEvent event)
+{
+    auto controller = params.controller();
+    if (!controller->has_page())
+        return {};
+    auto request = params.request();
+    auto resource_type = Extensions::WebRequestClient::resource_type_from_request(*request);
+    if (!Extensions::WebRequestClient::matches_watch_snapshot(request->current_url(), resource_type, event))
+        return {};
+
+    auto fetch_id = controller->started_fetch_id();
+    if (!fetch_id.has_value())
+        return {};
+    Extensions::WebRequestBeforeRequestDetails details;
+    details.request_id = (static_cast<u64>(Core::System::getpid()) << 32) | (fetch_id->value() & 0xffffffff);
+    details.url = request->current_url();
+    details.method = String::from_utf8_without_validation(request->method().bytes());
+    details.type = resource_type;
+    details.event = event;
+    auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
+    if (auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr)
+        details.source_document_id = window->associated_document().id();
+    details.is_navigation = request->mode() == Infrastructure::Request::Mode::Navigate;
+    return details;
+}
+
+static void notify_web_request_event(Infrastructure::FetchParams const& params, Extensions::WebRequestEvent event, Infrastructure::Response const* response = nullptr)
+{
+    auto details = web_request_details(params, event);
+    if (!details.has_value())
+        return;
+    if (event == Extensions::WebRequestEvent::SendHeaders) {
+        details->headers = params.request()->header_list()->headers();
+        details->headers.remove_all_matching([](auto const& header) {
+            return header.name.equals_ignoring_ascii_case("Authorization"sv)
+                || header.name.equals_ignoring_ascii_case("Proxy-Authorization"sv)
+                || header.name.equals_ignoring_ascii_case("Cookie"sv);
+        });
+    }
+    if (response) {
+        if (response->is_network_error())
+            details->error = response->network_error_message().value_or("Network error"_string);
+        else
+            details->status_code = response->status();
+        if (event == Extensions::WebRequestEvent::BeforeRedirect) {
+            auto target = response->location_url(params.request()->current_url().fragment());
+            if (!target.is_error())
+                details->redirect_url = target.release_value();
+        }
+    }
+    params.controller()->page()->check_web_request_before_request(details.release_value(), GC::create_function(GC::Heap::the(), [](Extensions::WebRequestDecision) { }));
+}
+
 // https://fetch.spec.whatwg.org/#fetch-finale
 void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, GC::Ref<Infrastructure::FetchController> controller, Infrastructure::Response& response)
 {
@@ -1137,6 +1191,9 @@ void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const
 
     // 1. Let timingInfo be fetchParams’s timing info.
     auto timing_info = fetch_params.timing_info();
+
+    if (response.is_network_error())
+        notify_web_request_event(fetch_params, Extensions::WebRequestEvent::ErrorOccurred, &response);
 
     if (WebDriver::BiDi::network_events_enabled()) {
         if (response.is_network_error())
@@ -1279,6 +1336,8 @@ void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const
 
         // 2. (See setup_report_timing_steps above)
         setup_report_timing_steps->function()(unsafe_end_time);
+        if (!response_view->is_network_error())
+            notify_web_request_event(*fetch_params, Extensions::WebRequestEvent::Completed, response_view->record()->unsafe_response().ptr());
         if (WebDriver::BiDi::network_events_enabled() && !response_view->is_network_error())
             WebDriver::BiDi::network_response_completed(fetch_params, *response_view->record()->unsafe_response(), *agent_timing_info);
 
@@ -1536,6 +1595,46 @@ void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const
             body_view->fully_read(realm, process_body, process_body_error, controller->task_destination());
         }
     }
+}
+
+static GC::Ref<PendingResponse> fetch_extension_resource(Infrastructure::FetchParams const& fetch_params)
+{
+    auto request = fetch_params.request();
+    if (!fetch_params.controller()->has_page())
+        return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource unavailable without page"_string));
+
+    if (request->mode() == Infrastructure::Request::Mode::Navigate && request->reserved_client_snapshot()) {
+        auto response = Infrastructure::Response::create();
+        response->set_status(200);
+        response->set_status_message("OK"sv);
+        response->url_list().append(request->current_url());
+        return PendingResponse::create(fetch_params, response);
+    }
+
+    Optional<URL::Origin> initiator_origin;
+    if (auto const* origin_ptr = request->origin().get_pointer<URL::Origin>())
+        initiator_origin = *origin_ptr;
+
+    auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
+    auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr;
+    if (!window)
+        return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource requires a document"_string));
+    auto res = fetch_params.controller()->page()->client().page_did_request_extension_resource(request->current_url(), window->associated_document().id());
+    if (!res.allowed) {
+        return PendingResponse::create(fetch_params, Infrastructure::Response::network_error(res.error.has_value() ? *res.error : "Extension resource not found or not web accessible"_string));
+    }
+
+    auto response = Infrastructure::Response::create();
+    response->set_status(200);
+    response->set_status_message("OK"sv);
+    response->url_list().append(request->current_url());
+    response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Type"sv, res.mime_type));
+    if (res.content_security_policy.has_value() && !res.content_security_policy->is_empty())
+        response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Security-Policy"sv, *res.content_security_policy));
+    if (initiator_origin.has_value() && initiator_origin->scheme() != "moz-extension"sv)
+        response->header_list()->append(HTTP::Header::isomorphic_encode("Access-Control-Allow-Origin"sv, "*"sv));
+    response->set_body(Infrastructure::byte_sequence_as_response_body(res.data));
+    return PendingResponse::create(fetch_params, response);
 }
 
 // https://fetch.spec.whatwg.org/#concept-scheme-fetch
@@ -1814,41 +1913,27 @@ GC::Ref<PendingResponse> scheme_fetch(JS::Realm& realm, Infrastructure::FetchPar
     }
     // -> "moz-extension"
     else if (request->current_url().scheme() == "moz-extension"sv) {
-        if (!fetch_params.controller()->has_page())
-            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource unavailable without page"_string));
+        auto details = web_request_details(fetch_params, Extensions::WebRequestEvent::BeforeRequest);
+        if (!details.has_value())
+            return fetch_extension_resource(fetch_params);
 
-        if (request->mode() == Infrastructure::Request::Mode::Navigate && request->reserved_client_snapshot()) {
-            auto response = Infrastructure::Response::create();
-            response->set_status(200);
-            response->set_status_message("OK"sv);
-            response->url_list().append(request->current_url());
-            return PendingResponse::create(fetch_params, response);
-        }
-
-        Optional<URL::Origin> initiator_origin;
-        if (auto const* origin_ptr = request->origin().get_pointer<URL::Origin>())
-            initiator_origin = *origin_ptr;
-
-        auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
-        auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr;
-        if (!window)
-            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource requires a document"_string));
-        auto res = fetch_params.controller()->page()->client().page_did_request_extension_resource(request->current_url(), window->associated_document().id());
-        if (!res.allowed) {
-            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error(res.error.has_value() ? *res.error : "Extension resource not found or not web accessible"_string));
-        }
-
-        auto response = Infrastructure::Response::create();
-        response->set_status(200);
-        response->set_status_message("OK"sv);
-        response->url_list().append(request->current_url());
-        response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Type"sv, res.mime_type));
-        if (res.content_security_policy.has_value() && !res.content_security_policy->is_empty())
-            response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Security-Policy"sv, *res.content_security_policy));
-        if (initiator_origin.has_value() && initiator_origin->scheme() != "moz-extension"sv)
-            response->header_list()->append(HTTP::Header::isomorphic_encode("Access-Control-Allow-Origin"sv, "*"sv));
-        response->set_body(Infrastructure::byte_sequence_as_response_body(res.data));
-        return PendingResponse::create(fetch_params, response);
+        auto pending_response = PendingResponse::create(fetch_params);
+        fetch_params.controller()->page()->check_web_request_before_request(details.release_value(),
+            GC::create_function(realm.heap(), GC::captures(NonnullRefPtr { fetch_params }, pending_response), [](auto& fetch_params, auto& pending_response, Extensions::WebRequestDecision decision) {
+                if (fetch_params->is_canceled()) {
+                    pending_response->resolve(Infrastructure::Response::appropriate_network_error(*fetch_params));
+                    return;
+                }
+                if (decision.cancel) {
+                    pending_response->resolve(Infrastructure::Response::network_error("Blocked by extension webRequest.onBeforeRequest"_string));
+                    return;
+                }
+                auto resource = fetch_extension_resource(*fetch_params);
+                resource->when_loaded(GC::create_function(GC::Heap::the(), GC::captures(pending_response), [](auto& pending_response, NonnullRefPtr<Infrastructure::Response> response) {
+                    pending_response->resolve(move(response));
+                }));
+            }));
+        return pending_response;
     }
     // -> HTTP(S) scheme
     else if (Infrastructure::is_http_or_https_scheme(request->current_url().scheme())) {
@@ -2007,7 +2092,7 @@ GC::Ref<PendingResponse> http_fetch(JS::Realm& realm, Infrastructure::FetchParam
             //    then return a network error.
             // NOTE: As the CORS check is not to be applied to responses whose status is 304 or 407, or responses from
             //       a service worker for that matter, it is applied here.
-            if (request->response_tainting() == Infrastructure::Request::ResponseTainting::CORS
+            if (!response->is_extension_redirect() && request->response_tainting() == Infrastructure::Request::ResponseTainting::CORS
                 && !cors_check(request, *response)) {
                 fetch_params->discard_response_body(*response);
                 returned_pending_response->resolve(Infrastructure::Response::network_error("Request with 'cors' response tainting failed CORS check"_string));
@@ -2140,7 +2225,8 @@ GC::Ptr<PendingResponse> http_redirect_fetch(JS::Realm& realm, Infrastructure::F
     auto location_url = location_url_or_error.release_value().release_value();
 
     // 6. If locationURL’s scheme is not an HTTP(S) scheme, then return a network error.
-    if (!Infrastructure::is_http_or_https_scheme(location_url.scheme()))
+    if (!Infrastructure::is_http_or_https_scheme(location_url.scheme())
+        && !(internal_response->is_extension_redirect() && location_url.scheme() == "moz-extension"sv))
         return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Request redirect URL must have HTTP or HTTPS scheme"_string));
 
     // 7. If request’s redirect count is 20, then return a network error.
@@ -2493,19 +2579,49 @@ static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch(JS::Object&
         // 11. Set response’s URL list to a clone of httpRequest’s URL list.
         response->set_url_list(http_request->url_list());
 
-        if (WebDriver::BiDi::network_events_enabled()) {
-            // NB: Instrumentation may have been enabled after httpRequest was cloned.
-            WebDriver::BiDi::initialize_network_request_with_its_navigable(*http_fetch_params);
-            auto intercepts = WebDriver::BiDi::get_network_intercepts(*http_fetch_params, "responseStarted"sv);
-            if (!response->is_network_error() && !intercepts.is_empty()) {
-                WebDriver::BiDi::block_network_request(*http_fetch_params, response, "responseStarted"_string, move(intercepts), WebDriver::BiDi::NetworkContinuation::create(realm.heap(), GC::create_function(realm.heap(), GC::captures(realm, fetch_params, http_request, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials), [](auto& realm, auto& fetch_params, auto& http_request, auto& returned_pending_response, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, WebDriver::BiDi::NetworkContinuationAction, RefPtr<Infrastructure::Response> continued_response) {
-                    process_http_network_or_cache_response(realm.global_object(), *fetch_params, *http_request, *continued_response, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials);
-                })));
-                return;
+        auto deliver_response = GC::create_function(realm.heap(), GC::captures(realm, fetch_params, http_request, http_fetch_params, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials), [](auto& realm, auto& fetch_params, auto& http_request, auto& http_fetch_params, auto& returned_pending_response, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, NonnullRefPtr<Infrastructure::Response> response) {
+            if (Infrastructure::is_redirect_status(response->status()))
+                notify_web_request_event(*fetch_params, Extensions::WebRequestEvent::BeforeRedirect, response.ptr());
+            else if (!response->is_network_error())
+                notify_web_request_event(*fetch_params, Extensions::WebRequestEvent::ResponseStarted, response.ptr());
+
+            if (WebDriver::BiDi::network_events_enabled()) {
+                // NB: Instrumentation may have been enabled after httpRequest was cloned.
+                WebDriver::BiDi::initialize_network_request_with_its_navigable(*http_fetch_params);
+                auto intercepts = WebDriver::BiDi::get_network_intercepts(*http_fetch_params, "responseStarted"sv);
+                if (!response->is_network_error() && !intercepts.is_empty()) {
+                    WebDriver::BiDi::block_network_request(*http_fetch_params, response, "responseStarted"_string, move(intercepts), WebDriver::BiDi::NetworkContinuation::create(realm.heap(), GC::create_function(realm.heap(), GC::captures(realm, fetch_params, http_request, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials), [](auto& realm, auto& fetch_params, auto& http_request, auto& returned_pending_response, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, WebDriver::BiDi::NetworkContinuationAction, RefPtr<Infrastructure::Response> continued_response) {
+                        process_http_network_or_cache_response(realm.global_object(), *fetch_params, *http_request, *continued_response, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials);
+                    })));
+                    return;
+                }
+                WebDriver::BiDi::network_response_started(*http_fetch_params, *response);
             }
-            WebDriver::BiDi::network_response_started(*http_fetch_params, *response);
+            process_http_network_or_cache_response(realm.global_object(), *fetch_params, *http_request, *response, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials);
+        });
+
+        auto details = response->is_network_error() ? Optional<Extensions::WebRequestBeforeRequestDetails> {} : web_request_details(*fetch_params, Extensions::WebRequestEvent::HeadersReceived);
+        if (!details.has_value()) {
+            deliver_response->function()(*response);
+            return;
         }
-        process_http_network_or_cache_response(realm.global_object(), *fetch_params, *http_request, *response, returned_pending_response, is_authentication_fetch, is_new_connection_fetch, include_credentials);
+
+        details->status_code = response->status();
+        details->headers = response->header_list()->headers();
+        fetch_params->controller()->page()->check_web_request_before_request(details.release_value(),
+            GC::create_function(realm.heap(), GC::captures(fetch_params, response, deliver_response), [](auto& fetch_params, auto& response, auto& deliver_response, Extensions::WebRequestDecision decision) {
+                if (fetch_params->is_canceled() || decision.cancel) {
+                    fetch_params->discard_response_body(*response);
+                    auto error = fetch_params->is_canceled()
+                        ? Infrastructure::Response::appropriate_network_error(*fetch_params)
+                        : Infrastructure::Response::network_error("Blocked by extension webRequest.onHeadersReceived"_string);
+                    deliver_response->function()(move(error));
+                    return;
+                }
+                if (decision.response_headers.has_value())
+                    response->set_header_list(HTTP::HeaderList::create(decision.response_headers.release_value()));
+                deliver_response->function()(*response);
+            }));
     }));
 
     // 18. Return response.
@@ -2848,23 +2964,11 @@ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm& realm, Infrastru
     if (aborted)
         return PendingResponse::create(fetch_params, Infrastructure::Response::appropriate_network_error(fetch_params));
 
-    auto resource_type = Extensions::WebRequestClient::resource_type_from_request(*request);
-    if (fetch_params.controller()->has_page()
-        && Extensions::WebRequestClient::matches_watch_snapshot(request->current_url(), resource_type)) {
-        static Atomic<u64> s_next_web_request_id { 1 };
+    if (auto details = web_request_details(fetch_params, Extensions::WebRequestEvent::BeforeRequest); details.has_value()) {
         auto returned_pending_response = PendingResponse::create(fetch_params);
-        Extensions::WebRequestBeforeRequestDetails details;
-        details.request_id = s_next_web_request_id.fetch_add(1);
-        details.url = request->current_url();
-        details.method = String::from_utf8_without_validation(request->method().bytes());
-        details.type = resource_type;
-        auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
-        if (auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr)
-            details.source_document_id = window->associated_document().id();
-        details.is_navigation = request->mode() == Infrastructure::Request::Mode::Navigate;
 
         fetch_params.controller()->page()->check_web_request_before_request(
-            move(details),
+            details.release_value(),
             GC::create_function(realm.heap(), GC::captures(realm, NonnullRefPtr { fetch_params }, http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, returned_pending_response), [](auto& realm, auto& fetch_params, auto& http_fetch_params, auto& response, auto& stored_response, auto& http_cache, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, auto& returned_pending_response, Extensions::WebRequestDecision decision) {
                 if (fetch_params->is_canceled()) {
                     returned_pending_response->resolve(Infrastructure::Response::appropriate_network_error(*fetch_params));
@@ -2872,6 +2976,16 @@ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm& realm, Infrastru
                 }
                 if (decision.cancel) {
                     returned_pending_response->resolve(Infrastructure::Response::network_error("Blocked by extension webRequest.onBeforeRequest"_string));
+                    return;
+                }
+                if (decision.redirect_url.has_value()) {
+                    auto redirect = Infrastructure::Response::create();
+                    redirect->set_extension_redirect();
+                    redirect->set_status(307);
+                    redirect->set_url_list(fetch_params->request()->url_list());
+                    redirect->header_list()->set(HTTP::Header::isomorphic_encode("Location"sv, decision.redirect_url->serialize()));
+                    notify_web_request_event(*fetch_params, Extensions::WebRequestEvent::BeforeRedirect, redirect.ptr());
+                    returned_pending_response->resolve(move(redirect));
                     return;
                 }
                 auto pending_response = continue_http_network_or_cache_fetch_with_intercepts(realm.global_object(), *fetch_params, *http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, true);
@@ -3320,6 +3434,7 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
     auto transfer_lease = fetch_params.has_response_body_transfer_lease()
         ? Requests::RequestClient::TransferLease::Yes
         : Requests::RequestClient::TransferLease::No;
+    notify_web_request_event(fetch_params, Extensions::WebRequestEvent::SendHeaders);
     auto network_transport = ResourceLoader::the().load(load_request, on_headers_received, on_data_received, on_cached_body_available, on_complete, transfer_lease);
     if (network_transport) {
         engine_record->report_network_activity(network_transport->request_id(), network_request_started(load_request, *request));

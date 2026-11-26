@@ -2949,11 +2949,12 @@ NonnullRefPtr<Audio::RecordStream::CreatePromise> PageClient::create_audio_recor
     VERIFY_NOT_REACHED();
 }
 
-void Page::set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json)
+void Page::set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
 {
     m_hosted_extension_id = move(extension_id);
     m_hosted_extension_uuid = move(extension_uuid);
     m_hosted_extension_manifest_json = move(manifest_json);
+    m_hosted_extension_locale_messages_json = move(locale_messages_json);
 
     for (auto const& navigable : hosted_navigables()) {
         auto document = navigable->active_document();
@@ -2961,7 +2962,7 @@ void Page::set_hosted_extension_context(String extension_id, String extension_uu
             continue;
         if (document->url().scheme() == "moz-extension"sv
             && document->url().serialized_host() == *m_hosted_extension_uuid) {
-            document->initialize_extension_page_context(*m_hosted_extension_id, *m_hosted_extension_uuid, *m_hosted_extension_manifest_json);
+            document->initialize_extension_page_context(*m_hosted_extension_id, *m_hosted_extension_uuid, *m_hosted_extension_manifest_json, m_hosted_extension_locale_messages_json);
         }
     }
 }
@@ -3019,8 +3020,15 @@ void Page::attach_extension_content_scripts(HTML::CrossProcessId document_id, Ve
 {
     auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
     if (!targets.is_empty()) {
-        for (auto& doc : targets)
+        for (auto& doc : targets) {
             doc->ensure_extension_content_script_host().attach_scripts(scripts);
+            // The initial blank child has no parser or navigation population to run the extension phases.
+            if (doc->is_initial_about_blank()) {
+                doc->run_extension_content_scripts(Extensions::RunAt::DocumentStart);
+                doc->run_extension_content_scripts(Extensions::RunAt::DocumentEnd);
+                doc->run_extension_content_scripts(Extensions::RunAt::DocumentIdle);
+            }
+        }
         return;
     }
 

@@ -168,6 +168,11 @@ void ConnectionFromUI::view_answer_permission_request(u64 view_id, u64 answer_id
 void ConnectionFromUI::active_view_changed(Optional<u64> view_id)
 {
     Application::the().set_active_view(view_id);
+    if (auto& manager = Application::default_session().extension_manager; manager) {
+        auto* view = view_id.has_value() ? find_view(*view_id) : nullptr;
+        bool ordinary_window = view && view->is_tab() && view->is_private() == WebView::IsPrivate::No && view->extension_window_id() != 0;
+        manager->notify_window_focus_changed(ordinary_window ? Optional<u64> { view->extension_window_id() } : Optional<u64> {});
+    }
 }
 
 void ConnectionFromUI::answer_clipboard_text(u64 request_id, Utf16String text)

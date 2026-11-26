@@ -10,12 +10,18 @@
 #include <Hub/HubClientEndpoint.h>
 #include <QPointer>
 #include <QWidget>
+#include <UI/Qt/Popover.h>
 
 class QHBoxLayout;
 class QMenu;
 class QToolButton;
 
 namespace Ladybird {
+
+class ExtensionPopup final : public Popover {
+public:
+    ExtensionPopup(QWidget* parent, QSize available_size);
+};
 
 class ExtensionButtons final : public QWidget {
 public:

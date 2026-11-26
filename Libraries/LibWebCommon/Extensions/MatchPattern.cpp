@@ -76,6 +76,8 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
         scheme = Scheme::Http;
     else if (scheme_view == "https"sv)
         scheme = Scheme::Https;
+    else if (scheme_view == "file"sv)
+        scheme = Scheme::File;
     else if (scheme_view == "moz-extension"sv)
         scheme = Scheme::MozExtension;
     else
@@ -89,12 +91,14 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
     auto host_view = remainder.substring_view(0, *path_sep);
     auto path_view = remainder.substring_view(*path_sep);
 
-    if (host_view.is_empty())
+    if (scheme == Scheme::File && !host_view.is_one_of(""sv, "*"sv))
+        return Error::from_string_literal("File match patterns only accept an empty or wildcard host");
+    if (host_view.is_empty() && scheme != Scheme::File)
         return Error::from_string_literal("Match pattern has empty host");
 
     bool match_subdomains = false;
     String normalized_host;
-    if (host_view == "*"sv) {
+    if (host_view == "*"sv || scheme == Scheme::File) {
         normalized_host = "*"_string;
     } else if (host_view.starts_with("*."sv)) {
         auto base = host_view.substring_view(2);
@@ -119,7 +123,8 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
 
 bool MatchPattern::is_valid_host_permission_pattern(StringView pattern)
 {
-    return !parse(pattern).is_error();
+    auto parsed = parse(pattern);
+    return !parsed.is_error() && parsed.value().is_web_host_permission();
 }
 
 bool MatchPattern::covers_host(StringView host) const
@@ -135,7 +140,7 @@ bool MatchPattern::covers_host(StringView host) const
 
 bool MatchPattern::covers_origin(MatchPattern const& requested) const
 {
-    if (m_scheme != requested.m_scheme && !(m_scheme == Scheme::AllHttpHttps && requested.m_scheme != Scheme::MozExtension))
+    if (m_scheme != requested.m_scheme && !(m_scheme == Scheme::AllHttpHttps && (requested.m_scheme == Scheme::Http || requested.m_scheme == Scheme::Https)))
         return false;
     if (m_host == "*"sv)
         return true;
@@ -157,6 +162,9 @@ bool MatchPattern::matches(URL::URL const& url) const
         break;
     case Scheme::Https:
         scheme_ok = url_scheme == "https"sv;
+        break;
+    case Scheme::File:
+        scheme_ok = url_scheme == "file"sv;
         break;
     case Scheme::MozExtension:
         scheme_ok = url_scheme == "moz-extension"sv;

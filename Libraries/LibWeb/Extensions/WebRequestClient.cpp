@@ -25,9 +25,9 @@ WebRequestWatchSnapshot const& WebRequestClient::watch_snapshot()
     return watch_snapshot_storage();
 }
 
-bool WebRequestClient::matches_watch_snapshot(URL::URL const& url, WebRequestResourceType type)
+bool WebRequestClient::matches_watch_snapshot(URL::URL const& url, WebRequestResourceType type, WebRequestEvent event)
 {
-    return watch_snapshot_storage().matches(url, type);
+    return watch_snapshot_storage().matches(url, type, event);
 }
 
 WebRequestResourceType WebRequestClient::resource_type_from_request(Fetch::Infrastructure::Request const& request)
@@ -38,6 +38,13 @@ WebRequestResourceType WebRequestClient::resource_type_from_request(Fetch::Infra
             return WebRequestResourceType::MainFrame;
         return WebRequestResourceType::SubFrame;
     }
+
+    using Mode = Fetch::Infrastructure::Request::Mode;
+    using Initiator = Fetch::Infrastructure::Request::InitiatorType;
+    if (request.mode() == Mode::WebSocket)
+        return WebRequestResourceType::WebSocket;
+    if (request.initiator_type() == Initiator::Beacon || request.initiator_type() == Initiator::Ping)
+        return WebRequestResourceType::Ping;
 
     auto destination = request.destination();
     if (!destination.has_value())

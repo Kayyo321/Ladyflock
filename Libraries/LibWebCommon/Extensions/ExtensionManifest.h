@@ -37,6 +37,7 @@ struct WEBCOMMON_API BackgroundConfig {
     Optional<String> page;
     Optional<String> service_worker;
     bool persistent { true };
+    bool is_module { false };
 
     bool has_background() const { return !scripts.is_empty() || page.has_value() || service_worker.has_value(); }
 };

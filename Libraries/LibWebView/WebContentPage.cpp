@@ -386,8 +386,8 @@ bool WebContentPage::continue_navigation_population_in_selected_process(Web::HTM
                 ext_manager && result.document_id.has_value()) {
                 if (auto const* nav_params = result.navigation_params.get_pointer<Web::HTML::NavigationParamsDescriptor>()) {
                     auto const& url = nav_params->response.url_list.is_empty() ? weak_loader->request().history_entry.url : nav_params->response.url_list.last();
-                    if (url.scheme() != "moz-extension"sv)
-                        ext_manager->attach_content_scripts_for_document(*host, url, navigable->is_top_level_traversable(), *result.document_id);
+                    if (auto document = host->hosted_document_with_id(*result.document_id))
+                        ext_manager->attach_content_scripts_for_document(*host, *navigable, *document, url);
                 }
             }
             host->async_populate_navigation(weak_loader->request(), move(result));
@@ -1024,7 +1024,11 @@ void WebContentPage::did_create_child_frame(Web::HTML::CrossProcessId parent_fra
 
     // 7. Let navigable be a new navigable.
     // 8. Initialize the navigable navigable given documentState and parentNavigable.
-    traversable.insert(*this, *parent_navigable, *container_document, frame_id, move(hosted_state), initial_entry.release_value(), move(document));
+    traversable.insert(*this, *parent_navigable, *container_document, frame_id, move(hosted_state), initial_entry.release_value(), document);
+    if (auto* manager = client().session().extension_manager.ptr()) {
+        if (auto child = traversable.find(frame_id); child.has_value())
+            manager->attach_content_scripts_for_document(*this, *child, *document, document->creation_url());
+    }
 }
 
 void WebContentPage::did_set_browser_zoom(double factor)

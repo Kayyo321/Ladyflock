@@ -315,6 +315,8 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
                 rule.run_at = *parsed_run_at;
             }
             rule.all_frames = cs_obj.get_bool("all_frames"sv).value_or(false);
+            if (cs_obj.has("match_about_blank"sv) && !cs_obj.get_bool("match_about_blank"sv).has_value())
+                return Error::from_string_literal("content_scripts.match_about_blank must be a boolean");
             rule.match_about_blank = cs_obj.get_bool("match_about_blank"sv).value_or(false);
 
             manifest.m_content_scripts.append(move(rule));
@@ -330,6 +332,7 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
             cfg.page = TRY(normalize_package_relative_path(*page));
         if (auto sw = bg->get_string("service_worker"sv); sw.has_value())
             cfg.service_worker = TRY(normalize_package_relative_path(*sw));
+        cfg.is_module = bg->get_string("type"sv) == "module"sv;
         if (manifest.m_manifest_version == ManifestVersion::V3)
             cfg.persistent = false;
         else

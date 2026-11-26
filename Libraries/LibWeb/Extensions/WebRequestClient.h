@@ -18,7 +18,7 @@ public:
     static void set_watch_snapshot(WebRequestWatchSnapshot);
     static WebRequestWatchSnapshot const& watch_snapshot();
 
-    static bool matches_watch_snapshot(URL::URL const&, WebRequestResourceType);
+    static bool matches_watch_snapshot(URL::URL const&, WebRequestResourceType, WebRequestEvent = WebRequestEvent::BeforeRequest);
     static WebRequestResourceType resource_type_from_request(Fetch::Infrastructure::Request const&);
 };
 

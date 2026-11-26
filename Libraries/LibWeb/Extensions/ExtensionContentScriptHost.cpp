@@ -8,6 +8,8 @@
 #include <LibWeb/Bindings/ExtensionWorld.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Extensions/ExtensionContentScriptHost.h>
+#include <LibWeb/HTML/Scripting/ClassicScript.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/Page/Page.h>
 
 namespace Web::Extensions {
@@ -54,7 +56,7 @@ GC::Ref<Bindings::ExtensionRealmContext> ExtensionContentScriptHost::ensure_cont
     return realm_ctx;
 }
 
-void ExtensionContentScriptHost::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json)
+void ExtensionContentScriptHost::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
 {
     if (m_extension_page_context)
         return;
@@ -62,7 +64,8 @@ void ExtensionContentScriptHost::initialize_extension_page_context(String extens
         *m_document,
         move(extension_id),
         move(extension_uuid),
-        move(manifest_json));
+        move(manifest_json),
+        move(locale_messages_json));
 }
 
 void ExtensionContentScriptHost::attach_scripts(Vector<AttachedContentScript> scripts)
@@ -84,16 +87,8 @@ void ExtensionContentScriptHost::attach_scripts(Vector<AttachedContentScript> sc
             break;
         }
 
-        if (already_passed) {
-            for (auto const& css : script.css_files)
-                m_document->add_extension_style_sheet(script.extension_id, css.path, css.content);
-
-            if (!script.js_files.is_empty()) {
-                auto realm_ctx = ensure_content_script_realm(script.extension_id, script.extension_uuid, script.grant_generation);
-                for (auto const& js : script.js_files)
-                    realm_ctx->evaluate_script(js.content, js.path);
-            }
-        }
+        if (already_passed)
+            inject_attached_script(script);
     }
 }
 
@@ -118,18 +113,30 @@ void ExtensionContentScriptHost::run_scripts_for(RunAt run_at)
     }
 
     for (auto const& script : m_attached_scripts) {
-        if (script.run_at != run_at)
-            continue;
-
-        for (auto const& css : script.css_files)
-            m_document->add_extension_style_sheet(script.extension_id, css.path, css.content);
-
-        if (!script.js_files.is_empty()) {
-            auto realm_ctx = ensure_content_script_realm(script.extension_id, script.extension_uuid, script.grant_generation);
-            for (auto const& js : script.js_files)
-                realm_ctx->evaluate_script(js.content, js.path);
-        }
+        if (script.run_at == run_at)
+            inject_attached_script(script);
     }
+}
+
+void ExtensionContentScriptHost::inject_attached_script(AttachedContentScript const& script)
+{
+    for (auto const& css : script.css_files)
+        m_document->add_extension_style_sheet(script.extension_id, css.path, css.content);
+
+    if (script.js_files.is_empty())
+        return;
+
+    if (script.run_in_main_world) {
+        // MAIN is an explicit registration choice. It deliberately gets regular page APIs.
+        auto& settings = m_document->relevant_settings_object();
+        for (auto const& js : script.js_files)
+            (void)HTML::ClassicScript::create(js.path.to_byte_string(), Utf16String::from_utf8(js.content), settings, settings.api_base_url())->run();
+        return;
+    }
+
+    auto realm_ctx = ensure_content_script_realm(script.extension_id, script.extension_uuid, script.grant_generation);
+    for (auto const& js : script.js_files)
+        realm_ctx->evaluate_script(js.content, js.path);
 }
 
 void ExtensionContentScriptHost::execute_script_dynamically(

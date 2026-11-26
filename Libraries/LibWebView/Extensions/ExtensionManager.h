@@ -47,6 +47,22 @@ class RequestControlClient;
 
 namespace WebView::Extensions {
 
+struct RegisteredExtensionContentScript {
+    String id;
+    Web::Extensions::ContentScriptRule rule;
+    JsonObject descriptor;
+    bool persist_across_sessions { true };
+    bool run_in_main_world { false };
+    struct Owner {
+        WeakPtr<WebContentClient> renderer;
+        Web::PageId page_id;
+        Web::HTML::CrossProcessId document_id;
+    };
+    Optional<Owner> legacy_owner {};
+    Vector<Web::Extensions::NamedSource> legacy_js {};
+    Vector<Web::Extensions::NamedSource> legacy_css {};
+};
+
 struct WEBVIEW_API InstalledExtension {
     String extension_id;
     String uuid;
@@ -65,6 +81,9 @@ struct WEBVIEW_API InstalledExtension {
     bool from_catalog { false };
     Optional<bool> network_prediction_setting {};
     Vector<DeclarativeRuleset> declarative_rulesets {};
+    MutableDeclarativeRuleset dynamic_declarative_rules {};
+    MutableDeclarativeRuleset session_declarative_rules {};
+    Vector<RegisteredExtensionContentScript> registered_content_scripts {};
 };
 
 // Central Hub authority for extensions within one ordinary BrowsingSession.
@@ -121,6 +140,7 @@ public:
     // Resource serving for moz-extension://<uuid>/<path> (with WAR & CSP).
     Web::Extensions::ExtensionResourceResponse serve_resource(URL::URL const&, Optional<URL::Origin> const& initiator_origin, Optional<size_t> size_limit = {}) const;
     static ErrorOr<ByteBuffer> read_package_icon(ByteString const& directory, StringView path);
+    String locale_messages_for(InstalledExtension const&) const;
     bool is_extension_document_url(URL::URL const&) const;
 
     // Permission checks & activeTab.
@@ -130,8 +150,7 @@ public:
     bool has_host_permission(StringView extension_id, URL::URL const& url, Optional<u64> tab_id = {}) const;
 
     // Pre-activation content scripts & world revocation.
-    Vector<Web::Extensions::AttachedContentScript> content_scripts_for_document(URL::URL const& document_url, bool is_top_level, Web::HTML::CrossProcessId document_id) const;
-    void attach_content_scripts_for_document(WebContentPage& page, URL::URL const& document_url, bool is_top_level, Web::HTML::CrossProcessId document_id) const;
+    void attach_content_scripts_for_document(WebContentPage&, CanonicalNavigable const&, CanonicalDocument&, URL::URL const& document_url) const;
     void revoke_document_worlds(WebContentPage& page, Web::HTML::CrossProcessId document_id);
 
     // Tab views (excluding hidden background pages and private views).
@@ -182,6 +201,7 @@ public:
         Pinned };
     void notify_tab_updated(u64 tab_id, TabChange);
     void notify_tab_activated(u64 tab_id, u64 window_id);
+    void notify_window_focus_changed(Optional<u64> window_id);
     void notify_tab_removed(u64 tab_id, bool window_closing);
 
     Function<void()> on_chrome_changed;
@@ -219,11 +239,29 @@ private:
     void notify_network_prediction_changed(bool previously_enabled);
 
     void register_extension_entry(InstalledExtension, bool first_install = false);
+    void dispatch_update_available_event(StagedInstall const&);
     void dispatch_installed_event(InstalledExtension const&, Optional<String> previous_version = {});
     void stop_background_page(StringView extension_id);
     void schedule_event_page_idle_timer(StringView extension_id);
     u64 register_event_reply(Function<void(bool, String const&)>);
     void bind_event_reply(Optional<u64>, WebContentPage&);
+    struct RuntimePortEndpoint {
+        WeakPtr<WebContentClient> renderer;
+        Web::PageId page_id;
+        Web::HTML::CrossProcessId document_id;
+    };
+    struct RuntimePort {
+        String extension_id;
+        RuntimePortEndpoint sender;
+        Optional<RuntimePortEndpoint> receiver;
+        Vector<String> queued_messages;
+        size_t queued_message_bytes { 0 };
+        bool connected { false };
+    };
+    JsonObject extension_message_sender(WebContentClient&, Web::PageId, Web::HTML::CrossProcessId, String const& extension_id) const;
+    void send_runtime_port_event(RuntimePortEndpoint const&, String const& extension_id, StringView event, String const& port_id, Optional<String> const& payload = {});
+    void close_runtime_port(String const& id, Optional<Web::HTML::CrossProcessId> source_document = {}, Optional<String> const& error = {});
+    bool handle_runtime_port_call(WebContentClient&, Web::PageId, Web::HTML::CrossProcessId, String const& extension_id, StringView method, JsonArray const&);
 
     void handle_scripting_execute_script(
         WebContentClient& caller,
@@ -241,6 +279,7 @@ private:
         InstalledExtension const&,
         JsonObject const& details_obj,
         bool remove);
+    ErrorOr<JsonValue> handle_registered_content_scripts(InstalledExtension&, StringView method, JsonArray const& arguments);
 
     struct BackgroundHost {
         AK_ALLOC_WITH_KMALLOC;
@@ -254,10 +293,13 @@ private:
 
     ByteString m_profile_data_root;
     ByteString m_extensions_root;
+    Optional<u64> m_focused_window_id;
     bool m_extensions_enabled { false };
     u32 m_event_page_idle_timeout_ms { 30000 };
 
     NonnullOwnPtr<ExtensionStorage> m_storage;
+    NonnullOwnPtr<ExtensionStorage> m_session_storage { ExtensionStorage::create() };
+    HashTable<String> m_content_script_session_storage_access;
     ExtensionActionController m_action_controller;
     ExtensionAlarms m_alarms;
     ExtensionSidebarController m_sidebar_controller;
@@ -285,6 +327,7 @@ private:
     HashMap<String, String> m_persisted_uuid_by_id;
 
     HashMap<String, NonnullOwnPtr<BackgroundHost>> m_background_hosts;
+    HashMap<String, RuntimePort> m_runtime_ports;
 
     struct PendingEventReply {
         Function<void(bool has_value, String const& result_json)> callback;
@@ -300,6 +343,7 @@ private:
         Web::PageId page_id { 0 };
         Web::HTML::CrossProcessId document_id;
         u64 call_id { 0 };
+        i64 frame_id { 0 };
         bool expect_array_results { false };
         WeakPtr<WebContentClient> renderer;
         Web::PageId target_page_id { 0 };
