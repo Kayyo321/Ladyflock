@@ -16,15 +16,44 @@
 #include <UI/Qt/StringUtils.h>
 #include <UI/Qt/Theme.h>
 
+// The card is the document's size plus the 2px inset on each side that keeps the view inside its rounded edge.
+static QSize card_for_content(QSize content) { return content + QSize(4, 4); }
+
 TEST_CASE(extension_popup_reserves_its_size_for_the_card_and_fits_smaller_screens)
 {
     Ladybird::ExtensionPopup popup(nullptr, { 1280, 800 });
-    EXPECT_EQ(popup.card().size(), QSize(380, 420));
+    EXPECT_EQ(popup.card().size(), card_for_content({ 380, 420 }));
     EXPECT(popup.width() > popup.card().width());
     EXPECT(popup.height() > popup.card().height());
 
+    // The popover keeps room on the screen for the shadow around its card.
     Ladybird::ExtensionPopup constrained(nullptr, { 320, 360 });
-    EXPECT_EQ(constrained.card().size(), QSize(320, 360));
+    EXPECT_EQ(constrained.card().size(), card_for_content({ 284, 324 }));
+}
+
+TEST_CASE(extension_popup_sizes_to_its_document_within_firefox_bounds)
+{
+    Ladybird::ExtensionPopup popup(nullptr, { 1440, 900 });
+    popup.set_content_size({ 320, 148 });
+    EXPECT_EQ(popup.card().size(), card_for_content({ 320, 148 }));
+    EXPECT(popup.width() > popup.card().width());
+
+    // Firefox caps a popup at 800x600 CSS pixels; the document scrolls beyond that.
+    popup.set_content_size({ 1200, 2400 });
+    EXPECT_EQ(popup.card().size(), card_for_content({ 800, 600 }));
+
+    // A scrolling document gets room for its scrollbar, so it doesn't scroll sideways as well.
+    popup.set_content_size({ 240, 1800 });
+    EXPECT_EQ(popup.card().size(), card_for_content({ 256, 600 }));
+
+    // A nearly empty document still leaves something to see and click.
+    popup.set_content_size({ 3, 1 });
+    EXPECT_EQ(popup.card().size(), card_for_content(Ladybird::ExtensionPopup::minimum_content_size));
+
+    // A small screen wins over Firefox's maximum.
+    Ladybird::ExtensionPopup small(nullptr, { 640, 480 });
+    small.set_content_size({ 800, 600 });
+    EXPECT_EQ(small.card().size(), card_for_content({ 604, 444 }));
 }
 
 static Hub::ExtensionItem toolbar_item(String id, String title)

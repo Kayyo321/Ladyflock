@@ -401,6 +401,7 @@ public:
     decltype(Hub::View::on_restore_window) on_restore_window;
     decltype(Hub::View::on_reposition_window) on_reposition_window;
     decltype(Hub::View::on_resize_window) on_resize_window;
+    decltype(Hub::View::on_preferred_size_change) on_preferred_size_change;
     decltype(Hub::View::on_maximize_window) on_maximize_window;
     decltype(Hub::View::on_minimize_window) on_minimize_window;
     decltype(Hub::View::on_fullscreen_window) on_fullscreen_window;

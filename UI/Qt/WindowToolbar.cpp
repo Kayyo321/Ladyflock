@@ -2178,13 +2178,29 @@ void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL co
     layout->addWidget(&view);
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), popup);
     QObject::connect(escape, &QShortcut::activated, popup, &QWidget::close);
-    move_popover_to_button(*popup, anchor);
     popup->on_visibility_change = [popup](bool visible) {
         if (!visible)
             popup->deleteLater();
     };
-    popup->show();
-    view.setFocus();
+
+    // Like Firefox, size the popup to its document, and keep following it as the document grows or shrinks. The
+    // popup opens once it knows its size, or after a moment for a document that is slow to lay out.
+    QPointer<QWidget> anchor_button = &anchor;
+    auto reveal = [this, popup, anchor_button, view = &view] {
+        if (popup->isVisible() || !anchor_button)
+            return;
+        move_popover_to_button(*popup, *anchor_button);
+        popup->show();
+        view->setFocus();
+    };
+    view.on_preferred_size_change = [this, popup, anchor_button, reveal](Gfx::IntSize size) {
+        popup->set_content_size({ size.width(), size.height() });
+        if (popup->isVisible() && anchor_button)
+            move_popover_to_button(*popup, *anchor_button);
+        reveal();
+    };
+    HubConnection::the().async_view_set_sizes_to_content(view.view_id(), true);
+    QTimer::singleShot(250, popup, reveal);
 }
 
 void WindowToolbar::update_extension_sidebar_icon()

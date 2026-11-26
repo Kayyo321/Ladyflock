@@ -83,6 +83,7 @@ private:
     virtual void view_toggle_extension_sidebar(u64, String) override;
     virtual void view_set_extension_sidebar_width(u64, u32) override;
     virtual void view_open_extension_options(u64, String) override;
+    virtual void view_set_sizes_to_content(u64, bool) override;
     virtual void view_extension_package_picked(u64, u64, Optional<ByteString>) override;
     virtual void ui_did_start() override;
     virtual void add_web_ui_page(String host, String title) override;

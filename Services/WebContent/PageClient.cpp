@@ -529,6 +529,47 @@ void PageClient::set_preferred_motion(Web::CSS::PreferredMotion motion)
     page().invalidate_style_for_preference_change();
 }
 
+// Firefox sizes a browser action popup to the preferred size of its document, up to 800x600 CSS pixels. A user style
+// gives the root that preferred width, so the document's own author styles, such as an explicit body width, still win.
+static constexpr auto sizes_to_content_user_style = ":root { width: max-content; max-width: 800px; }"sv;
+
+void PageClient::set_sizes_to_content(bool sizes_to_content)
+{
+    if (m_sizes_to_content == sizes_to_content)
+        return;
+    m_sizes_to_content = sizes_to_content;
+    m_reported_preferred_size.clear();
+    if (!sizes_to_content && exchange(m_applied_sizes_to_content_style, false))
+        page().set_user_style({});
+}
+
+void PageClient::report_preferred_size_if_changed()
+{
+    if (!m_sizes_to_content || !page().has_local_traversable() || !page().local_traversable()->is_top_level_traversable())
+        return;
+    // The style waits for the page to host the top-level document; the next rendering update measures with it.
+    if (!m_applied_sizes_to_content_style) {
+        m_applied_sizes_to_content_style = true;
+        page().set_user_style(Utf16String::from_utf8(sizes_to_content_user_style));
+        return;
+    }
+    auto document = page().local_traversable()->active_document();
+    if (!document || !document->document_element() || !document->is_fully_active())
+        return;
+    auto& root = *document->document_element();
+    auto rect = root.get_bounding_client_rect();
+    auto width = rect.width().to_double();
+    auto height = rect.height().to_double();
+    // A root sized as a percentage of the viewport can't shrink below it, so measure what overflows it instead.
+    if (height >= page().device_to_css_size(m_viewport_size).height().to_double() - 1)
+        height = max(height, static_cast<double>(root.scroll_height()));
+    Gfx::IntSize size { static_cast<int>(ceil(width)), static_cast<int>(ceil(height)) };
+    if (size.is_empty() || m_reported_preferred_size == size)
+        return;
+    m_reported_preferred_size = size;
+    client().async_did_change_preferred_size(m_id, size);
+}
+
 void PageClient::set_is_scripting_enabled(bool is_scripting_enabled)
 {
     page().set_is_scripting_enabled(is_scripting_enabled);
@@ -957,6 +998,7 @@ bool PageClient::has_rendering_opportunity() const
 
 void PageClient::did_finish_rendering_update()
 {
+    report_preferred_size_if_changed();
     m_rendering_opportunity_for_current_update = false;
     if (m_rendering_opportunity_granted) {
         deliver_granted_rendering_opportunity();

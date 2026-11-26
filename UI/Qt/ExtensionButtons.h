@@ -21,6 +21,17 @@ namespace Ladybird {
 class ExtensionPopup final : public Popover {
 public:
     ExtensionPopup(QWidget* parent, QSize available_size);
+
+    // Firefox sizes a popup to its document's preferred size, within these bounds in CSS pixels.
+    static constexpr QSize minimum_content_size { 25, 25 };
+    static constexpr QSize maximum_content_size { 800, 600 };
+
+    // Fits the card around a document of the given size, clamped to the bounds above and the screen.
+    void set_content_size(QSize);
+    static QSize clamped_content_size(QSize, QSize available_size);
+
+private:
+    QSize m_available_size;
 };
 
 class ExtensionButtons final : public QWidget {

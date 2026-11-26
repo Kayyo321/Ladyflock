@@ -3513,6 +3513,12 @@ void ConnectionFromClient::set_preferred_motion(Web::PageId page_id, Web::CSS::P
         page->set_preferred_motion(motion);
 }
 
+void ConnectionFromClient::set_sizes_to_content(Web::PageId page_id, bool sizes_to_content)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->set_sizes_to_content(sizes_to_content);
+}
+
 void ConnectionFromClient::set_preferred_languages(Web::PageId, Vector<String> preferred_languages)
 {
     // FIXME: Whenever the user agent needs to make the navigator.languages attribute of a Window or WorkerGlobalScope

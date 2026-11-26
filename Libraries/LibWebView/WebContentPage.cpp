@@ -2251,6 +2251,17 @@ void WebContentPage::did_change_theme_color(Gfx::Color color)
     }
 }
 
+void WebContentPage::did_change_preferred_size(Gfx::IntSize size)
+{
+    // Only a view the browser asked to size to its content listens, and only to the page showing its document.
+    if (!displays_tab() || !view().sizes_to_content())
+        return;
+    if (size.width() <= 0 || size.height() <= 0)
+        return;
+    if (view().on_preferred_size_change)
+        view().on_preferred_size_change(size);
+}
+
 void WebContentPage::did_change_background_color(Gfx::Color color)
 {
     if (displays_tab())

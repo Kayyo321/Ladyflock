@@ -98,6 +98,9 @@ public:
     void set_screen_shows_high_dynamic_range(bool);
     void set_preferred_contrast(Web::CSS::PreferredContrast);
     void set_preferred_motion(Web::CSS::PreferredMotion);
+    // Lays the top-level document out at its preferred width and reports the size it needs, as an extension popup
+    // that the browser sizes to its content does.
+    void set_sizes_to_content(bool);
     virtual void set_has_focus(bool) override;
     void set_window_handle(Utf16String);
     void run_webdriver_user_prompt_handling(u64 request_id);
@@ -492,6 +495,10 @@ private:
     bool m_screen_shows_high_dynamic_range { false };
     Web::CSS::PreferredContrast m_preferred_contrast { Web::CSS::PreferredContrast::NoPreference };
     Web::CSS::PreferredMotion m_preferred_motion { Web::CSS::PreferredMotion::NoPreference };
+    bool m_sizes_to_content { false };
+    bool m_applied_sizes_to_content_style { false };
+    Optional<Gfx::IntSize> m_reported_preferred_size;
+    void report_preferred_size_if_changed();
 
     Core::AnonymousBuffer m_document_cookie_version_buffer;
 

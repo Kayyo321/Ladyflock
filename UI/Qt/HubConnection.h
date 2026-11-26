@@ -221,6 +221,7 @@ private:
     virtual void view_restore_window(u64 view_id) override;
     virtual void view_reposition_window(u64 view_id, Gfx::IntPoint position) override;
     virtual void view_resize_window(u64 view_id, Gfx::IntSize size) override;
+    virtual void view_preferred_size_changed(u64 view_id, Gfx::IntSize size) override;
     virtual void view_maximize_window(u64 view_id) override;
     virtual void view_minimize_window(u64 view_id) override;
     virtual void view_fullscreen_window(u64 view_id) override;

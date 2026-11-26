@@ -19,11 +19,34 @@
 
 namespace Ladybird {
 
+// The view sits inside the card's rounded edge.
+static constexpr int popup_content_inset = 2;
+static constexpr int popup_scrollbar_allowance = 16;
+
 ExtensionPopup::ExtensionPopup(QWidget* parent, QSize available_size)
     : Popover(parent)
+    , m_available_size(available_size)
 {
-    // The popover adds transparent space around its card for the shadow.
-    card().setFixedSize(QSize(380, 420).boundedTo(available_size));
+    // Until the document reports the size it needs, the card has room for a typical popup.
+    set_content_size({ 380, 420 });
+}
+
+QSize ExtensionPopup::clamped_content_size(QSize size, QSize available_size)
+{
+    // The popover adds transparent space around its card for the shadow, so leave room for it on the screen.
+    auto screen_limit = available_size - QSize(32, 32) - QSize(popup_content_inset * 2, popup_content_inset * 2);
+    auto limit = maximum_content_size.boundedTo(screen_limit.expandedTo(minimum_content_size));
+    // A document taller than the popup scrolls, and its scrollbar takes width from the content. As Firefox does, widen
+    // the popup by the scrollbar rather than make the content scroll sideways too.
+    if (size.height() > limit.height())
+        size.rwidth() += popup_scrollbar_allowance;
+    return size.expandedTo(minimum_content_size).boundedTo(limit);
+}
+
+void ExtensionPopup::set_content_size(QSize size)
+{
+    auto content = clamped_content_size(size, m_available_size);
+    card().setFixedSize(content + QSize(popup_content_inset * 2, popup_content_inset * 2));
     adjustSize();
 }
 

@@ -414,6 +414,7 @@ endpoint HubClient
     view_restore_window(u64 view_id) =|
     view_reposition_window(u64 view_id, Gfx::IntPoint position) =|
     view_resize_window(u64 view_id, Gfx::IntSize size) =|
+    view_preferred_size_changed(u64 view_id, Gfx::IntSize size) =|
     view_maximize_window(u64 view_id) =|
     view_minimize_window(u64 view_id) =|
     view_fullscreen_window(u64 view_id) =|

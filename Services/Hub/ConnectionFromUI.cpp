@@ -875,6 +875,14 @@ void ConnectionFromUI::view_set_extension_sidebar_width(u64 view_id, u32 width)
             warnln("Could not save extension sidebar width: {}", result.error());
 }
 
+void ConnectionFromUI::view_set_sizes_to_content(u64 view_id, bool sizes_to_content)
+{
+    // A tab fills its window. Only a view that the UI floats over the window, such as an extension popup, takes its
+    // size from its document.
+    if (auto* view = find_view(view_id); view && !view->is_tab())
+        view->set_sizes_to_content(sizes_to_content);
+}
+
 void ConnectionFromUI::view_open_extension_options(u64 view_id, String id)
 {
     auto* view = find_view(view_id);

@@ -553,6 +553,11 @@ void View::forward_callbacks_to_ui(bool is_tab)
         }
     };
 
+    on_preferred_size_change = [this](auto size) {
+        if (auto* ui = ConnectionFromUI::the())
+            ui->async_view_preferred_size_changed(view_id(), size);
+    };
+
     on_minimize_window = [this] {
         if (auto* ui = ConnectionFromUI::the()) {
             push_state_to_ui();

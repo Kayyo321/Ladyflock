@@ -137,6 +137,7 @@ endpoint HubServer
     view_toggle_extension_sidebar(u64 view_id, String extension_id) =|
     view_set_extension_sidebar_width(u64 view_id, u32 width) =|
     view_open_extension_options(u64 view_id, String extension_id) =|
+    view_set_sizes_to_content(u64 view_id, bool sizes_to_content) =|
     view_extension_package_picked(u64 view_id, u64 request_id, Optional<ByteString> path) =|
     ui_did_start() =|
     add_web_ui_page(String host, String title) =|
