@@ -55,6 +55,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QSplitter>
 #include <QStyleOptionToolButton>
 #include <QStylePainter>
 #include <QTimer>
@@ -2207,6 +2208,30 @@ void WindowToolbar::update_extension_sidebar_icon()
 {
     if (!m_extension_sidebar)
         return;
+    auto const& chrome = Theme::chrome(Theme::chrome_palette(*m_extension_sidebar));
+    if (auto* splitter = qobject_cast<QSplitter*>(m_extension_sidebar->parentWidget())) {
+        if (auto* handle = splitter->handle(splitter->indexOf(m_extension_sidebar))) {
+            auto palette = handle->palette();
+            palette.setColor(QPalette::Window, chrome.divider);
+            handle->setPalette(palette);
+            handle->setAutoFillBackground(true);
+        }
+    }
+    // NB: The pane paints its own background, or the heading smears while the splitter settles its width.
+    auto pane_palette = m_extension_sidebar->palette();
+    pane_palette.setColor(QPalette::Window, chrome.toolbar);
+    m_extension_sidebar->setPalette(pane_palette);
+    m_extension_sidebar->setAutoFillBackground(true);
+    if (auto* close = m_extension_sidebar->findChild<QToolButton*>("ExtensionSidebarClose")) {
+        close->setIcon(create_chrome_icon(ChromeIcon::Close, Theme::chrome_palette(*close)));
+        // Like the toolbar's buttons, fill only on hover and press rather than with the platform's bevel.
+        close->setStyleSheet(qformatted(R"(
+QToolButton#ExtensionSidebarClose {{ border: none; border-radius: 6px; background: transparent; }}
+QToolButton#ExtensionSidebarClose:hover {{ background: {0}; }}
+QToolButton#ExtensionSidebarClose:pressed {{ background: {0}; }}
+)",
+            ChromeStyle::style_sheet_color(chrome.hover)));
+    }
     auto* label = m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarIcon");
     auto icon = label->property("packageIcon").value<QIcon>();
     if (icon.isNull())
@@ -2251,7 +2276,8 @@ void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::Ex
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(0);
             auto* heading = new QHBoxLayout;
-            heading->setContentsMargins(8, 2, 4, 2);
+            heading->setContentsMargins(10, 4, 4, 4);
+            heading->setSpacing(8);
             auto* icon = new QLabel(pane);
             icon->setObjectName("ExtensionSidebarIcon");
             heading->addWidget(icon);
@@ -2260,10 +2286,15 @@ void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::Ex
             title->setTextFormat(Qt::PlainText);
             title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
             heading->addWidget(title, 1);
-            auto* close = new QToolButton(pane);
+            // NB: A plain tool button gets the platform's filled bevel; the toolbar's buttons only fill on hover.
+            auto* close = new ToolbarButton(pane);
+            close->setObjectName("ExtensionSidebarClose");
             close->setAccessibleName(tr("Close sidebar"));
             close->setToolTip(tr("Close sidebar"));
             close->setAutoRaise(true);
+            close->setFocusPolicy(Qt::TabFocus);
+            close->setIconSize({ 14, 14 });
+            close->set_size({ 24, 24 });
             close->setIcon(create_chrome_icon(ChromeIcon::Close, Theme::chrome_palette(*pane)));
             QObject::connect(close, &QToolButton::clicked, pane, [this, id = sidebar->id] {
                 if (m_tab)
@@ -2274,6 +2305,8 @@ void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::Ex
             layout->addWidget(&create_extension_view(*pane, browser_window(), tab, *sidebar->sidebar_url), 1);
             splitter.addWidget(pane);
             splitter.setStretchFactor(1, 0);
+            // NB: The platform's splitter handle draws a grip dot halfway down; the chrome's divider line is enough.
+            splitter.setHandleWidth(1);
             QObject::connect(&splitter, &QSplitter::splitterMoved, pane, [this, pane] {
                 if (m_tab)
                     HubConnection::the().async_view_set_extension_sidebar_width(m_tab->view().view_id(), pane->width());
