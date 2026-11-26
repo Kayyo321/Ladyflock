@@ -7,11 +7,13 @@
 #pragma once
 
 #include <AK/Atomic.h>
+#include <AK/Base64.h>
 #include <AK/ByteBuffer.h>
 #include <AK/ByteString.h>
 #include <AK/Function.h>
 #include <AK/Optional.h>
 #include <AK/ScopeGuard.h>
+#include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibCore/File.h>
 #include <LibCrypto/Hash/Hash.h>
@@ -383,6 +385,325 @@ private:
     Atomic<bool> m_stop { false };
     Atomic<size_t> m_connection_count { 0 };
     Atomic<size_t> m_request_count { 0 };
+    RefPtr<Threading::Thread> m_thread;
+};
+
+// Independent HTTP server that sends 200 OK headers + a first chunked body chunk, then holds the
+// socket open until the client closes/aborts it (recording client disconnect count).
+class IndependentStreamingHTTPServer {
+public:
+    IndependentStreamingHTTPServer()
+    {
+        m_listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        VERIFY(m_listen_fd >= 0);
+
+        int yes = 1;
+        (void)::setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+        sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        VERIFY(::bind(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        VERIFY(::getsockname(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        m_port = ntohs(addr.sin_port);
+
+        VERIFY(::listen(m_listen_fd, 8) == 0);
+
+        m_thread = Threading::Thread::construct("PrivacyStreamObserver"sv, [this] {
+            run();
+            return 0;
+        });
+        m_thread->start();
+    }
+
+    ~IndependentStreamingHTTPServer()
+    {
+        m_stop.store(true);
+        if (m_listen_fd >= 0) {
+            ::shutdown(m_listen_fd, SHUT_RDWR);
+            ::close(m_listen_fd);
+            m_listen_fd = -1;
+        }
+        if (m_thread)
+            (void)m_thread->join();
+    }
+
+    u16 port() const { return m_port; }
+    size_t connection_count() const { return m_connection_count.load(); }
+    size_t request_count() const { return m_request_count.load(); }
+    size_t client_disconnect_count() const { return m_client_disconnect_count.load(); }
+    bool first_chunk_sent() const { return m_first_chunk_sent.load(); }
+
+    void reset_counts()
+    {
+        m_connection_count.store(0);
+        m_request_count.store(0);
+        m_client_disconnect_count.store(0);
+        m_first_chunk_sent.store(false);
+    }
+
+private:
+    void run()
+    {
+        while (!m_stop.load()) {
+            pollfd pfd { .fd = m_listen_fd, .events = POLLIN, .revents = 0 };
+            if (::poll(&pfd, 1, 25) <= 0)
+                continue;
+
+            int client_fd = ::accept(m_listen_fd, nullptr, nullptr);
+            if (client_fd < 0)
+                continue;
+
+            m_connection_count.fetch_add(1);
+            handle_client(client_fd);
+            ::close(client_fd);
+        }
+    }
+
+    void handle_client(int client_fd)
+    {
+        timeval tv { .tv_sec = 2, .tv_usec = 0 };
+        (void)::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        ByteBuffer request_bytes;
+        char chunk[1024];
+        while (request_bytes.size() < 16 * KiB) {
+            ssize_t n = ::recv(client_fd, chunk, sizeof(chunk), 0);
+            if (n <= 0)
+                return;
+            request_bytes.append(chunk, static_cast<size_t>(n));
+            if (StringView { request_bytes.bytes() }.contains("\r\n\r\n"sv))
+                break;
+        }
+
+        m_request_count.fetch_add(1);
+        static constexpr StringView initial_response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nAccess-Control-Allow-Origin: *\r\n\r\n5\r\nhello\r\n"sv;
+        (void)::send(client_fd, initial_response.characters_without_null_termination(), initial_response.length(), 0);
+        m_first_chunk_sent.store(true);
+
+        // Hold the connection open until the client closes it (or the server stops).
+        while (!m_stop.load()) {
+            pollfd pfd { .fd = client_fd, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 };
+            int ready = ::poll(&pfd, 1, 25);
+            if (ready <= 0)
+                continue;
+            char probe[16];
+            ssize_t n = ::recv(client_fd, probe, sizeof(probe), MSG_DONTWAIT);
+            if (n <= 0 || (pfd.revents & (POLLHUP | POLLERR))) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+        }
+    }
+
+    int m_listen_fd { -1 };
+    u16 m_port { 0 };
+    Atomic<bool> m_stop { false };
+    Atomic<size_t> m_connection_count { 0 };
+    Atomic<size_t> m_request_count { 0 };
+    Atomic<size_t> m_client_disconnect_count { 0 };
+    Atomic<bool> m_first_chunk_sent { false };
+    RefPtr<Threading::Thread> m_thread;
+};
+
+// Independent RFC 6455 WebSocket echo observer server on 127.0.0.1 running on its own OS thread.
+class IndependentWebSocketServer {
+public:
+    IndependentWebSocketServer()
+    {
+        m_listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        VERIFY(m_listen_fd >= 0);
+
+        int yes = 1;
+        (void)::setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+        sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        VERIFY(::bind(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        VERIFY(::getsockname(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        m_port = ntohs(addr.sin_port);
+
+        VERIFY(::listen(m_listen_fd, 8) == 0);
+
+        m_thread = Threading::Thread::construct("PrivacyWSObserver"sv, [this] {
+            run();
+            return 0;
+        });
+        m_thread->start();
+    }
+
+    ~IndependentWebSocketServer()
+    {
+        m_stop.store(true);
+        if (m_listen_fd >= 0) {
+            ::shutdown(m_listen_fd, SHUT_RDWR);
+            ::close(m_listen_fd);
+            m_listen_fd = -1;
+        }
+        if (m_thread)
+            (void)m_thread->join();
+    }
+
+    u16 port() const { return m_port; }
+    size_t connection_count() const { return m_connection_count.load(); }
+    size_t handshake_count() const { return m_handshake_count.load(); }
+    size_t client_disconnect_count() const { return m_client_disconnect_count.load(); }
+
+    void reset_counts()
+    {
+        m_connection_count.store(0);
+        m_handshake_count.store(0);
+        m_client_disconnect_count.store(0);
+    }
+
+private:
+    void run()
+    {
+        while (!m_stop.load()) {
+            pollfd pfd { .fd = m_listen_fd, .events = POLLIN, .revents = 0 };
+            if (::poll(&pfd, 1, 25) <= 0)
+                continue;
+
+            int client_fd = ::accept(m_listen_fd, nullptr, nullptr);
+            if (client_fd < 0)
+                continue;
+
+            m_connection_count.fetch_add(1);
+            handle_client(client_fd);
+            ::close(client_fd);
+        }
+    }
+
+    static bool read_exact(int fd, u8* buffer, size_t size, Atomic<bool> const& stop)
+    {
+        size_t total = 0;
+        while (total < size && !stop.load()) {
+            pollfd pfd { .fd = fd, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 };
+            int ready = ::poll(&pfd, 1, 25);
+            if (ready < 0)
+                return false;
+            if (ready == 0)
+                continue;
+            ssize_t n = ::recv(fd, buffer + total, size - total, 0);
+            if (n <= 0)
+                return false;
+            total += static_cast<size_t>(n);
+        }
+        return total == size;
+    }
+
+    void handle_client(int client_fd)
+    {
+        ByteBuffer request_bytes;
+        char chunk[2048];
+        while (!m_stop.load() && request_bytes.size() < 16 * KiB) {
+            pollfd pfd { .fd = client_fd, .events = POLLIN, .revents = 0 };
+            int ready = ::poll(&pfd, 1, 25);
+            if (ready < 0)
+                return;
+            if (ready == 0)
+                continue;
+            ssize_t n = ::recv(client_fd, chunk, sizeof(chunk), 0);
+            if (n <= 0)
+                return;
+            request_bytes.append(chunk, static_cast<size_t>(n));
+            if (StringView { request_bytes.bytes() }.contains("\r\n\r\n"sv))
+                break;
+        }
+
+        StringView head { request_bytes.bytes() };
+        Optional<StringView> ws_key;
+        for (auto line : head.split_view("\r\n"sv)) {
+            if (auto colon = line.find(':'); colon.has_value()) {
+                auto name = line.substring_view(0, *colon).trim_whitespace();
+                if (name.equals_ignoring_ascii_case("Sec-WebSocket-Key"sv)) {
+                    ws_key = line.substring_view(*colon + 1).trim_whitespace();
+                    break;
+                }
+            }
+        }
+        if (!ws_key.has_value())
+            return;
+
+        auto accept_input = ByteString::formatted("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", *ws_key);
+        auto digest = Crypto::Hash::digest(Crypto::Hash::HashKind::SHA1, accept_input.bytes());
+        auto accept_header = MUST(encode_base64(digest.bytes()));
+        auto handshake_response = ByteString::formatted(
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: {}\r\n\r\n",
+            accept_header);
+
+        if (::send(client_fd, handshake_response.characters(), handshake_response.length(), 0) <= 0)
+            return;
+
+        m_handshake_count.fetch_add(1);
+
+        // Echo masked text frames back until client disconnects or sends Close.
+        while (!m_stop.load()) {
+            u8 header[2];
+            if (!read_exact(client_fd, header, 2, m_stop)) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+            u8 opcode = header[0] & 0x0f;
+            bool masked = (header[1] & 0x80) != 0;
+            u64 payload_len = header[1] & 0x7f;
+            if (payload_len == 126) {
+                u8 ext[2];
+                if (!read_exact(client_fd, ext, 2, m_stop)) {
+                    m_client_disconnect_count.fetch_add(1);
+                    return;
+                }
+                payload_len = (static_cast<u64>(ext[0]) << 8) | ext[1];
+            } else if (payload_len == 127) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+
+            u8 mask[4] {};
+            if (masked && !read_exact(client_fd, mask, 4, m_stop)) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+
+            auto payload = MUST(ByteBuffer::create_uninitialized(payload_len));
+            if (payload_len > 0 && !read_exact(client_fd, payload.data(), payload_len, m_stop)) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+            if (masked) {
+                for (size_t i = 0; i < payload_len; ++i)
+                    payload[i] ^= mask[i % 4];
+            }
+
+            if (opcode == 0x8) {
+                m_client_disconnect_count.fetch_add(1);
+                return;
+            }
+            if (opcode == 0x1 && payload_len < 126) {
+                ByteBuffer frame;
+                frame.append(static_cast<u8>(0x81));
+                frame.append(static_cast<u8>(payload_len));
+                frame.append(payload.bytes());
+                (void)::send(client_fd, frame.data(), frame.size(), 0);
+            }
+        }
+    }
+
+    int m_listen_fd { -1 };
+    u16 m_port { 0 };
+    Atomic<bool> m_stop { false };
+    Atomic<size_t> m_connection_count { 0 };
+    Atomic<size_t> m_handshake_count { 0 };
+    Atomic<size_t> m_client_disconnect_count { 0 };
     RefPtr<Threading::Thread> m_thread;
 };
 
