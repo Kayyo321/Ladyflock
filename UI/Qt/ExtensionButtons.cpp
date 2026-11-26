@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QStyleOptionToolButton>
 #include <QStylePainter>
+#include <QTextDocument>
 #include <QToolButton>
 #include <UI/Qt/ExtensionButtons.h>
 #include <UI/Qt/Icon.h>
@@ -41,7 +42,7 @@ QSize ExtensionPopup::clamped_content_size(QSize size, QSize available_size)
     // A document taller than the popup scrolls, and its scrollbar takes width from the content. As Firefox does, widen
     // the popup by the scrollbar rather than make the content scroll sideways too.
     if (size.height() > limit.height())
-        size.rwidth() += popup_scrollbar_allowance;
+        size.setWidth(min(size.width(), limit.width()) + popup_scrollbar_allowance);
     return size.expandedTo(minimum_content_size).boundedTo(limit);
 }
 
@@ -128,10 +129,17 @@ static QString update_description(Optional<String> const& version)
     return QObject::tr("Update available: version %1").arg(qstring_from_ak_string(*version));
 }
 
+// Qt shows a tooltip that looks like markup as rich text, so pass an extension's name as rich text that says exactly
+// what the name does. Escaping it alone would show "A & B" as "A &amp; B".
+static QString plain_text_tooltip(QString const& text)
+{
+    return Qt::convertFromPlainText(text, Qt::WhiteSpaceNormal);
+}
+
 static void setup_button(QToolButton& button, QString const& title)
 {
     button.setAccessibleName(title);
-    button.setToolTip(title.toHtmlEscaped());
+    button.setToolTip(plain_text_tooltip(title));
     button.setAutoRaise(true);
     button.setFocusPolicy(Qt::StrongFocus);
     button.setIconSize({ TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE });
@@ -248,7 +256,7 @@ void ExtensionButtons::update_buttons()
             description.append(button->badge);
         if (auto update = update_description(item.update_version); !update.isEmpty()) {
             description.append(update);
-            button->setToolTip(QString("%1\n%2").arg(title, update).toHtmlEscaped());
+            button->setToolTip(plain_text_tooltip(QString("%1\n%2").arg(title, update)));
         }
         button->setAccessibleDescription(description.join(QStringLiteral(", ")));
         button->setProperty("extensionId", qstring_from_ak_string(item.id));
@@ -266,7 +274,7 @@ void ExtensionButtons::update_buttons()
     menu_button->update_available = updates > 0;
     auto available = updates == 1 ? tr("1 extension update available") : tr("%1 extension updates available").arg(updates);
     menu_button->setAccessibleDescription(updates > 0 ? available : QString {});
-    menu_button->setToolTip(updates > 0 ? QString("%1\n%2").arg(tr("Extensions"), available).toHtmlEscaped() : tr("Extensions"));
+    menu_button->setToolTip(updates > 0 ? plain_text_tooltip(QString("%1\n%2").arg(tr("Extensions"), available)) : tr("Extensions"));
     menu_button->update();
     update_icons();
 }
@@ -380,7 +388,7 @@ void ExtensionButtons::open_menu()
         QStringList tooltip { full_name };
         if (auto update = update_description(item.update_version); !update.isEmpty())
             tooltip.append(update);
-        actions->menuAction()->setToolTip(tooltip.join('\n').toHtmlEscaped());
+        actions->menuAction()->setToolTip(plain_text_tooltip(tooltip.join('\n')));
         auto id = item.id;
         if (item.update_version.has_value()) {
             actions->addAction(tr("Update to Version %1...").arg(menu_label(qstring_from_ak_string(*item.update_version))), this, [this] { if (on_update) on_update(); });

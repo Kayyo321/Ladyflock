@@ -11,6 +11,7 @@
 #include <QApplication>
 #include <QFrame>
 #include <QMenu>
+#include <QTextDocument>
 #include <QToolButton>
 #include <UI/Qt/ExtensionButtons.h>
 #include <UI/Qt/StringUtils.h>
@@ -317,4 +318,19 @@ TEST_CASE(extensions_menu_elides_long_names_but_keeps_them_in_the_tooltip)
     EXPECT(QFontMetrics(menu->font()).horizontalAdvance(entry->text()) <= 280);
     EXPECT(entry->toolTip().contains(qstring_from_ak_string(name)));
     menu->close();
+}
+
+TEST_CASE(extension_tooltips_show_names_exactly_as_written)
+{
+    Ladybird::ExtensionButtons buttons(nullptr);
+    buttons.set_pin_capacity(1);
+    auto name = "Tabs & <b>Bookmarks</b>"_string;
+    auto item = toolbar_item("markup"_string, name);
+    item.pinned = true;
+    buttons.set_items({ item });
+    auto& button = buttons.anchor_for("markup"_string);
+    VERIFY(button.objectName() != QStringLiteral("LadybirdExtensionsButton"));
+    QTextDocument shown;
+    shown.setHtml(button.toolTip());
+    EXPECT_EQ(shown.toPlainText(), qstring_from_ak_string(name));
 }

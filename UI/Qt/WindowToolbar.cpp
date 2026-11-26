@@ -2188,19 +2188,25 @@ void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL co
     };
 
     // Like Firefox, size the popup to its document, and keep following it as the document grows or shrinks. The
-    // popup opens once it knows its size, or after a moment for a document that is slow to lay out.
-    QPointer<QWidget> anchor_button = &anchor;
-    auto reveal = [this, popup, anchor_button, view = &view] {
-        if (popup->isVisible() || !anchor_button)
+    // popup opens once it knows its size, or after a moment for a document that is slow to lay out. It opens only
+    // once: a size that arrives after Escape mustn't bring it back. It anchors to the extension's button as the
+    // toolbar has it then, or to the Extensions button once that extension is no longer pinned.
+    auto reveal = [this, popup, id, view = &view] {
+        if (popup->has_been_revealed())
             return;
-        move_popover_to_button(*popup, *anchor_button);
+        popup->mark_revealed();
+        if (!m_extension_buttons->isVisible()) {
+            popup->close();
+            return;
+        }
+        move_popover_to_button(*popup, m_extension_buttons->anchor_for(id));
         popup->show();
         view->setFocus();
     };
-    view.on_preferred_size_change = [this, popup, anchor_button, reveal](Gfx::IntSize size) {
+    view.on_preferred_size_change = [this, popup, id, reveal](Gfx::IntSize size) {
         popup->set_content_size({ size.width(), size.height() });
-        if (popup->isVisible() && anchor_button)
-            move_popover_to_button(*popup, *anchor_button);
+        if (popup->isVisible())
+            move_popover_to_button(*popup, m_extension_buttons->anchor_for(id));
         reveal();
     };
     HubConnection::the().async_view_set_sizes_to_content(view.view_id(), true);

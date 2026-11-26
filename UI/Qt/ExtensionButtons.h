@@ -30,8 +30,13 @@ public:
     void set_content_size(QSize);
     static QSize clamped_content_size(QSize, QSize available_size);
 
+    // A popup opens at most once, when its size is first known, so a late size report can't reopen a closed one.
+    bool has_been_revealed() const { return m_revealed; }
+    void mark_revealed() { m_revealed = true; }
+
 private:
     QSize m_available_size;
+    bool m_revealed { false };
 };
 
 class ExtensionButtons final : public QWidget {
