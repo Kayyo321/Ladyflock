@@ -25,6 +25,7 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -704,6 +705,314 @@ private:
     Atomic<size_t> m_connection_count { 0 };
     Atomic<size_t> m_handshake_count { 0 };
     Atomic<size_t> m_client_disconnect_count { 0 };
+    RefPtr<Threading::Thread> m_thread;
+};
+
+// Mock network endpoint for mandatory-route tests, running its own OS threads (one per connection, so keep-alive
+// connections stay open while others are served). In DirectHTTP mode it is an HTTP/1.1 keep-alive origin server. In
+// SOCKS5 mode it is a SOCKS5 proxy that records each stream's authentication and requested destination, and then
+// answers the tunnelled HTTP requests itself, so no destination is ever contacted.
+class MockRouteServer {
+public:
+    enum class Mode {
+        DirectHTTP,
+        SOCKS5,
+    };
+
+    struct SOCKSStream {
+        ByteString username;
+        ByteString password;
+        // 1 = IPv4, 3 = domain name, 4 = IPv6.
+        u8 address_type { 0 };
+        ByteString host;
+        u16 port { 0 };
+    };
+
+    explicit MockRouteServer(Mode mode)
+        : m_mode(mode)
+    {
+        pthread_mutex_init(&m_mutex, nullptr);
+
+        m_listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        VERIFY(m_listen_fd >= 0);
+        int yes = 1;
+        (void)::setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+        sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        VERIFY(::bind(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        VERIFY(::getsockname(m_listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        m_port = ntohs(addr.sin_port);
+        VERIFY(::listen(m_listen_fd, 32) == 0);
+
+        m_thread = Threading::Thread::construct("PrivacyRouteObserver"sv, [this] {
+            accept_loop();
+            return 0;
+        });
+        m_thread->start();
+    }
+
+    ~MockRouteServer()
+    {
+        stop();
+        pthread_mutex_destroy(&m_mutex);
+    }
+
+    // Closes the listening socket and every open connection, as a crashed proxy would.
+    void stop()
+    {
+        if (m_stop.exchange(true))
+            return;
+        if (m_listen_fd >= 0) {
+            ::shutdown(m_listen_fd, SHUT_RDWR);
+            ::close(m_listen_fd);
+            m_listen_fd = -1;
+        }
+        if (m_thread)
+            (void)m_thread->join();
+        Vector<NonnullRefPtr<Threading::Thread>> threads;
+        {
+            Locker locker { *this };
+            for (int fd : m_client_fds)
+                ::shutdown(fd, SHUT_RDWR);
+            threads = move(m_client_threads);
+        }
+        for (auto& thread : threads)
+            (void)thread->join();
+    }
+
+    u16 port() const { return m_port; }
+    size_t connection_count() const { return m_connection_count.load(); }
+    size_t request_count() const { return m_request_count.load(); }
+    // Connections that the client closed.
+    size_t client_closed_count() const { return m_client_closed_count.load(); }
+
+    Vector<SOCKSStream> streams()
+    {
+        Locker locker { *this };
+        return m_streams;
+    }
+
+    void reset_counts()
+    {
+        Locker locker { *this };
+        m_connection_count.store(0);
+        m_request_count.store(0);
+        m_client_closed_count.store(0);
+        m_streams.clear();
+    }
+
+private:
+    struct Locker {
+        explicit Locker(MockRouteServer& server)
+            : server(server)
+        {
+            pthread_mutex_lock(&server.m_mutex);
+        }
+        ~Locker() { pthread_mutex_unlock(&server.m_mutex); }
+        MockRouteServer& server;
+    };
+
+    void accept_loop()
+    {
+        while (!m_stop.load()) {
+            pollfd pfd { .fd = m_listen_fd, .events = POLLIN, .revents = 0 };
+            if (::poll(&pfd, 1, 25) <= 0)
+                continue;
+            int client_fd = ::accept(m_listen_fd, nullptr, nullptr);
+            if (client_fd < 0)
+                continue;
+            m_connection_count.fetch_add(1);
+
+            Locker locker { *this };
+            m_client_fds.append(client_fd);
+            auto thread = Threading::Thread::construct("PrivacyRouteConnection"sv, [this, client_fd] {
+                serve(client_fd);
+                {
+                    Locker locker { *this };
+                    m_client_fds.remove_first_matching([&](int fd) { return fd == client_fd; });
+                }
+                ::close(client_fd);
+                return 0;
+            });
+            thread->start();
+            m_client_threads.append(move(thread));
+        }
+    }
+
+    bool read_exact(int fd, u8* buffer, size_t size)
+    {
+        size_t total = 0;
+        while (total < size && !m_stop.load()) {
+            pollfd pfd { .fd = fd, .events = POLLIN, .revents = 0 };
+            int ready = ::poll(&pfd, 1, 25);
+            if (ready < 0)
+                return false;
+            if (ready == 0)
+                continue;
+            ssize_t n = ::recv(fd, buffer + total, size - total, 0);
+            if (n <= 0) {
+                if (n == 0)
+                    m_client_closed_count.fetch_add(1);
+                return false;
+            }
+            total += static_cast<size_t>(n);
+        }
+        return total == size;
+    }
+
+    static bool send_all(int fd, ReadonlyBytes bytes)
+    {
+        size_t sent = 0;
+        while (sent < bytes.size()) {
+            ssize_t n = ::send(fd, bytes.data() + sent, bytes.size() - sent, 0);
+            if (n <= 0)
+                return false;
+            sent += static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    bool socks5_handshake(int fd, ByteString& destination_host)
+    {
+        u8 greeting[2];
+        if (!read_exact(fd, greeting, 2) || greeting[0] != 5)
+            return false;
+        u8 methods[255];
+        if (!read_exact(fd, methods, greeting[1]))
+            return false;
+        bool offers_password = false;
+        bool offers_none = false;
+        for (size_t i = 0; i < greeting[1]; ++i) {
+            offers_password |= methods[i] == 2;
+            offers_none |= methods[i] == 0;
+        }
+
+        SOCKSStream stream;
+        if (offers_password) {
+            u8 const choice[] = { 5, 2 };
+            if (!send_all(fd, { choice, 2 }))
+                return false;
+            u8 header[2];
+            if (!read_exact(fd, header, 2) || header[0] != 1)
+                return false;
+            u8 field[255];
+            if (!read_exact(fd, field, header[1]))
+                return false;
+            stream.username = ByteString { ReadonlyBytes { field, header[1] } };
+            u8 password_length = 0;
+            if (!read_exact(fd, &password_length, 1) || !read_exact(fd, field, password_length))
+                return false;
+            stream.password = ByteString { ReadonlyBytes { field, password_length } };
+            u8 const accepted[] = { 1, 0 };
+            if (!send_all(fd, { accepted, 2 }))
+                return false;
+        } else if (offers_none) {
+            u8 const choice[] = { 5, 0 };
+            if (!send_all(fd, { choice, 2 }))
+                return false;
+        } else {
+            return false;
+        }
+
+        u8 request[4];
+        if (!read_exact(fd, request, 4) || request[0] != 5 || request[1] != 1)
+            return false;
+        stream.address_type = request[3];
+        u8 address[255];
+        if (request[3] == 1) {
+            if (!read_exact(fd, address, 4))
+                return false;
+            stream.host = ByteString::formatted("{}.{}.{}.{}", address[0], address[1], address[2], address[3]);
+        } else if (request[3] == 3) {
+            u8 length = 0;
+            if (!read_exact(fd, &length, 1) || !read_exact(fd, address, length))
+                return false;
+            stream.host = ByteString { ReadonlyBytes { address, length } };
+        } else if (request[3] == 4) {
+            if (!read_exact(fd, address, 16))
+                return false;
+            stream.host = "ipv6"sv;
+        } else {
+            return false;
+        }
+        u8 port[2];
+        if (!read_exact(fd, port, 2))
+            return false;
+        stream.port = static_cast<u16>((port[0] << 8) | port[1]);
+
+        destination_host = stream.host;
+        {
+            Locker locker { *this };
+            m_streams.append(move(stream));
+        }
+        u8 const succeeded[] = { 5, 0, 0, 1, 0, 0, 0, 0, 0, 0 };
+        return send_all(fd, { succeeded, sizeof(succeeded) });
+    }
+
+    void serve(int fd)
+    {
+        ByteString destination_host = "direct"sv;
+        if (m_mode == Mode::SOCKS5 && !socks5_handshake(fd, destination_host))
+            return;
+
+        // Serve keep-alive HTTP/1.1 requests until the client closes the connection.
+        ByteBuffer pending;
+        while (!m_stop.load()) {
+            auto head_end = StringView { pending.bytes() }.find("\r\n\r\n"sv);
+            if (!head_end.has_value()) {
+                u8 byte_chunk[4096];
+                pollfd pfd { .fd = fd, .events = POLLIN, .revents = 0 };
+                int ready = ::poll(&pfd, 1, 25);
+                if (ready < 0)
+                    return;
+                if (ready == 0)
+                    continue;
+                ssize_t n = ::recv(fd, byte_chunk, sizeof(byte_chunk), 0);
+                if (n <= 0) {
+                    if (n == 0)
+                        m_client_closed_count.fetch_add(1);
+                    return;
+                }
+                pending.append(byte_chunk, static_cast<size_t>(n));
+                continue;
+            }
+
+            auto head = ByteString { pending.bytes().slice(0, *head_end) };
+            pending = MUST(ByteBuffer::copy(pending.bytes().slice(*head_end + 4)));
+            m_request_count.fetch_add(1);
+
+            auto request_line = head.view().find_first_split_view('\r');
+            auto parts = request_line.split_view(' ');
+            auto target = parts.size() >= 2 ? parts[1] : "/"sv;
+
+            ByteString response;
+            if (auto redirect = target.find("/redirect?to="sv); redirect.has_value()) {
+                auto location = target.substring_view(*redirect + "/redirect?to="sv.length());
+                response = ByteString::formatted("HTTP/1.1 302 Found\r\nLocation: {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n", location);
+            } else {
+                auto body = ByteString::formatted("via-{}:{}", m_mode == Mode::SOCKS5 ? "socks"sv : "direct"sv, destination_host);
+                response = ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}", body.length(), body);
+            }
+            if (!send_all(fd, response.bytes()))
+                return;
+        }
+    }
+
+    Mode m_mode;
+    int m_listen_fd { -1 };
+    u16 m_port { 0 };
+    Atomic<bool> m_stop { false };
+    Atomic<size_t> m_connection_count { 0 };
+    Atomic<size_t> m_request_count { 0 };
+    Atomic<size_t> m_client_closed_count { 0 };
+    pthread_mutex_t m_mutex;
+    Vector<int> m_client_fds;
+    Vector<NonnullRefPtr<Threading::Thread>> m_client_threads;
+    Vector<SOCKSStream> m_streams;
     RefPtr<Threading::Thread> m_thread;
 };
 
