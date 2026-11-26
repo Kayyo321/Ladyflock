@@ -2018,15 +2018,17 @@ static ErrorOr<i64> requested_script_frame(JsonObject const& details)
     return frame_id.value_or(0);
 }
 
-static CanonicalNavigable const* scripting_target_frame(ViewImplementation const& view, i64 frame_id)
+static CanonicalNavigable const* scripting_target_frame(ViewImplementation const& view, i64 frame_id, bool allow_pending_document = false)
 {
     CanonicalNavigable const* result = nullptr;
     view.traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
         if (frame.extension_frame_id() != frame_id)
             return IterationDecision::Continue;
         for (auto const* ancestor = &frame; ancestor; ancestor = ancestor->parent()) {
-            if (!ancestor->active_document().host() || ancestor->active_document().unload_counter()
-                || (ancestor->parent() && ancestor->container_document() != &ancestor->parent()->active_document()))
+            if (ancestor->parent() && ancestor->container_document() != &ancestor->parent()->active_document())
+                return IterationDecision::Break;
+            if ((ancestor != &frame || !allow_pending_document)
+                && (!ancestor->active_document().host() || ancestor->active_document().unload_counter()))
                 return IterationDecision::Break;
         }
         result = &frame;
@@ -2157,8 +2159,33 @@ void ExtensionManager::handle_scripting_css(
         return;
     }
 
-    auto const* frame = scripting_target_frame(*target_view, frame_id.value());
-    if (!frame || frame->active_document().origin().is_opaque() || !has_host_permission(ext.extension_id, frame->active_document_url(), target_view->view_id())) {
+    bool allow_pending_document = !remove && ext.manifest.manifest_version() == Web::Extensions::ManifestVersion::V2
+        && details_obj.get_string("runAt"sv) == "document_start"sv;
+    auto const* frame = scripting_target_frame(*target_view, frame_id.value(), allow_pending_document);
+    if (!frame) {
+        send_err("Extension lacks host/activeTab permission for target tab");
+        return;
+    }
+
+    auto* target_document = &frame->active_document();
+    auto const* target_url = &frame->active_document_url();
+    if (allow_pending_document) {
+        // A document_start content script can ask the background page to style its document
+        // while the frame still reports the document being replaced as active.
+        if (auto navigation_id = frame->ongoing_navigation_id(); navigation_id.has_value()) {
+            auto navigation = frame->navigation_with_id(*navigation_id);
+            if (navigation && navigation->history_entry) {
+                auto const& populated = navigation->history_entry->document_state->populated_document;
+                if (populated.has_value() && populated->document->has_content_script_grant(ext.extension_id, ext.grant_generation)) {
+                    target_document = populated->document.ptr();
+                    target_url = &target_document->creation_url();
+                }
+            }
+        }
+    }
+    auto const& target_page = target_document->host();
+    if (!target_page || !target_page->is_open() || target_document->unload_counter() || target_document->origin().is_opaque()
+        || !has_host_permission(ext.extension_id, *target_url, target_view->view_id())) {
         send_err("Extension lacks host/activeTab permission for target tab");
         return;
     }
@@ -2196,10 +2223,7 @@ void ExtensionManager::handle_scripting_css(
         css_text = MUST(sb.to_string());
     }
 
-    auto& target_document = frame->active_document();
-    auto& target_page = *target_document.host();
-    auto target_doc_id = target_document.id();
-    target_page.client().async_inject_extension_css(target_page.id(), ext.extension_id, css_key, css_text, remove, target_doc_id);
+    target_page->client().async_inject_extension_css(target_page->id(), ext.extension_id, css_key, css_text, remove, target_document->id());
     caller.async_extension_api_response(page_id, source_document_id, call_id, true, "null"_string);
 }
 
@@ -2222,17 +2246,17 @@ JsonObject ExtensionManager::extension_message_sender(WebContentClient& client, 
 {
     JsonObject sender;
     sender.set("id"sv, extension_id);
-    if (auto* page = client.page(page_id)) {
-        if (auto document = page->hosted_document_with_id(document_id)) {
-            sender.set("url"sv, document->creation_url().serialize());
+    if (auto* page = client.page(page_id); page && page->has_traversable()) {
+        // document_start scripts can connect before their document is activated in the frame.
+        page->traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
+            auto document = frame.document_with_id(document_id);
+            if (!document || document->host() != page || document->unload_counter() > 0)
+                return IterationDecision::Continue;
+            auto const& url = &frame.active_document() == document.ptr() ? frame.active_document_url() : document->creation_url();
+            sender.set("url"sv, url.serialize());
             sender.set("origin"sv, document->origin().serialize());
             sender.set("documentId"sv, document->extension_document_id());
-        }
-        page->for_each_navigable_with_a_hosted_active_document([&](CanonicalNavigable const& frame) {
-            if (frame.active_document().id() != document_id)
-                return IterationDecision::Continue;
             sender.set("frameId"sv, frame.extension_frame_id());
-            sender.set("url"sv, frame.active_document_url().serialize());
             return IterationDecision::Break;
         });
     }
@@ -3440,7 +3464,7 @@ void ExtensionManager::handle_api_call(
             reply_ok(JsonValue(move(result)));
             return;
         }
-        if (method_name != "contains"sv && method_name != "remove"sv) {
+        if (!method_name.is_one_of("contains"sv, "remove"sv, "request"sv)) {
             reply_err("Unsupported permissions method");
             return;
         }
@@ -3449,6 +3473,12 @@ void ExtensionManager::handle_api_call(
             return;
         }
         auto const& request = parsed_args.value().as_array().at(0).as_object();
+        if ((request.has("permissions"sv) && !request.get_array("permissions"sv).has_value())
+            || (request.has("origins"sv) && !request.get_array("origins"sv).has_value())) {
+            reply_err("Permissions and origins must be arrays");
+            return;
+        }
+        // A request can confirm existing grants. New grants still require browser-owned site access controls.
         auto removing = method_name == "remove"sv;
         bool ok = true;
         if (auto permissions = request.get_array("permissions"sv); permissions.has_value()) {

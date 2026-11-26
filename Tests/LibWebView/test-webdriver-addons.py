@@ -249,10 +249,13 @@ def run_test(webdriver_binary, theme, width, screenshots):
             screenshot("staging")
             reply("installStaged", error="Download failed")
             assert script("return document.querySelector('#notice.error').textContent;") == "Download failed"
-            assert script("""
+            assert script(
+                """
                 const button = document.querySelector(arguments[0]);
                 return button === document.activeElement && button.ariaBusy === null && button.ariaDisabled === null;
-            """, stage)
+            """,
+                stage,
+            )
             click(stage)
             reply("installStaged", cancelled=True)
             assert script("return document.querySelector(arguments[0]).textContent;", stage) == review_label

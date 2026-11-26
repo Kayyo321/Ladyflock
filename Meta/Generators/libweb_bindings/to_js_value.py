@@ -251,8 +251,6 @@ def interface_to_javascript_value(
     wrapper_world_argument = wrapper_world or f"host_defined_wrapper_world({realm})"
     if interface_like_type.name == "WindowProxy":
         # WindowProxy is not a Wrappable. Its JS value is the exotic object it holds.
-        includes.add("LibWeb/Bindings/WrapperWorld.h")
-        includes.add("LibWeb/HTML/BrowsingContext.h")
         return f"""[&]() -> JS::Value {{
         auto* object_ptr = [&]<typename Value>(Value&& idl_value) -> {interface_like_type.fully_qualified_name}* {{
             if constexpr (requires {{ idl_value.ptr(); }})
@@ -263,15 +261,12 @@ def interface_to_javascript_value(
         auto object = GC::Ptr {{ object_ptr }};
         if (!object)
             return JS::js_null();
-        if (auto browsing_context = object->associated_browsing_context())
-            return &browsing_context->window_proxy_for({wrapper_world_argument}, {realm})->object();
-        return &object->object();
+        return &object->object_for_realm({realm});
     }}()"""
     if interface_like_type.name == "EventTarget":
         includes.add("AK/TypeCasts.h")
         includes.add("LibWeb/Bindings/Wrappable.h")
         includes.add("LibWeb/Bindings/WrapperWorld.h")
-        includes.add("LibWeb/HTML/BrowsingContext.h")
         includes.add("LibWeb/HTML/Window.h")
         includes.add("LibWeb/HTML/WindowProxy.h")
         return f"""[&]() -> JS::Value {{
@@ -284,10 +279,8 @@ def interface_to_javascript_value(
         auto object = GC::Ptr {{ object_ptr }};
         if (!object)
             return JS::js_null();
-        if (auto* window = as_if<HTML::Window>(object.ptr())) {{
-            if (auto browsing_context = window->browsing_context())
-                return JS::Value(&browsing_context->window_proxy_for({wrapper_world_argument}, {realm})->object());
-        }}
+        if (auto* window = as_if<HTML::Window>(object.ptr()); window && window->browsing_context())
+            return &window->window()->object_for_realm({realm});
         return JS::Value(static_cast<JS::Object*>(wrap({wrapper_world_argument}, {realm}, GC::Ref {{ *object }}).ptr()));
     }}()"""
     includes.add("LibWeb/Bindings/Wrappable.h")

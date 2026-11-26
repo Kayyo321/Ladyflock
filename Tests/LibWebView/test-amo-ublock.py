@@ -16,8 +16,8 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from pathlib import Path
 
+from pathlib import Path
 
 TOOLS = runpy.run_path(str(Path(__file__).with_name("test-devtools-client-follows-the-tab.py")))
 ADDONS = {
@@ -44,7 +44,17 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             self.server.requests[self.path] += 1
 
         if request.path == "/fixture":
-            self.reply("text/html", "<!doctype html><title>Ad blocking fixture</title><main>Article</main>")
+            # Origin disables generic filtering on loopback; its bundled wildcard rule hides #sales-banner.
+            # Lite applies EasyList's .ad-slot generic rule here in Complete mode.
+            self.reply(
+                "text/html",
+                """<!doctype html><title>Ad blocking fixture</title>
+                <main id="article">Article</main>
+                <div id="target" class="pk-page-ready">
+                    <aside id="sales-banner" style="display: block !important">Advertisement</aside>
+                </div>
+                <aside class="ad-slot" style="display: block !important">Advertisement</aside>""",
+            )
         elif request.path in ("/adspop.js", "/article.js"):
             self.reply("text/javascript", "window.loadedFixtureScripts.push(document.currentScript.src)")
         else:
@@ -72,6 +82,7 @@ def wait(description, predicate, timeout=45):
 
 def test_addon(binary, fixture, key):
     addon_id = ADDONS[key]
+    ad_selector = "#sales-banner" if key == "origin" else ".ad-slot"
     base = f"http://127.0.0.1:{fixture.server_port}"
     with tempfile.TemporaryDirectory(prefix=f"ladyflock-amo-ublock-{key}-") as directory:
         profile = Path(directory) / "profile"
@@ -106,6 +117,23 @@ def test_addon(binary, fixture, key):
                 client.submit(f"location.href = {json.dumps(url)}; true")
                 TOOLS["wait_for_page"](client, url, title)
 
+            def element_is_visible(selector):
+                return evaluate(f"""(() => {{
+                    const target = {element(selector)};
+                    if (!target)
+                        throw new Error('Missing fixture element');
+                    const style = getComputedStyle(target);
+                    return style.display !== 'none' && style.visibility === 'visible'
+                        && target.getBoundingClientRect().height > 0;
+                }})()""")
+
+            def check_ad_hidden():
+                return evaluate(f"""(() => {{
+                    const ad = {element(ad_selector)};
+                    return ad !== null && getComputedStyle(ad).display === 'none'
+                        && ad.getClientRects().length === 0;
+                }})()""")
+
             def load_scripts(stage):
                 url = f"{base}/fixture?{key}-{stage}"
                 navigate(url, "Ad blocking fixture")
@@ -130,15 +158,26 @@ def test_addon(binary, fixture, key):
                 return evaluate("fixtureOutcomes.ad"), fixture.hits(ad)
 
             assert load_scripts("before") == ("executed", 1)
+            assert element_is_visible(ad_selector) and element_is_visible("#article")
             navigate("about:addons", "Add-ons")
-            wait("the Mozilla catalog search to be enabled", lambda: evaluate("document.querySelector('#search')?.disabled === false"))
+            wait(
+                "the Mozilla catalog search to be enabled",
+                lambda: evaluate("document.querySelector('#search')?.disabled === false"),
+            )
             evaluate("document.querySelector('#query').value = 'ublock'; true")
             click("#search")
             listing = f'[data-addon="{addon_id}"] button'
             wait(f"{addon_id} in live Mozilla Add-ons results", lambda: evaluate(f"!!{element(listing)}"))
             click(listing)
-            wait("signed package review", lambda: evaluate("document.querySelector('#review').open || document.querySelector('#notice').classList.contains('error')"))
-            assert evaluate("document.querySelector('#review').open"), evaluate("document.querySelector('#notice').innerText")
+            wait(
+                "signed package review",
+                lambda: evaluate(
+                    "document.querySelector('#review').open || document.querySelector('#notice').classList.contains('error')"
+                ),
+            )
+            assert evaluate("document.querySelector('#review').open"), evaluate(
+                "document.querySelector('#notice').innerText"
+            )
             assert "Verified signature" in evaluate("document.querySelector('#review').innerText")
             click("#confirm")
             installed = f'[data-extension="{addon_id}"]'
@@ -146,7 +185,32 @@ def test_addon(binary, fixture, key):
             registry = json.loads((profile / "data/extensions/registry.json").read_text())
             entry = next(row for row in registry["extensions"] if row["extension_id"] == addon_id)
             assert entry["source"] == "signed_xpi" and entry["verified_signature"] and entry["from_catalog"], entry
-            print(f"{addon_id} {entry['version']} SHA-256 {entry['sha256_hex']} installed from Mozilla Add-ons", flush=True)
+            print(
+                f"{addon_id} {entry['version']} SHA-256 {entry['sha256_hex']} installed from Mozilla Add-ons",
+                flush=True,
+            )
+
+            if key == "lite":
+                # Lite applies generic filters on every permitted site in Complete mode.
+                dashboard_url = f"moz-extension://{entry['uuid']}/dashboard.html"
+                # Headless manual mode uses a single view. Navigate it via the browser, as the
+                # real Options button does, so the privileged package document gets its APIs.
+                tab_actor = client.tab()["actor"]
+                client.send({"to": tab_actor, "type": "navigateTo", "url": dashboard_url})
+                client.receive_matching(lambda packet: packet.get("from") == tab_actor)
+                wait("the Lite dashboard", lambda: client.tab()["url"] == dashboard_url)
+                wait(
+                    "Lite settings to load",
+                    lambda: evaluate("Number.isInteger(self.cachedRulesetData?.defaultFilteringMode)"),
+                )
+                complete_mode = '#defaultFilteringMode .input > input[value="3"]'
+                if not evaluate("self.cachedRulesetData.defaultFilteringMode === 3"):
+                    click('#defaultFilteringMode .input:has(> input[value="3"])')
+                    wait(
+                        "Lite Complete filtering mode",
+                        lambda: evaluate("self.cachedRulesetData?.defaultFilteringMode === 3"),
+                    )
+                assert evaluate(f"{element(complete_mode)}.checked")
 
             # A persistent background can spend time compiling the stock lists on first install.
             deadline = time.monotonic() + 180
@@ -158,12 +222,26 @@ def test_addon(binary, fixture, key):
                     raise AssertionError(f"{addon_id} did not block the stock filter's ad request: {outcome!r}")
                 time.sleep(2)
 
+            navigate(f"{base}/fixture?{key}-cosmetic", "Ad blocking fixture")
+            wait(f"{addon_id} to hide the stock-filter ad element", check_ad_hidden)
+            assert element_is_visible("#article")
+
             navigate("about:addons", "Add-ons")
             wait("installed add-on controls", lambda: evaluate(f"!!{element(installed)}"))
             click(installed + " .entry-header .switch-label")
-            wait("extension to be disabled", lambda: evaluate(f"{element(installed + ' [data-control=enabled]')}?.checked === false"))
+            wait(
+                "extension to be disabled",
+                lambda: evaluate(f"{element(installed + ' [data-control=enabled]')}?.checked === false"),
+            )
             assert load_scripts("disabled") == ("executed", 1)
-            print(f"PASS {addon_id}: only the ad request was blocked, and it reached the server after disable", flush=True)
+            assert element_is_visible(ad_selector) and element_is_visible("#article")
+            print(
+                f"PASS {addon_id}: only the ad request was blocked, and it reached the server after disable", flush=True
+            )
+            print(
+                f"PASS {addon_id}: the ad element lost its layout box, the article stayed visible, and disabling restored the ad",
+                flush=True,
+            )
         finally:
             client.close()
             TOOLS["stop"](process)

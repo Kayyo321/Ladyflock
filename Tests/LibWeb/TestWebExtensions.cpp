@@ -21,6 +21,8 @@
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/HTMLDocument.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
+#include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
+#include <LibWeb/HTML/Scripting/WindowRealm.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Platform/FontPlugin.h>
@@ -533,6 +535,54 @@ TEST_CASE(extension_content_script_host_isolated_world_and_css)
         auto css_after_revoke = document->extension_style_sheet_source()->to_utf8();
         EXPECT(!css_after_revoke.bytes_as_string_view().contains("rgb(1, 2, 3)"sv));
     }
+}
+
+TEST_CASE(extension_content_script_window_matches_pending_document)
+{
+    install_test_font_plugin();
+    auto principal_realm = Web::Bindings::create_a_principal_javascript_realm();
+    VERIFY(principal_realm.ptr());
+    auto& vm = Web::Bindings::main_thread_vm();
+
+    auto client = vm.heap().allocate<ExtensionTestPageClient>();
+    auto page = Web::Page::create(client);
+    client->m_page = page.ptr();
+    auto traversable = Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {});
+    page->set_top_level_traversable(traversable);
+    auto active_document = GC::Ref { *traversable->active_document() };
+    auto browsing_context = GC::Ref { *active_document->browsing_context() };
+
+    auto next_url = URL::Parser::basic_parse("https://next.example/"sv).release_value();
+    GC::Ptr<Web::HTML::Window> next_window;
+    auto execution_context = Web::HTML::create_window_realm(next_window, *browsing_context, Web::HTML::CrossOriginIsolationMode::None);
+    Web::HTML::WindowEnvironmentSettingsObject::setup(*page, next_url, move(execution_context), nullptr, next_url, next_url.origin(), {}, Web::HTML::CrossOriginIsolationMode::None);
+    auto next_document = Web::HTML::HTMLDocument::create(*page, next_window.as_nonnull(), next_url);
+    next_document->set_window(next_window.as_nonnull());
+    next_document->set_origin(next_url.origin());
+    next_document->set_browsing_context(browsing_context);
+    next_window->set_associated_document(*next_document);
+
+    auto extension = Web::Bindings::ExtensionRealmContext::create_for_content_script(*next_document,
+        "ext@test"_string, "11111111-2222-4333-8444-555555555555"_string, 1);
+    ScopeGuard revoke_extension = [&] { extension->revoke_and_detach(); };
+    auto before_activation = extension->evaluate_script(R"(
+        self.filterState = 'pending';
+        self === globalThis && self === window && self === document.defaultView
+            && self.document === document && self.location === document.location
+            && document.location.origin === 'https://next.example'
+            && typeof self.browser === 'object';
+    )"sv,
+        "start.js"sv, true);
+    EXPECT_EQ(before_activation, Optional<String> { R"({"result":true})"_string });
+
+    browsing_context->set_active_window(next_window.as_nonnull());
+    auto after_activation = extension->evaluate_script("self.filterState === 'pending' && self === window"sv, "idle.js"sv, true);
+    EXPECT_EQ(after_activation, Optional<String> { R"({"result":true})"_string });
+
+    // Retarget the browsing context's ordinary proxy and check that the extension keeps its own document.
+    browsing_context->set_active_window(GC::Ref { *active_document->window() });
+    auto after_retarget = extension->evaluate_script("self.filterState === 'pending' && document.location.hostname === 'next.example'"sv, "retarget.js"sv, true);
+    EXPECT_EQ(after_retarget, Optional<String> { R"({"result":true})"_string });
 }
 
 TEST_CASE(extension_public_suffix_api_requires_permission)

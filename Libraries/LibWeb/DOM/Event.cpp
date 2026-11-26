@@ -16,7 +16,6 @@
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
-#include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowProxy.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
@@ -349,11 +348,8 @@ JS::Value event(JS::Realm& realm, GC::Ref<DOM::Event> event)
 GC::Ptr<JS::Object> current_target_wrapper(JS::Realm& realm, DOM::Event const& event)
 {
     auto current_target = event.current_target();
-    if (auto* window = as_if<HTML::Window>(current_target.ptr())) {
-        if (auto browsing_context = window->browsing_context())
-            return browsing_context->window_proxy_for(Bindings::host_defined_wrapper_world(realm), realm)->object();
-        return window->window()->object();
-    }
+    if (auto* window = as_if<HTML::Window>(current_target.ptr()))
+        return window->window()->object_for_realm(realm);
     return wrap(host_defined_wrapper_world(realm), realm, current_target);
 }
 

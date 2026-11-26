@@ -12,7 +12,7 @@ Choose **Extensions → Manage extensions** in the toolbar or visit `about:addon
 
 Launch with `--enable-amo-catalog` to try search and installation from Mozilla Add-ons. Use `--load-extension /path/to/unpacked-extension` in a development profile to load a local unpacked extension.
 
-The Add-ons page lists supported manifest keys, permissions, and APIs. The **Tested in Ladyflock** label applies to a specific package version and hash. For uBlock Origin and uBlock Origin Lite, the test covers signed installation from Mozilla Add-ons and default network ad blocking. Cosmetic filtering and advanced rule modes have limited support. Extensions run in regular profiles.
+The Add-ons page lists supported manifest keys, permissions, and APIs. The **Tested in Ladyflock** label applies to a specific package version and hash. For uBlock Origin and uBlock Origin Lite, the test covers signed installation from Mozilla Add-ons, default network ad blocking, and hiding ad elements with bundled cosmetic filters. The test uses Lite's **Complete** mode for generic cosmetic filtering. Advanced rule modes have limited support. Extensions run in regular profiles.
 
 To repeat the live check with a built browser, run `python3 Tests/LibWebView/test-amo-ublock.py /path/to/Ladybird`. It uses separate disposable profiles and a loopback HTTP server.
 

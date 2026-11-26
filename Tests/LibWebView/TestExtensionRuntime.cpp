@@ -393,6 +393,7 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
         "version": "1.0",
         "browser_specific_settings": { "gecko": { "id": "beastify@ladyflock.example" } },
         "permissions": ["activeTab", "scripting", "storage"],
+        "optional_host_permissions": ["http://localhost/*"],
         "background": { "scripts": ["bg.js"], "type": "module" },
         "action": { "default_title": "Beastify" },
         "web_accessible_resources": [{
@@ -407,6 +408,9 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
         import title from './signal.mjs';
 
         chrome.action.onClicked.addListener(async (tab) => {
+            const alreadyGranted = await browser.permissions.request({ permissions: ['storage'] });
+            const ungranted = await browser.permissions.request({ origins: ['http://localhost/*'] });
+            await browser.storage.local.set({ alreadyGranted, ungranted });
             await browser.storage.session.set({ title });
             const saved = await browser.storage.session.get('title');
             await chrome.scripting.insertCSS({
@@ -461,6 +465,10 @@ TEST_CASE(mv2_event_page_wakeup_idle_teardown_and_mv3_activetab_scripting)
     EXPECT_EQ(mgr.invoke_action_for_tab(mv3_ext.extension_id, view->view_id(), 1), WebView::Extensions::ExtensionActionController::InvokeOutcome::DispatchedOnClicked);
     EXPECT(mgr.has_host_permission(mv3_ext.extension_id, url_127, view->view_id()));
     Core::EventLoop::current().spin_until([&] { return titles.contains_slow("MV3_SCRIPTED"_utf16); });
+    auto permissions_results = mgr.storage().get(mv3_ext.extension_id, JsonValue {});
+    EXPECT_EQ(permissions_results.get_bool("alreadyGranted"sv), Optional<bool> { true });
+    EXPECT_EQ(permissions_results.get_bool("ungranted"sv), Optional<bool> { false });
+    EXPECT(!mgr.has_host_permission(mv3_ext.extension_id, url_local, view->view_id()));
 
     // Navigating to a new page clears activeTab grant.
     size_t prev_loads = loads;
@@ -502,14 +510,17 @@ TEST_CASE(registered_scripts_honor_host_access_world_and_session_storage)
             await browser.storage.session.set({ marker: 'session-ok' });
             await browser.scripting.registerContentScripts([
                 { id: 'main', matches: ['<all_urls>'], js: ['main.js'], world: 'MAIN' },
-                { id: 'isolated', matches: ['<all_urls>'], js: ['isolated.js'] },
+                { id: 'isolated', matches: ['<all_urls>'], js: ['isolated.js'], runAt: 'document_start' },
             ]);
             const registered = await browser.scripting.getRegisteredContentScripts({ ids: ['isolated'] });
             await browser.storage.local.set({ installed: registered[0].id });
         });
         browser.runtime.onConnect.addListener(port => {
             port.onMessage.addListener(async message => {
-                const valid = port.name === 'session-fixture' && port.sender.frameId === 0 && message instanceof Set && message.has('request');
+                const { frameId, url, documentId, tab } = port.sender;
+                const valid = port.name === 'session-fixture' && frameId === 0
+                    && url?.startsWith('http://127.0.0.1:') && typeof documentId === 'string' && tab?.id > 0
+                    && message instanceof Set && message.has('request');
                 if (valid) await browser.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
                 port.postMessage({ granted: valid });
                 port.disconnect();
@@ -518,11 +529,13 @@ TEST_CASE(registered_scripts_honor_host_access_world_and_session_storage)
     )"sv);
     write_ext_file(extension_directory, "main.js"sv, R"(
         globalThis.mainMarker = typeof browser === 'undefined' ? 'main-ok' : 'leak';
+        // Either script can finish first. Notify the page's observer when this one is ready, too.
+        document.documentElement.dataset.mainScriptReady = 'true';
     )"sv);
     write_ext_file(extension_directory, "isolated.js"sv, R"(
         (async () => {
             globalThis.isolatedMarker = true;
-            const denied = await browser.storage.session.get('marker').then(() => false, () => true);
+            const denied = browser.storage.session.get('marker').then(() => false, () => true);
             const { granted, disconnected } = await new Promise(resolve => {
                 const port = browser.runtime.connect({ name: 'session-fixture' });
                 let granted = false;
@@ -530,8 +543,11 @@ TEST_CASE(registered_scripts_honor_host_access_world_and_session_storage)
                 port.onDisconnect.addListener(() => resolve({ granted, disconnected: true }));
                 port.postMessage(new Set(['request']));
             });
-            const { marker } = await browser.storage.session.get('marker');
-            document.documentElement.dataset.session = denied && granted && disconnected ? marker : 'denial-failed';
+            const { marker } = granted ? await browser.storage.session.get('marker') : {};
+            if (document.readyState === 'loading') {
+                await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+            }
+            document.documentElement.dataset.session = (await denied) && granted && disconnected ? marker : 'denial-failed';
         })();
     )"sv);
 
@@ -557,7 +573,13 @@ TEST_CASE(registered_scripts_honor_host_access_world_and_session_storage)
     load("localhost"sv);
     EXPECT(!titles.contains_slow("main-ok:session-ok:undefined"_utf16));
     load("127.0.0.1"sv);
-    Core::EventLoop::current().spin_until([&] { return titles.contains_slow("main-ok:session-ok:undefined"_utf16); });
+    Core::EventLoop::current().spin_until([&] {
+        if (titles.is_empty())
+            return false;
+        auto title = titles.last().utf16_view();
+        return title.starts_with("main-ok:"sv) || title.starts_with("leak:"sv);
+    });
+    EXPECT_EQ(titles.last(), "main-ok:session-ok:undefined"_utf16);
 }
 
 TEST_CASE(mv2_content_script_handle_registers_ordered_sources_and_unregisters)

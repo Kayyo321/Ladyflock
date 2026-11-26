@@ -8,6 +8,7 @@
 #include <LibGC/RootVector.h>
 #include <LibJS/HostClassBuilder.h>
 #include <LibJS/Runtime/Completion.h>
+#include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/PropertyDescriptor.h>
 #include <LibJS/Runtime/PropertyKey.h>
@@ -15,6 +16,7 @@
 #include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CrossOrigin/AbstractOperations.h>
 #include <LibWeb/HTML/CrossOrigin/Reporting.h>
 #include <LibWeb/HTML/LocalNavigable.h>
@@ -108,6 +110,19 @@ GC::Ref<WindowProxy> WindowProxy::create(JS::Realm& realm)
 WindowProxy::WindowProxy(GC::Ref<JS::HostObject> object)
     : m_object(object)
 {
+}
+
+JS::Object& WindowProxy::object_for_realm(JS::Realm& realm) const
+{
+    auto& world = Bindings::host_defined_wrapper_world(realm);
+    if (world.type() == Bindings::WrapperWorld::Type::Extension) {
+        auto& principal_realm = principal_realm_settings_object(realm).realm();
+        if (&object() == &principal_realm.global_environment().global_this_value())
+            return realm.global_environment().global_this_value();
+    }
+    if (auto browsing_context = associated_browsing_context())
+        return browsing_context->window_proxy_for(world, realm)->object();
+    return object();
 }
 
 JS::Realm& WindowProxy::realm() const

@@ -36,7 +36,6 @@
 #include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Document.h>
-#include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
@@ -187,22 +186,20 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_content_script(
 {
     auto& vm = main_thread_vm();
     auto window = GC::Ref { *document.window() };
-    auto browsing_context = document.browsing_context();
     auto extension_world = vm.heap().allocate<WrapperWorld>(WrapperWorld::Type::Extension);
 
-    GC::Ptr<JS::Object> fallback_global_this;
     auto execution_context = create_a_new_javascript_realm(
         vm,
         HTML::CrossOriginIsolationMode::None,
         [&](JS::Realm& realm) -> GC::Ref<JS::Object> {
-            auto global = create_global_object_wrapper(realm, GC::Ref { *window });
-            fallback_global_this = global;
-            return global;
+            return create_global_object_wrapper(realm, window);
         },
         [&](JS::Realm& realm) -> GC::Ref<JS::Object> {
-            if (browsing_context)
-                return browsing_context->window_proxy_for(*extension_world, realm)->object();
-            return *fallback_global_this;
+            // Content scripts can run before their document becomes active. Their global must remain bound
+            // to that document's Window throughout navigation of the browsing context.
+            auto proxy = HTML::WindowProxy::create(realm);
+            proxy->set_window(window);
+            return proxy->object();
         });
 
     auto& extension_realm = *execution_context->realm();
@@ -349,17 +346,13 @@ Optional<String> ExtensionRealmContext::evaluate_script(StringView source, Strin
     }
 
     auto& vm = main_thread_vm();
-    bool pushed_custom_context = false;
-    Optional<HTML::TemporaryExecutionContext> temp_context;
-
-    if (m_execution_context) {
+    // DOM APIs need the owning Window's settings object as their entry context even when JS
+    // runs in the isolated realm.
+    HTML::TemporaryExecutionContext entry_context(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+    if (m_execution_context)
         vm.push_execution_context(*m_execution_context);
-        pushed_custom_context = true;
-    } else {
-        temp_context.emplace(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
-    }
     ScopeGuard pop_context = [&] {
-        if (pushed_custom_context) {
+        if (m_execution_context) {
             auto* popped = vm.pop_execution_context();
             VERIFY(popped == m_execution_context.ptr());
         }
@@ -1069,7 +1062,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         root->define_direct_property("sidebarAction"_utf16_fly_string, create_namespace_object("sidebarAction"sv, sidebar_methods.span(), is_chrome), JS::default_attributes);
 
         // permissions
-        static constexpr Array permissions_methods { "contains"sv, "getAll"sv, "remove"sv };
+        static constexpr Array permissions_methods { "contains"sv, "getAll"sv, "remove"sv, "request"sv };
         auto perms_obj = create_namespace_object("permissions"sv, permissions_methods.span(), is_chrome);
         perms_obj.as_object().define_direct_property("onAdded"_utf16_fly_string, create_event_object("permissions"sv, "onAdded"sv), JS::default_attributes);
         perms_obj.as_object().define_direct_property("onRemoved"_utf16_fly_string, create_event_object("permissions"sv, "onRemoved"sv), JS::default_attributes);
@@ -1102,16 +1095,11 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
         return;
 
     auto& vm = main_thread_vm();
-    bool pushed_custom_context = false;
-    Optional<HTML::TemporaryExecutionContext> temp_context;
-    if (m_execution_context) {
+    HTML::TemporaryExecutionContext entry_context(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+    if (m_execution_context)
         vm.push_execution_context(*m_execution_context);
-        pushed_custom_context = true;
-    } else {
-        temp_context.emplace(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
-    }
     ScopeGuard pop_context = [&] {
-        if (pushed_custom_context) {
+        if (m_execution_context) {
             auto* popped = vm.pop_execution_context();
             VERIFY(popped == m_execution_context.ptr());
         }
@@ -1212,16 +1200,11 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
     }
 
     auto& vm = main_thread_vm();
-    bool pushed_custom_context = false;
-    Optional<HTML::TemporaryExecutionContext> temp_context;
-    if (m_execution_context) {
+    HTML::TemporaryExecutionContext entry_context(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+    if (m_execution_context)
         vm.push_execution_context(*m_execution_context);
-        pushed_custom_context = true;
-    } else {
-        temp_context.emplace(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
-    }
     ScopeGuard pop_context = [&] {
-        if (pushed_custom_context) {
+        if (m_execution_context) {
             auto* popped = vm.pop_execution_context();
             VERIFY(popped == m_execution_context.ptr());
         }

@@ -5431,8 +5431,13 @@ GC::Ptr<HTML::Location> Document::location()
     // The Document object's location attribute's getter must return this Document object's relevant global object's Location object,
     // if this Document object is fully active, and null otherwise.
 
-    if (!is_fully_active())
-        return nullptr;
+    if (!is_fully_active()) {
+        // An isolated content script can start before its own document becomes active.
+        auto realm = JS::VM::the().current_realm();
+        if (!realm || !realm->host_defined() || Bindings::host_defined_wrapper_world(*realm).type() != Bindings::WrapperWorld::Type::Extension
+            || !window() || HTML::window_from_global_object(realm->global_object()) != window().ptr())
+            return nullptr;
+    }
 
     return window()->location();
 }
@@ -12567,12 +12572,20 @@ Optional<Utf16String> Document::extension_style_sheet_source() const
     return Utf16String::from_utf8(builder.string_view());
 }
 
+static void extension_style_sheets_changed(Document& document)
+{
+    document.style_scope().invalidate_user_style_sheet();
+    // The first style update takes in these rules on its own. Publish changes immediately once styles exist.
+    if (document.has_completed_style_update())
+        CSS::record_non_author_stylesheets(document);
+}
+
 void Document::add_extension_style_sheet(String extension_id, String key, String css)
 {
     for (auto& entry : m_extension_style_sheets) {
         if (entry.extension_id == extension_id && entry.key == key) {
             entry.css = move(css);
-            style_scope().invalidate_user_style_sheet();
+            extension_style_sheets_changed(*this);
             return;
         }
     }
@@ -12581,7 +12594,7 @@ void Document::add_extension_style_sheet(String extension_id, String key, String
         .key = move(key),
         .css = move(css),
     });
-    style_scope().invalidate_user_style_sheet();
+    extension_style_sheets_changed(*this);
 }
 
 void Document::remove_extension_style_sheet(StringView extension_id, StringView key)
@@ -12595,7 +12608,7 @@ void Document::remove_extension_style_sheet(StringView extension_id, StringView 
         return false;
     });
     if (removed)
-        style_scope().invalidate_user_style_sheet();
+        extension_style_sheets_changed(*this);
 }
 
 void Document::remove_all_extension_style_sheets_for_extension(StringView extension_id)
@@ -12609,7 +12622,7 @@ void Document::remove_all_extension_style_sheets_for_extension(StringView extens
         return false;
     });
     if (removed)
-        style_scope().invalidate_user_style_sheet();
+        extension_style_sheets_changed(*this);
 }
 
 Extensions::ExtensionContentScriptHost& Document::ensure_extension_content_script_host()

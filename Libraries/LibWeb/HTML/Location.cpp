@@ -291,7 +291,12 @@ GC::Ptr<DOM::Document> Location::relevant_document() const
     // A Location object has an associated relevant Document, which is this Location object's
     // relevant global object's browsing context's active document, if this Location object's
     // relevant global object's browsing context is non-null, and null otherwise.
-    auto browsing_context = window()->browsing_context();
+    auto location_window = window();
+    auto realm = JS::VM::the().current_realm();
+    if (location_window && realm && realm->host_defined() && Bindings::host_defined_wrapper_world(*realm).type() == Bindings::WrapperWorld::Type::Extension
+        && window_from_global_object(realm->global_object()) == location_window.ptr())
+        return &location_window->associated_document();
+    auto browsing_context = location_window->browsing_context();
     return browsing_context ? browsing_context->active_document() : nullptr;
 }
 
