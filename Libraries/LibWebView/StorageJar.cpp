@@ -8,6 +8,7 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/StdLibExtras.h>
 #include <LibDatabase/Database.h>
+#include <LibPrivacy/Storage/PartitionKey.h>
 #include <LibWebView/StorageAreaRegistry.h>
 #include <LibWebView/StorageJar.h>
 
@@ -17,6 +18,18 @@ using Web::StorageAPI::storage_quota_size;
 namespace WebView {
 
 static constexpr u32 WEB_STORAGE_SCHEMA_BASELINE_VERSION = 2u;
+static constexpr u32 WEB_STORAGE_SCHEMA_IDENTITY_PARTITION_VERSION = 3u;
+
+static Function<ErrorOr<void>(size_t)>& migration_fault_hook_for_testing()
+{
+    static auto* hook = new Function<ErrorOr<void>(size_t)>;
+    return *hook;
+}
+
+void StorageJar::set_migration_fault_hook_for_testing(Function<ErrorOr<void>(size_t migrated_rows)> hook)
+{
+    migration_fault_hook_for_testing() = move(hook);
+}
 
 ErrorOr<Database::MigrationOutcome> StorageJar::migrate_schema(Database::Database& database, Database::MigrationMode mode)
 {
@@ -34,40 +47,150 @@ ErrorOr<Database::MigrationOutcome> StorageJar::migrate_schema(Database::Databas
                 );
             )#"sv,
         },
+        {
+            .version = WEB_STORAGE_SCHEMA_IDENTITY_PARTITION_VERSION,
+            .sql = R"#(
+                CREATE TABLE WebStorageV3 (
+                    identity_id TEXT NOT NULL DEFAULT 'default',
+                    storage_endpoint INTEGER,
+                    storage_key TEXT,
+                    bottle_key TEXT,
+                    bottle_value TEXT,
+                    last_access_time INTEGER,
+                    PRIMARY KEY(identity_id, storage_endpoint, storage_key, bottle_key)
+                );
+                CREATE TABLE WebStorageLegacyQuarantine (
+                    storage_endpoint INTEGER,
+                    legacy_storage_key TEXT,
+                    bottle_key TEXT,
+                    bottle_value TEXT,
+                    last_access_time INTEGER,
+                    reason TEXT NOT NULL,
+                    PRIMARY KEY(storage_endpoint, legacy_storage_key, bottle_key)
+                );
+            )#"sv,
+            .backfill = [](Database::Database& db) -> ErrorOr<void> {
+                struct LegacyRow {
+                    i64 storage_endpoint { 0 };
+                    String storage_key;
+                    Utf16String bottle_key;
+                    Utf16String bottle_value;
+                    UnixDateTime last_access_time;
+                };
+
+                Vector<LegacyRow> legacy_rows;
+                auto select_legacy = TRY(db.prepare_statement("SELECT storage_endpoint, storage_key, bottle_key, bottle_value, last_access_time FROM WebStorage;"sv));
+                TRY(db.try_execute_statement(select_legacy, [&](auto statement_id) -> ErrorOr<void> {
+                    TRY(legacy_rows.try_append(LegacyRow {
+                        .storage_endpoint = db.result_column<i64>(statement_id, 0),
+                        .storage_key = db.result_column<String>(statement_id, 1),
+                        .bottle_key = db.result_column<Utf16String>(statement_id, 2),
+                        .bottle_value = db.result_column<Utf16String>(statement_id, 3),
+                        .last_access_time = db.result_column<UnixDateTime>(statement_id, 4),
+                    }));
+                    return {};
+                }));
+
+                auto insert_migrated = TRY(db.prepare_statement(
+                    "INSERT OR REPLACE INTO WebStorageV3 (identity_id, storage_endpoint, storage_key, bottle_key, bottle_value, last_access_time) VALUES ('default', ?, ?, ?, ?, ?);"sv));
+                auto insert_quarantine = TRY(db.prepare_statement(
+                    "INSERT OR REPLACE INTO WebStorageLegacyQuarantine (storage_endpoint, legacy_storage_key, bottle_key, bottle_value, last_access_time, reason) VALUES (?, ?, ?, ?, ?, ?);"sv));
+
+                size_t migrated_rows = 0;
+                for (auto const& row : legacy_rows) {
+                    if (auto& hook = migration_fault_hook_for_testing(); hook)
+                        TRY(hook(migrated_rows));
+
+                    auto classification = Privacy::classify_legacy_storage_key(row.storage_key.bytes_as_string_view());
+                    if (classification.action != Privacy::LegacyStorageKeyAction::Quarantine && classification.migrated_storage_key.has_value()) {
+                        TRY(db.try_execute_statement(insert_migrated, {},
+                            row.storage_endpoint,
+                            *classification.migrated_storage_key,
+                            row.bottle_key,
+                            row.bottle_value,
+                            row.last_access_time));
+                    } else {
+                        auto reason = MUST(String::from_utf8(classification.quarantine_reason.view()));
+                        TRY(db.try_execute_statement(insert_quarantine, {},
+                            row.storage_endpoint,
+                            row.storage_key,
+                            row.bottle_key,
+                            row.bottle_value,
+                            row.last_access_time,
+                            reason));
+                    }
+                    ++migrated_rows;
+                }
+
+                TRY(db.execute_raw("DROP TABLE WebStorage; ALTER TABLE WebStorageV3 RENAME TO WebStorage;"sv));
+                return {};
+            },
+        },
     });
 
     return database.migrate("WebStorage"sv, migrations, mode);
 }
 
-ErrorOr<NonnullOwnPtr<StorageJar>> StorageJar::create(Database::Database& database)
+ErrorOr<NonnullOwnPtr<StorageJar>> StorageJar::create(Database::Database& database, String identity_id)
 {
     Statements statements {};
 
-    statements.get_item = TRY(database.prepare_statement("SELECT bottle_value FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ? AND bottle_key = ?;"sv));
-    statements.set_item = TRY(database.prepare_statement("INSERT OR REPLACE INTO WebStorage (storage_endpoint, storage_key, bottle_key, bottle_value, last_access_time) VALUES (?, ?, ?, ?, ?);"sv));
-    statements.delete_item = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ? AND bottle_key = ?;"sv));
-    statements.delete_items_accessed_since = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE last_access_time >= ?;"sv));
-    statements.bottles_accessed_since = TRY(database.prepare_statement("SELECT DISTINCT storage_endpoint, storage_key FROM WebStorage WHERE last_access_time >= ?;"sv));
-    statements.mark_accessed = TRY(database.prepare_statement("UPDATE WebStorage SET last_access_time = ? WHERE storage_endpoint = ? AND storage_key = ?;"sv));
-    statements.clear = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ?;"sv));
-    statements.get_keys = TRY(database.prepare_statement("SELECT bottle_key FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ?;"sv));
-    statements.get_items = TRY(database.prepare_statement("SELECT bottle_key, bottle_value FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ?;"sv));
-    statements.calculate_size_excluding_bottle_key = TRY(database.prepare_statement("SELECT COALESCE(SUM(OCTET_LENGTH(bottle_key) + OCTET_LENGTH(bottle_value)), 0) FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ? AND bottle_key != ?;"sv));
-    statements.calculate_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE storage_key = ?;"sv));
-    statements.calculate_bottle_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE storage_endpoint = ? AND storage_key = ?;"sv));
-    statements.estimate_storage_size_accessed_since = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(storage_key), 0) + COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE last_access_time >= ?;"sv));
+    statements.get_item = TRY(database.prepare_statement("SELECT bottle_value FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ? AND bottle_key = ?;"sv));
+    statements.set_item = TRY(database.prepare_statement("INSERT OR REPLACE INTO WebStorage (identity_id, storage_endpoint, storage_key, bottle_key, bottle_value, last_access_time) VALUES (?, ?, ?, ?, ?, ?);"sv));
+    statements.delete_item = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ? AND bottle_key = ?;"sv));
+    statements.delete_items_accessed_since = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE identity_id = ? AND last_access_time >= ?;"sv));
+    statements.bottles_accessed_since = TRY(database.prepare_statement("SELECT DISTINCT storage_endpoint, storage_key FROM WebStorage WHERE identity_id = ? AND last_access_time >= ?;"sv));
+    statements.mark_accessed = TRY(database.prepare_statement("UPDATE WebStorage SET last_access_time = ? WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ?;"sv));
+    statements.clear = TRY(database.prepare_statement("DELETE FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ?;"sv));
+    statements.get_keys = TRY(database.prepare_statement("SELECT bottle_key FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ?;"sv));
+    statements.get_items = TRY(database.prepare_statement("SELECT bottle_key, bottle_value FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ?;"sv));
+    statements.calculate_size_excluding_bottle_key = TRY(database.prepare_statement("SELECT COALESCE(SUM(OCTET_LENGTH(bottle_key) + OCTET_LENGTH(bottle_value)), 0) FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ? AND bottle_key != ?;"sv));
+    statements.calculate_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE identity_id = ? AND storage_key = ?;"sv));
+    statements.calculate_bottle_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE identity_id = ? AND storage_endpoint = ? AND storage_key = ?;"sv));
+    statements.estimate_storage_size_accessed_since = TRY(database.prepare_statement("SELECT COALESCE(SUM(COALESCE(OCTET_LENGTH(storage_key), 0) + COALESCE(OCTET_LENGTH(bottle_key), 0) + COALESCE(OCTET_LENGTH(bottle_value), 0)), 0) FROM WebStorage WHERE identity_id = ? AND last_access_time >= ?;"sv));
+    statements.select_quarantined = TRY(database.prepare_statement("SELECT storage_endpoint, legacy_storage_key, bottle_key, bottle_value, reason FROM WebStorageLegacyQuarantine ORDER BY legacy_storage_key, bottle_key;"sv));
+    statements.clear_quarantined = TRY(database.prepare_statement("DELETE FROM WebStorageLegacyQuarantine;"sv));
 
-    return adopt_own(*new StorageJar { PersistedStorage { database, statements } });
+    return adopt_own(*new StorageJar { PersistedStorage { database, statements, identity_id }, identity_id });
 }
 
 NonnullOwnPtr<StorageJar> StorageJar::create()
 {
-    return adopt_own(*new StorageJar { OptionalNone {} });
+    return adopt_own(*new StorageJar { OptionalNone {}, "ephemeral"_string });
 }
 
-StorageJar::StorageJar(Optional<PersistedStorage> persisted_storage)
+StorageJar::StorageJar(Optional<PersistedStorage> persisted_storage, String identity_id)
     : m_persisted_storage(move(persisted_storage))
+    , m_identity_id(move(identity_id))
 {
+}
+
+Vector<QuarantinedStorageEntry> StorageJar::quarantined_legacy_entries() const
+{
+    Vector<QuarantinedStorageEntry> entries;
+    if (!m_persisted_storage.has_value() || m_identity_id != "default"sv)
+        return entries;
+
+    m_persisted_storage->database->execute_statement(
+        m_persisted_storage->statements.select_quarantined,
+        [&](auto statement_id) -> ErrorOr<void> {
+            entries.append({
+                .storage_endpoint = static_cast<StorageEndpointType>(m_persisted_storage->database->result_column<i64>(statement_id, 0)),
+                .legacy_storage_key = m_persisted_storage->database->result_column<String>(statement_id, 1),
+                .bottle_key = m_persisted_storage->database->result_column<Utf16String>(statement_id, 2),
+                .bottle_value = m_persisted_storage->database->result_column<Utf16String>(statement_id, 3),
+                .reason = m_persisted_storage->database->result_column<String>(statement_id, 4),
+            });
+            return {};
+        });
+    return entries;
+}
+
+void StorageJar::clear_quarantined_legacy_entries()
+{
+    if (!m_persisted_storage.has_value() || m_identity_id != "default"sv)
+        return;
+    m_persisted_storage->database->execute_statement(m_persisted_storage->statements.clear_quarantined, {});
 }
 
 StorageJar::~StorageJar()
@@ -321,6 +444,7 @@ Optional<Utf16String> StorageJar::PersistedStorage::get_item(StorageLocation con
             result = database->result_column<Utf16String>(statement_id, 0);
             return {};
         },
+        identity_id,
         to_underlying(key.storage_endpoint),
         key.storage_key,
         key.bottle_key);
@@ -338,6 +462,7 @@ Vector<StorageItem> StorageJar::PersistedStorage::get_items(StorageEndpointType 
             items.append({ database->result_column<Utf16String>(statement_id, 0), database->result_column<Utf16String>(statement_id, 1) });
             return {};
         },
+        identity_id,
         to_underlying(storage_endpoint),
         storage_key);
 
@@ -355,6 +480,7 @@ StorageSetResult StorageJar::PersistedStorage::set_item(StorageLocation const& k
             current_size = database->result_column<i64>(statement_id, 0);
             return {};
         },
+        identity_id,
         to_underlying(key.storage_endpoint),
         key.storage_key,
         key.bottle_key);
@@ -366,6 +492,7 @@ StorageSetResult StorageJar::PersistedStorage::set_item(StorageLocation const& k
     database->execute_statement(
         statements.set_item,
         {},
+        identity_id,
         to_underlying(key.storage_endpoint),
         key.storage_key,
         key.bottle_key,
@@ -380,6 +507,7 @@ void StorageJar::PersistedStorage::delete_item(StorageLocation const& key)
     database->execute_statement(
         statements.delete_item,
         {},
+        identity_id,
         to_underlying(key.storage_endpoint),
         key.storage_key,
         key.bottle_key);
@@ -395,9 +523,10 @@ Vector<StorageBottleLocation> StorageJar::PersistedStorage::delete_items_accesse
             affected_bottles.append({ static_cast<StorageEndpointType>(database->result_column<i64>(statement_id, 0)), database->result_column<String>(statement_id, 1) });
             return {};
         },
+        identity_id,
         since);
 
-    database->execute_statement(statements.delete_items_accessed_since, {}, since);
+    database->execute_statement(statements.delete_items_accessed_since, {}, identity_id, since);
     return affected_bottles;
 }
 
@@ -407,6 +536,7 @@ void StorageJar::PersistedStorage::mark_accessed(StorageEndpointType storage_end
         statements.mark_accessed,
         {},
         UnixDateTime::now(),
+        identity_id,
         to_underlying(storage_endpoint),
         storage_key);
 }
@@ -420,6 +550,7 @@ u64 StorageJar::PersistedStorage::bottle_usage(StorageEndpointType storage_endpo
             current_size_in_bytes = static_cast<u64>(database->result_column<i64>(statement_id, 0));
             return {};
         },
+        identity_id,
         to_underlying(storage_endpoint),
         storage_key);
     return current_size_in_bytes;
@@ -430,6 +561,7 @@ void StorageJar::PersistedStorage::clear(StorageEndpointType storage_endpoint, S
     database->execute_statement(
         statements.clear,
         {},
+        identity_id,
         to_underlying(storage_endpoint),
         storage_key);
 }
@@ -444,6 +576,7 @@ Vector<Utf16String> StorageJar::PersistedStorage::get_keys(StorageEndpointType s
             keys.append(database->result_column<Utf16String>(statement_id, 0));
             return {};
         },
+        identity_id,
         to_underlying(storage_endpoint),
         storage_key);
 
@@ -459,6 +592,7 @@ u64 StorageJar::PersistedStorage::usage(String const& storage_key)
             current_size_in_bytes = static_cast<u64>(database->result_column<i64>(statement_id, 0));
             return {};
         },
+        identity_id,
         storage_key);
     return current_size_in_bytes;
 }
@@ -470,11 +604,13 @@ Requests::CacheSizes StorageJar::PersistedStorage::estimate_storage_size_accesse
     database->execute_statement(
         statements.estimate_storage_size_accessed_since,
         [&](auto statement_id) -> ErrorOr<void> { sizes.since_requested_time = static_cast<u64>(database->result_column<i64>(statement_id, 0)); return {}; },
+        identity_id,
         since);
 
     database->execute_statement(
         statements.estimate_storage_size_accessed_since,
         [&](auto statement_id) -> ErrorOr<void> { sizes.total = static_cast<u64>(database->result_column<i64>(statement_id, 0)); return {}; },
+        identity_id,
         UnixDateTime::earliest());
 
     return sizes;

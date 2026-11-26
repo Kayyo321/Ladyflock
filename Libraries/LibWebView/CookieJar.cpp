@@ -30,6 +30,7 @@ static constexpr auto DATABASE_SYNCHRONIZATION_TIMER = AK::Duration::from_second
 static constexpr u32 COOKIES_SCHEMA_BASELINE_VERSION = 1u;
 static constexpr u32 COOKIES_SCHEMA_PARTITION_KEY_VERSION = 2u;
 static constexpr u32 COOKIES_SCHEMA_HOST_ONLY_KEY_VERSION = 3u;
+static constexpr u32 COOKIES_SCHEMA_IDENTITY_VERSION = 4u;
 
 static CookieStorageKey storage_key_for_cookie(HTTP::Cookie::Cookie const& cookie)
 {
@@ -136,30 +137,59 @@ ErrorOr<Database::MigrationOutcome> CookieJar::migrate_schema(Database::Database
                 ALTER TABLE HostOnlyKeyedCookies RENAME TO Cookies;
             )#"sv,
         },
+        {
+            // Scope persisted cookies by identity_id so legacy cookies map exclusively to 'default'
+            // and additional persistent identities never share cookie rows.
+            .version = COOKIES_SCHEMA_IDENTITY_VERSION,
+            .sql = R"#(
+                CREATE TABLE IdentityScopedCookies (
+                    identity_id TEXT NOT NULL DEFAULT 'default',
+                    name TEXT,
+                    value TEXT,
+                    same_site INTEGER CHECK (same_site >= 0 AND same_site <= 3),
+                    creation_time INTEGER,
+                    last_access_time INTEGER,
+                    expiry_time INTEGER,
+                    domain TEXT,
+                    path TEXT,
+                    secure BOOLEAN,
+                    http_only BOOLEAN,
+                    host_only BOOLEAN,
+                    persistent BOOLEAN,
+                    partition_key TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(identity_id, name, domain, host_only, path, partition_key)
+                );
+                INSERT INTO IdentityScopedCookies (identity_id, name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key)
+                    SELECT 'default', name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key FROM Cookies;
+                DROP TABLE Cookies;
+                ALTER TABLE IdentityScopedCookies RENAME TO Cookies;
+            )#"sv,
+        },
     });
 
     return database.migrate("Cookies"sv, migrations, mode);
 }
 
-ErrorOr<NonnullOwnPtr<CookieJar>> CookieJar::create(Database::Database& database)
+ErrorOr<NonnullOwnPtr<CookieJar>> CookieJar::create(Database::Database& database, String identity_id)
 {
     Statements statements {};
 
-    statements.insert_cookie = TRY(database.prepare_statement("INSERT OR REPLACE INTO Cookies (name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"sv));
-    statements.expire_cookie = TRY(database.prepare_statement("DELETE FROM Cookies WHERE (expiry_time < ?);"sv));
-    statements.select_all_cookies = TRY(database.prepare_statement("SELECT name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key FROM Cookies;"sv));
+    statements.insert_cookie = TRY(database.prepare_statement("INSERT OR REPLACE INTO Cookies (identity_id, name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"sv));
+    statements.expire_cookie = TRY(database.prepare_statement("DELETE FROM Cookies WHERE identity_id = ? AND (expiry_time < ?);"sv));
+    statements.select_all_cookies = TRY(database.prepare_statement("SELECT name, value, same_site, creation_time, last_access_time, expiry_time, domain, path, secure, http_only, host_only, persistent, partition_key FROM Cookies WHERE identity_id = ?;"sv));
 
-    return adopt_own(*new CookieJar { PersistedStorage { database, statements }, IsPrivate::No });
+    return adopt_own(*new CookieJar { PersistedStorage { database, statements, identity_id }, IsPrivate::No, identity_id });
 }
 
 NonnullOwnPtr<CookieJar> CookieJar::create(IsPrivate is_private)
 {
-    return adopt_own(*new CookieJar { OptionalNone {}, is_private });
+    return adopt_own(*new CookieJar { OptionalNone {}, is_private, is_private == IsPrivate::Yes ? "private"_string : "ephemeral"_string });
 }
 
-CookieJar::CookieJar(Optional<PersistedStorage> persisted_storage, IsPrivate is_private)
+CookieJar::CookieJar(Optional<PersistedStorage> persisted_storage, IsPrivate is_private, String identity_id)
     : m_persisted_storage(move(persisted_storage))
-    , m_transient_storage(is_private)
+    , m_transient_storage(this, is_private)
+    , m_identity_id(move(identity_id))
 {
     if (!m_persisted_storage.has_value())
         return;
@@ -175,7 +205,7 @@ CookieJar::CookieJar(Optional<PersistedStorage> persisted_storage, IsPrivate is_
                 m_persisted_storage->insert_cookie(it.value);
 
             auto now = m_transient_storage.purge_expired_cookies();
-            m_persisted_storage->database->execute_statement(m_persisted_storage->statements.expire_cookie, {}, now);
+            m_persisted_storage->database->execute_statement(m_persisted_storage->statements.expire_cookie, {}, m_persisted_storage->identity_id, now);
         });
     m_persisted_storage->synchronization_timer->start();
 }
@@ -711,8 +741,9 @@ Vector<HTTP::Cookie::Cookie> CookieJar::get_matching_cookies(URL::URL const& url
     return cookie_list;
 }
 
-CookieJar::TransientStorage::TransientStorage(IsPrivate is_private)
-    : m_is_private(is_private)
+CookieJar::TransientStorage::TransientStorage(CookieJar const* owner_jar, IsPrivate is_private)
+    : m_owner_jar(owner_jar)
+    , m_is_private(is_private)
 {
 }
 
@@ -811,8 +842,12 @@ Requests::CacheSizes CookieJar::TransientStorage::estimate_storage_size_accessed
 void CookieJar::TransientStorage::send_cookie_changed_notifications(ReadonlySpan<CookieEntry> cookies, bool inform_web_view_about_changed_domains)
 {
     ViewImplementation::for_each_view([&](ViewImplementation& view) {
-        if (view.is_private() != m_is_private)
+        if (m_owner_jar) {
+            if (view.session().cookie_jar.ptr() != m_owner_jar)
+                return IterationDecision::Continue;
+        } else if (view.is_private() != m_is_private) {
             return IterationDecision::Continue;
+        }
 
         auto retrieval_host_canonical = HTTP::Cookie::canonicalize_domain(view.url());
         if (!retrieval_host_canonical.has_value())
@@ -849,6 +884,7 @@ void CookieJar::PersistedStorage::insert_cookie(HTTP::Cookie::Cookie const& cook
     database->execute_statement(
         statements.insert_cookie,
         {},
+        identity_id,
         cookie.name,
         cookie.value,
         to_underlying(cookie.same_site),
@@ -906,7 +942,8 @@ CookieJar::TransientStorage::Cookies CookieJar::PersistedStorage::select_all_coo
             auto key = storage_key_for_cookie(cookie);
             cookies.set(move(key), move(cookie));
             return {};
-        });
+        },
+        identity_id);
 
     return cookies;
 }

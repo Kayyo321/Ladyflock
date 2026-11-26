@@ -50,11 +50,13 @@ public:
 
     static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode = Database::MigrationMode::Apply);
 
-    static ErrorOr<NonnullOwnPtr<HistoryStore>> create(Database::Database&);
+    static ErrorOr<NonnullOwnPtr<HistoryStore>> create(Database::Database&, String identity_id = "default"_string);
     static NonnullOwnPtr<HistoryStore> create(Optional<FaviconStore&> favicon_store = {});
     static NonnullOwnPtr<HistoryStore> create_disabled();
 
     ~HistoryStore();
+
+    StringView identity_id() const { return m_identity_id.bytes_as_string_view(); }
 
     void record_visit(URL::URL const&, Optional<String> title = {}, UnixDateTime visited_at = UnixDateTime::now(), HistoryVisitTransition = HistoryVisitTransition::Link);
     void update_title(URL::URL const&, String const& title);
@@ -151,7 +153,7 @@ private:
 
     class PersistedStorage : public StorageImpl {
     public:
-        PersistedStorage(Database::Database&, Statements&&);
+        PersistedStorage(Database::Database&, Statements&&, String identity_id);
         virtual ~PersistedStorage() override;
 
         virtual StringView name() override { return "SQL"sv; }
@@ -175,11 +177,13 @@ private:
     private:
         NonnullRefPtr<Database::Database> m_database;
         Statements m_statements;
+        String m_identity_id;
     };
 
-    explicit HistoryStore(NonnullOwnPtr<StorageImpl>&&, bool is_disabled = false);
+    HistoryStore(NonnullOwnPtr<StorageImpl>&&, String identity_id, bool is_disabled = false);
 
     NonnullOwnPtr<StorageImpl> m_storage;
+    String m_identity_id;
     bool m_is_disabled { false };
 };
 

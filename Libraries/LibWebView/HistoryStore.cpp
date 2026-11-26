@@ -27,6 +27,7 @@ static constexpr u32 HISTORY_SCHEMA_BASELINE_VERSION = 1u;
 static constexpr u32 HISTORY_SCHEMA_RANKING_SIGNALS_VERSION = 2u;
 static constexpr u32 HISTORY_SCHEMA_OMNIBOX_ENGAGEMENTS_VERSION = 3u;
 static constexpr u32 HISTORY_SCHEMA_FAVICON_STORE_VERSION = 4u;
+static constexpr u32 HISTORY_SCHEMA_IDENTITY_VERSION = 5u;
 
 static Optional<StringView> url_without_scheme(StringView url)
 {
@@ -200,24 +201,83 @@ ErrorOr<Database::MigrationOutcome> HistoryStore::migrate_schema(Database::Datab
                 ALTER TABLE History ADD COLUMN favicon_hash TEXT;
             )#"sv,
         },
+        {
+            .version = HISTORY_SCHEMA_IDENTITY_VERSION,
+            .sql = R"#(
+                CREATE TABLE IdentityScopedHistory (
+                    identity_id TEXT NOT NULL DEFAULT 'default',
+                    url TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    visit_count INTEGER NOT NULL,
+                    last_visited_time INTEGER NOT NULL,
+                    direct_visit_count INTEGER NOT NULL DEFAULT 0,
+                    last_qualifying_visit_time INTEGER NOT NULL DEFAULT 0,
+                    last_direct_visit_time INTEGER NOT NULL DEFAULT 0,
+                    decayed_visit_score REAL NOT NULL DEFAULT 0,
+                    decayed_direct_score REAL NOT NULL DEFAULT 0,
+                    score_updated_at INTEGER NOT NULL DEFAULT 0,
+                    favicon_hash TEXT,
+                    PRIMARY KEY (identity_id, url)
+                );
+                INSERT INTO IdentityScopedHistory (
+                    identity_id, url, title, visit_count, last_visited_time,
+                    direct_visit_count, last_qualifying_visit_time, last_direct_visit_time,
+                    decayed_visit_score, decayed_direct_score, score_updated_at, favicon_hash
+                )
+                SELECT
+                    'default', url, title, visit_count, last_visited_time,
+                    direct_visit_count, last_qualifying_visit_time, last_direct_visit_time,
+                    decayed_visit_score, decayed_direct_score, score_updated_at, favicon_hash
+                FROM History;
+                DROP TABLE History;
+                ALTER TABLE IdentityScopedHistory RENAME TO History;
+                CREATE INDEX HistoryIdentityLastVisitedTimeIndex
+                ON History(identity_id, last_visited_time DESC);
+
+                CREATE TABLE IdentityScopedOmniboxEngagements (
+                    identity_id TEXT NOT NULL DEFAULT 'default',
+                    normalized_input TEXT NOT NULL,
+                    destination_kind INTEGER NOT NULL,
+                    destination_key TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    explicit_use_count INTEGER NOT NULL,
+                    default_use_count INTEGER NOT NULL,
+                    last_used_time INTEGER NOT NULL,
+                    PRIMARY KEY (identity_id, normalized_input, destination_kind, destination_key)
+                );
+                INSERT INTO IdentityScopedOmniboxEngagements (
+                    identity_id, normalized_input, destination_kind, destination_key,
+                    destination, explicit_use_count, default_use_count, last_used_time
+                )
+                SELECT
+                    'default', normalized_input, destination_kind, destination_key,
+                    destination, explicit_use_count, default_use_count, last_used_time
+                FROM OmniboxEngagements;
+                DROP TABLE OmniboxEngagements;
+                ALTER TABLE IdentityScopedOmniboxEngagements RENAME TO OmniboxEngagements;
+                CREATE INDEX OmniboxEngagementsByIdentityAndInput
+                ON OmniboxEngagements(identity_id, destination_kind, normalized_input);
+            )#"sv,
+        },
     });
 
     return database.migrate("History"sv, migrations, mode);
 }
 
-ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& database)
+ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& database, String identity_id)
 {
     TRY(database.set_busy_timeout(HISTORY_DATABASE_BUSY_TIMEOUT_MS));
 
     if (auto database_path = database.database_path(); database_path.has_value())
-        dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening persisted history store at {}", database_path->string());
+        dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening persisted history store at {} (identity={})", database_path->string(), identity_id);
     else
-        dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening memory-backed persisted history store");
+        dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening memory-backed persisted history store (identity={})", identity_id);
 
     Statements statements {};
 
     statements.upsert_entry = TRY(database.prepare_statement(R"#(
         INSERT INTO History (
+            identity_id,
             url,
             title,
             visit_count,
@@ -229,8 +289,8 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
             decayed_direct_score,
             score_updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(url) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(identity_id, url) DO UPDATE SET
             title = CASE
                 WHEN excluded.title != '' THEN excluded.title
                 ELSE History.title
@@ -247,12 +307,12 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
     statements.update_title = TRY(database.prepare_statement(R"#(
         UPDATE History
         SET title = ?
-        WHERE url = ?;
+        WHERE identity_id = ? AND url = ?;
     )#"sv));
     statements.update_favicon = TRY(database.prepare_statement(R"#(
         UPDATE History
         SET favicon_hash = ?
-        WHERE url = ?;
+        WHERE identity_id = ? AND url = ?;
     )#"sv));
     statements.get_entry = TRY(database.prepare_statement(R"#(
         SELECT
@@ -268,7 +328,7 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
             h.score_updated_at
         FROM History AS h
         LEFT JOIN Favicons AS f ON f.hash = h.favicon_hash
-        WHERE h.url = ?;
+        WHERE h.identity_id = ? AND h.url = ?;
     )#"sv));
     statements.search_entries = TRY(database.prepare_statement(R"#(
         SELECT
@@ -297,9 +357,9 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
                 decayed_direct_score,
                 score_updated_at,
                 CASE
-                    WHEN ?1 != '' AND LOWER(searchable_url) = LOWER(?1) THEN 0
-                    WHEN ?1 != '' AND LOWER(searchable_url) LIKE LOWER(?1) || '%' THEN 1
-                    WHEN ?3 != '' AND LOWER(title) LIKE LOWER(?3) || '%' THEN 2
+                    WHEN ?2 != '' AND LOWER(searchable_url) = LOWER(?2) THEN 0
+                    WHEN ?2 != '' AND LOWER(searchable_url) LIKE LOWER(?2) || '%' THEN 1
+                    WHEN ?4 != '' AND LOWER(title) LIKE LOWER(?4) || '%' THEN 2
                     ELSE 3
                 END AS match_rank
             FROM (
@@ -330,11 +390,11 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
                         END
                     END AS searchable_url
                 FROM History
-                WHERE url LIKE 'http://%' OR url LIKE 'https://%' OR url LIKE 'file:%'
+                WHERE identity_id = ?1 AND (url LIKE 'http://%' OR url LIKE 'https://%' OR url LIKE 'file:%')
             )
-            WHERE ((?1 != '' AND LOWER(searchable_url) LIKE LOWER(?1) || '%')
-                OR (?2 != '' AND INSTR(LOWER(searchable_url), LOWER(?2)) > 0)
-                OR (?3 != '' AND INSTR(LOWER(title), LOWER(?3)) > 0))
+            WHERE ((?2 != '' AND LOWER(searchable_url) LIKE LOWER(?2) || '%')
+                OR (?3 != '' AND INSTR(LOWER(searchable_url), LOWER(?3)) > 0)
+                OR (?4 != '' AND INSTR(LOWER(title), LOWER(?4)) > 0))
             ORDER BY
                 match_rank,
                 direct_visit_count DESC,
@@ -343,7 +403,7 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
                 visit_count DESC,
                 last_visited_time DESC,
                 url ASC
-            LIMIT ?4
+            LIMIT ?5
         ) AS h
         LEFT JOIN Favicons AS f ON f.hash = h.favicon_hash
         ORDER BY
@@ -409,13 +469,13 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
                         END
                     END AS searchable_url
                 FROM History
-                WHERE url LIKE 'http://%' OR url LIKE 'https://%' OR url LIKE 'file:%'
+                WHERE identity_id = ?1 AND (url LIKE 'http://%' OR url LIKE 'https://%' OR url LIKE 'file:%')
             )
-            WHERE ((?1 = '' AND ?2 = '')
-                OR (?1 != '' AND INSTR(LOWER(title), LOWER(?1)) > 0)
-                OR (?2 != '' AND INSTR(LOWER(searchable_url), LOWER(?2)) > 0))
+            WHERE ((?2 = '' AND ?3 = '')
+                OR (?2 != '' AND INSTR(LOWER(title), LOWER(?2)) > 0)
+                OR (?3 != '' AND INSTR(LOWER(searchable_url), LOWER(?3)) > 0))
             ORDER BY last_visited_time DESC, url ASC
-            LIMIT ?3 OFFSET ?4
+            LIMIT ?4 OFFSET ?5
         ) AS h
         LEFT JOIN Favicons AS f ON f.hash = h.favicon_hash
         ORDER BY h.last_visited_time DESC, h.url ASC;
@@ -425,11 +485,12 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
         FROM History
         WHERE favicon_hash IS NOT NULL;
     )#"sv));
-    statements.delete_entry = TRY(database.prepare_statement("DELETE FROM History WHERE url = ?;"sv));
-    statements.delete_entries_accessed_since = TRY(database.prepare_statement("DELETE FROM History WHERE last_visited_time >= ?;"sv));
-    statements.all_urls = TRY(database.prepare_statement("SELECT url FROM History;"sv));
+    statements.delete_entry = TRY(database.prepare_statement("DELETE FROM History WHERE identity_id = ? AND url = ?;"sv));
+    statements.delete_entries_accessed_since = TRY(database.prepare_statement("DELETE FROM History WHERE identity_id = ? AND last_visited_time >= ?;"sv));
+    statements.all_urls = TRY(database.prepare_statement("SELECT url FROM History WHERE identity_id = ?;"sv));
     statements.upsert_omnibox_engagement = TRY(database.prepare_statement(R"#(
         INSERT INTO OmniboxEngagements (
+            identity_id,
             normalized_input,
             destination_kind,
             destination_key,
@@ -438,8 +499,8 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
             default_use_count,
             last_used_time
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(normalized_input, destination_kind, destination_key) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(identity_id, normalized_input, destination_kind, destination_key) DO UPDATE SET
             destination = excluded.destination,
             explicit_use_count = OmniboxEngagements.explicit_use_count + excluded.explicit_use_count,
             default_use_count = OmniboxEngagements.default_use_count + excluded.default_use_count,
@@ -454,46 +515,49 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
             default_use_count,
             last_used_time
         FROM OmniboxEngagements
-        WHERE (?1 != ''
+        WHERE identity_id = ?1
+            AND ((?2 != ''
                 AND destination_kind = 0
-                AND SUBSTR(normalized_input, 1, LENGTH(?1)) = ?1)
-            OR (?2 != ''
-                AND destination_kind = 1
                 AND SUBSTR(normalized_input, 1, LENGTH(?2)) = ?2)
+            OR (?3 != ''
+                AND destination_kind = 1
+                AND SUBSTR(normalized_input, 1, LENGTH(?3)) = ?3))
         ORDER BY
             (2 * explicit_use_count + default_use_count) DESC,
             last_used_time DESC,
             normalized_input ASC,
             destination_key ASC
-        LIMIT ?3;
+        LIMIT ?4;
     )#"sv));
     statements.delete_omnibox_engagements_for_url = TRY(database.prepare_statement(R"#(
         DELETE FROM OmniboxEngagements
-        WHERE destination_kind = 0
-          AND (destination_key = ?1 OR substr(destination_key, 1, length(?1) + 1) = ?1 || '#');
+        WHERE identity_id = ?1
+          AND destination_kind = 0
+          AND (destination_key = ?2 OR substr(destination_key, 1, length(?2) + 1) = ?2 || '#');
     )#"sv));
     statements.delete_omnibox_engagements_used_since = TRY(database.prepare_statement(R"#(
         DELETE FROM OmniboxEngagements
-        WHERE last_used_time >= ?;
+        WHERE identity_id = ? AND last_used_time >= ?;
     )#"sv));
 
-    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new PersistedStorage { database, move(statements) }) });
+    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new PersistedStorage { database, move(statements), identity_id }), identity_id });
 }
 
 NonnullOwnPtr<HistoryStore> HistoryStore::create(Optional<FaviconStore&> favicon_store)
 {
     dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening transient history store");
-    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new TransientStorage { favicon_store }) });
+    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new TransientStorage { favicon_store }), "transient"_string });
 }
 
 NonnullOwnPtr<HistoryStore> HistoryStore::create_disabled()
 {
     dbgln_if(WEBVIEW_HISTORY_DEBUG, "[History] Opening disabled history store");
-    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new TransientStorage {}), true });
+    return adopt_own(*new HistoryStore { adopt_own<StorageImpl>(*new TransientStorage {}), "disabled"_string, true });
 }
 
-HistoryStore::HistoryStore(NonnullOwnPtr<StorageImpl>&& storage, bool is_disabled)
+HistoryStore::HistoryStore(NonnullOwnPtr<StorageImpl>&& storage, String identity_id, bool is_disabled)
     : m_storage(move(storage))
+    , m_identity_id(move(identity_id))
     , m_is_disabled(is_disabled)
 {
 }
@@ -980,9 +1044,10 @@ void HistoryStore::TransientStorage::remove_entries_accessed_since(UnixDateTime 
     });
 }
 
-HistoryStore::PersistedStorage::PersistedStorage(Database::Database& database, Statements&& statements)
+HistoryStore::PersistedStorage::PersistedStorage(Database::Database& database, Statements&& statements, String identity_id)
     : m_database(database)
     , m_statements(move(statements))
+    , m_identity_id(move(identity_id))
 {
 }
 
@@ -994,6 +1059,7 @@ void HistoryStore::PersistedStorage::record_visit(String const& url, Optional<St
     m_database->execute_statement(
         m_statements.upsert_entry,
         {},
+        m_identity_id,
         url,
         title.value_or(String {}),
         entry.visit_count,
@@ -1012,6 +1078,7 @@ void HistoryStore::PersistedStorage::update_title(String const& url, String cons
         m_statements.update_title,
         {},
         title,
+        m_identity_id,
         url);
 }
 
@@ -1021,6 +1088,7 @@ void HistoryStore::PersistedStorage::update_favicon(String const& url, String co
         m_statements.update_favicon,
         {},
         favicon_hash,
+        m_identity_id,
         url);
 }
 
@@ -1053,6 +1121,7 @@ Optional<HistoryEntry> HistoryStore::PersistedStorage::entry_for_url(String cons
             };
             return {};
         },
+        m_identity_id,
         url);
 
     return entry;
@@ -1091,6 +1160,7 @@ Vector<HistoryEntry> HistoryStore::PersistedStorage::autocomplete_entries(String
             });
             return {};
         },
+        m_identity_id,
         url_query_string,
         url_contains_query_string,
         title_query_string,
@@ -1134,6 +1204,7 @@ Vector<HistoryEntry> HistoryStore::PersistedStorage::list_entries(StringView tit
             });
             return {};
         },
+        m_identity_id,
         title_query_string,
         url_query_string,
         static_cast<i64>(limit),
@@ -1165,6 +1236,7 @@ void HistoryStore::PersistedStorage::record_omnibox_engagement(OmniboxEngagement
     m_database->execute_statement(
         m_statements.upsert_omnibox_engagement,
         {},
+        m_identity_id,
         normalized_input,
         static_cast<u8>(engagement.destination_kind),
         destination,
@@ -1195,6 +1267,7 @@ Vector<StoredOmniboxEngagement> HistoryStore::PersistedStorage::omnibox_engageme
             });
             return {};
         },
+        m_identity_id,
         MUST(String::from_utf8(normalized_url_input)),
         MUST(String::from_utf8(normalized_search_input)),
         static_cast<i64>(limit));
@@ -1205,9 +1278,9 @@ Vector<StoredOmniboxEngagement> HistoryStore::PersistedStorage::omnibox_engageme
 
 void HistoryStore::PersistedStorage::remove_entry_for_url(String const& url, RemoveHistoryEntryEngagements remove_engagements)
 {
-    m_database->execute_statement(m_statements.delete_entry, {}, url);
+    m_database->execute_statement(m_statements.delete_entry, {}, m_identity_id, url);
     if (remove_engagements == RemoveHistoryEntryEngagements::Yes)
-        m_database->execute_statement(m_statements.delete_omnibox_engagements_for_url, {}, url);
+        m_database->execute_statement(m_statements.delete_omnibox_engagements_for_url, {}, m_identity_id, url);
 }
 
 void HistoryStore::PersistedStorage::remove_entries_for_same_site(StringView site_key)
@@ -1221,7 +1294,8 @@ void HistoryStore::PersistedStorage::remove_entries_for_same_site(StringView sit
             if (history_entry_matches_site_key(url.bytes_as_string_view(), site_key))
                 urls_to_remove.append(move(url));
             return {};
-        });
+        },
+        m_identity_id);
 
     for (auto const& url : urls_to_remove)
         remove_entry_for_url(url, RemoveHistoryEntryEngagements::Yes);
@@ -1229,8 +1303,8 @@ void HistoryStore::PersistedStorage::remove_entries_for_same_site(StringView sit
 
 void HistoryStore::PersistedStorage::remove_entries_accessed_since(UnixDateTime since)
 {
-    m_database->execute_statement(m_statements.delete_entries_accessed_since, {}, since);
-    m_database->execute_statement(m_statements.delete_omnibox_engagements_used_since, {}, since);
+    m_database->execute_statement(m_statements.delete_entries_accessed_since, {}, m_identity_id, since);
+    m_database->execute_statement(m_statements.delete_omnibox_engagements_used_since, {}, m_identity_id, since);
 }
 
 }

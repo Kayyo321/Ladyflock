@@ -61,6 +61,14 @@ struct StorageItem {
     Utf16String value;
 };
 
+struct QuarantinedStorageEntry {
+    StorageEndpointType storage_endpoint;
+    String legacy_storage_key;
+    Utf16String bottle_key;
+    Utf16String bottle_value;
+    String reason;
+};
+
 class WEBVIEW_API StorageJar {
     AK_MAKE_NONCOPYABLE(StorageJar);
     AK_MAKE_NONMOVABLE(StorageJar);
@@ -69,11 +77,16 @@ public:
     AK_ALLOC_WITH_KMALLOC;
 
     static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode = Database::MigrationMode::Apply);
+    static void set_migration_fault_hook_for_testing(Function<ErrorOr<void>(size_t migrated_rows)>);
 
-    static ErrorOr<NonnullOwnPtr<StorageJar>> create(Database::Database&);
+    static ErrorOr<NonnullOwnPtr<StorageJar>> create(Database::Database&, String identity_id = "default"_string);
     static NonnullOwnPtr<StorageJar> create();
 
     ~StorageJar();
+
+    StringView identity_id() const { return m_identity_id.bytes_as_string_view(); }
+    Vector<QuarantinedStorageEntry> quarantined_legacy_entries() const;
+    void clear_quarantined_legacy_entries();
 
     // Called after every change this jar applies, whoever asked for it, after the StorageAreaRegistry has heard of
     // it. The registry is told directly, so nothing here can be unhooked by mistake.
@@ -109,6 +122,8 @@ private:
         Database::StatementID calculate_size { 0 };
         Database::StatementID calculate_bottle_size { 0 };
         Database::StatementID estimate_storage_size_accessed_since { 0 };
+        Database::StatementID select_quarantined { 0 };
+        Database::StatementID clear_quarantined { 0 };
     };
 
     class TransientStorage {
@@ -159,14 +174,16 @@ private:
 
         NonnullRefPtr<Database::Database> database;
         Statements statements;
+        String identity_id;
     };
 
-    explicit StorageJar(Optional<PersistedStorage>);
+    StorageJar(Optional<PersistedStorage>, String identity_id);
 
     void notify(StorageChange const&);
 
     Optional<PersistedStorage> m_persisted_storage;
     TransientStorage m_transient_storage;
+    String m_identity_id;
 };
 
 }

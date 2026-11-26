@@ -28,7 +28,7 @@ TEST_CASE(storage_round_trips_on_fresh_database)
     jar->set_item(WebView::StorageEndpointType::LocalStorage, "https://example.com"_string, "foo"_utf16, "bar"_utf16);
     EXPECT_EQ(jar->get_item(WebView::StorageEndpointType::LocalStorage, "https://example.com"_string, "foo"_utf16), Optional<Utf16String> { "bar"_utf16 });
 
-    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("WebStorage"sv)), Optional<u32> { 2u });
+    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("WebStorage"sv)), Optional<u32> { 3u });
 }
 
 TEST_CASE(newer_storage_schema_reports_database_too_new)

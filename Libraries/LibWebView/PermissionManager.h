@@ -67,6 +67,7 @@ public:
 
     static NonnullOwnPtr<PermissionManager> create_for_ordinary_session(ByteString persistence_path);
     static NonnullOwnPtr<PermissionManager> create_for_private_session(PermissionManager& ordinary_session);
+    static NonnullOwnPtr<PermissionManager> create_ephemeral(PermissionManager* inherit_blocks_from = nullptr);
 
     virtual ~PermissionManager() override;
 

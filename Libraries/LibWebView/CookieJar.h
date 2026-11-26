@@ -39,10 +39,12 @@ public:
 
     static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode = Database::MigrationMode::Apply);
 
-    static ErrorOr<NonnullOwnPtr<CookieJar>> create(Database::Database&);
+    static ErrorOr<NonnullOwnPtr<CookieJar>> create(Database::Database&, String identity_id = "default"_string);
     static NonnullOwnPtr<CookieJar> create(IsPrivate = IsPrivate::No);
 
     ~CookieJar();
+
+    StringView identity_id() const { return m_identity_id.bytes_as_string_view(); }
 
     // A context of nothing stands for a first-party context, as for the UI process's own requests. A third-party context
     // only uses the cookies set in a third-party context under the same top-level site. See HTTP::Cookie::PartitionContext.
@@ -72,7 +74,7 @@ private:
     public:
         using Cookies = HashMap<CookieStorageKey, HTTP::Cookie::Cookie>;
 
-        explicit TransientStorage(IsPrivate);
+        TransientStorage(CookieJar const* owner_jar, IsPrivate);
 
         void set_cookies(Cookies);
         void set_cookie(CookieStorageKey, HTTP::Cookie::Cookie);
@@ -107,6 +109,7 @@ private:
         using CookieEntry = decltype(declval<Cookies>().take_all_matching(nullptr))::ValueType;
         void send_cookie_changed_notifications(ReadonlySpan<CookieEntry>, bool inform_web_view_about_changed_domains = true);
 
+        CookieJar const* m_owner_jar { nullptr };
         IsPrivate m_is_private { IsPrivate::No };
         Cookies m_cookies;
         Cookies m_dirty_cookies;
@@ -118,10 +121,11 @@ private:
 
         NonnullRefPtr<Database::Database> database;
         Statements statements;
+        String identity_id;
         RefPtr<Core::Timer> synchronization_timer {};
     };
 
-    CookieJar(Optional<PersistedStorage>, IsPrivate);
+    CookieJar(Optional<PersistedStorage>, IsPrivate, String identity_id);
 
     AK_MAKE_NONCOPYABLE(CookieJar);
     AK_MAKE_NONMOVABLE(CookieJar);
@@ -135,6 +139,7 @@ private:
 
     Optional<PersistedStorage> m_persisted_storage;
     TransientStorage m_transient_storage;
+    String m_identity_id;
 };
 
 }

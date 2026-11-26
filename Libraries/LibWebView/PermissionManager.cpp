@@ -68,6 +68,13 @@ NonnullOwnPtr<PermissionManager> PermissionManager::create_for_private_session(P
     return manager;
 }
 
+NonnullOwnPtr<PermissionManager> PermissionManager::create_ephemeral(PermissionManager* inherit_blocks_from)
+{
+    if (inherit_blocks_from)
+        return create_for_private_session(*inherit_blocks_from);
+    return adopt_own(*new PermissionManager({}, {}));
+}
+
 PermissionManager::PermissionManager(Optional<ByteString> persistence_path, WeakPtr<PermissionManager> ordinary_session)
     : m_persistence_path(move(persistence_path))
     , m_ordinary_session(move(ordinary_session))
