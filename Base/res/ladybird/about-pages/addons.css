@@ -73,6 +73,18 @@ h3,
     min-width: 0;
 }
 
+#query::-webkit-search-cancel-button {
+    /* Center the mark in the native button independently of the font's multiplication-sign baseline. */
+    --clear-stroke: transparent 38%, AccentColorText 44% 56%, transparent 62%;
+    color: transparent;
+    background-image: linear-gradient(45deg, var(--clear-stroke)), linear-gradient(-45deg, var(--clear-stroke));
+    background-position: center;
+    background-size: 8px 8px;
+    background-repeat: no-repeat;
+    inline-size: 14px;
+    block-size: 14px;
+}
+
 .card-body > .description:first-child {
     margin: 0;
 }
@@ -127,6 +139,39 @@ ul {
 
 a {
     color: var(--link);
+}
+
+#results .controls a {
+    color: var(--muted);
+    text-decoration: underline;
+}
+
+#results button[aria-busy="true"] {
+    cursor: progress;
+}
+
+#results button[aria-busy="true"]::before {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-inline-end: 6px;
+    vertical-align: -2px;
+    border: 2px solid currentColor;
+    border-inline-end-color: transparent;
+    border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    #results button[aria-busy="true"]::before {
+        animation: review-spinner 800ms linear infinite;
+    }
+}
+
+@keyframes review-spinner {
+    to {
+        transform: rotate(1turn);
+    }
 }
 
 button.secondary-button:disabled {

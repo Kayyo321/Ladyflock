@@ -10,6 +10,7 @@ const installed = byId("installed");
 const query = byId("query");
 const catalogStatus = byId("catalog-status");
 const notice = byId("notice");
+const reviewActionLabel = "Review/Install Extension";
 
 let extensions = [];
 let operation = null;
@@ -62,8 +63,8 @@ function receivedIcon(data) {
     }
 }
 
-function button(text, onClick) {
-    const node = element("button", text, "secondary-button");
+function button(text, onClick, className = "secondary-button") {
+    const node = element("button", text, className);
     node.type = "button";
     node.addEventListener("click", onClick);
     return node;
@@ -74,9 +75,16 @@ function announce(node, message, error = false) {
     node.classList.toggle("error", error);
 }
 
+function setCatalogReviewBusy(stage, busy) {
+    stage.textContent = busy ? "Preparing review…" : reviewActionLabel;
+    stage.ariaBusy = busy ? "true" : null;
+    stage.ariaDisabled = busy ? "true" : null;
+}
+
 function sendAction(name, data, status, trigger) {
     if (operation) return false;
     operation = { name, trigger, extensionId: data.extension_id };
+    if (name === "stageCatalogInstall") setCatalogReviewBusy(trigger, true);
     announce(notice, status);
     ladybird.sendMessage(name, data);
     return true;
@@ -362,14 +370,21 @@ function renderResults() {
         if (ext.compatibility_reasons?.length) entry.append(textList(ext.compatibility_reasons));
         const actions = element("div", undefined, "controls");
         const present = extensions.some(item => item.extension_id === ext.addon_id);
-        const stage = button(present ? "Installed" : "Review Extension...", event => {
-            sendAction(
-                "stageCatalogInstall",
-                { extension_id: ext.addon_id },
-                "Downloading and verifying the extension…",
-                event.currentTarget
-            );
-        });
+        const stage = button(
+            present ? "Installed" : reviewActionLabel,
+            event =>
+                sendAction(
+                    "stageCatalogInstall",
+                    { extension_id: ext.addon_id },
+                    "Downloading and verifying the extension…",
+                    event.currentTarget
+                ),
+            "primary-button"
+        );
+        if (operation?.name === "stageCatalogInstall" && operation.extensionId === ext.addon_id) {
+            operation.trigger = stage;
+            setCatalogReviewBusy(stage, true);
+        }
         stage.disabled = present || ext.compatibility_status === "Incompatible" || byId("pick-file").disabled;
         actions.append(stage);
         if (ext.listing_url && URL.canParse(ext.listing_url)) {
@@ -435,6 +450,7 @@ byId("pick-file").addEventListener("click", event => {
 });
 
 function staged(data, update) {
+    if (operation.name === "stageCatalogInstall") setCatalogReviewBusy(operation.trigger, false);
     if (data.error) {
         const reasons = Array.isArray(data.compatibility_reasons) ? data.compatibility_reasons : [];
         finishAction([data.error, ...reasons].join("\n"), true);

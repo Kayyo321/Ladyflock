@@ -83,6 +83,21 @@ def run_test(webdriver_binary, theme, width, screenshots):
             def click(selector):
                 script("document.querySelector(arguments[0]).click();", selector)
 
+            def press_key(value):
+                command(
+                    "POST",
+                    "actions",
+                    {
+                        "actions": [
+                            {
+                                "type": "key",
+                                "id": "keyboard",
+                                "actions": [{"type": "keyDown", "value": value}, {"type": "keyUp", "value": value}],
+                            }
+                        ]
+                    },
+                )
+
             def sent():
                 return script("return window.requests.at(-1);")
 
@@ -150,24 +165,24 @@ def run_test(webdriver_binary, theme, width, screenshots):
             click('[data-control="remove"]')
             expect_icon("#review")
             assert script("return document.activeElement.id;") == "cancel"
-            command(
-                "POST",
-                "actions",
-                {
-                    "actions": [
-                        {
-                            "type": "key",
-                            "id": "keyboard",
-                            "actions": [{"type": "keyDown", "value": "\ue00c"}, {"type": "keyUp", "value": "\ue00c"}],
-                        }
-                    ]
-                },
-            )
+            press_key("\ue00c")  # Escape
             assert script("return document.activeElement.dataset.control;") == "remove"
             assert sent()[0] != "removeExtension"
             click('[data-control="options"]')
             assert sent() == ["openExtensionOptions", {"extension_id": ext["extension_id"]}]
             reply("extensionOptionsOpened")
+            assert script("""
+                const query = document.querySelector("#query");
+                query.value = "clear this";
+                query.scrollIntoView({block: "center"});
+                const clear = internals.getShadowRoot(query).querySelector('button[aria-label="Clear search"]');
+                const rect = clear.getBoundingClientRect();
+                const field = query.getBoundingClientRect();
+                const center = rect.top + rect.height / 2;
+                if (Math.abs(center - (field.top + field.height / 2)) > 0.5) return false;
+                internals.click(rect.left + rect.width / 2, center);
+                return query.value === "" && document.activeElement === query;
+            """)
             script("document.querySelector('#query').value='example'; document.querySelector('#search').click();")
             name, request = sent()
             assert name == "searchCatalog" and request["query"] == "example" and request["page"] == 1
@@ -211,8 +226,39 @@ def run_test(webdriver_binary, theme, width, screenshots):
                 "return document.querySelector('#next').disabled && !document.querySelector('#previous').disabled;"
             )
 
-            click("#results button")
+            stage = "#results article:first-child button"
+            review_label = "Review/Install Extension"
+            assert script("return document.querySelector(arguments[0]).textContent;", stage) == review_label
+            script("document.querySelector(arguments[0]).focus();", stage)
+            press_key("\ue007")  # Enter
             assert sent() == ["stageCatalogInstall", {"extension_id": catalog_entry["addon_id"]}]
+            assert script("return document.querySelector(arguments[0]).ariaBusy;", stage) == "true"
+            assert script("return document.querySelector('#results article:last-child button').ariaBusy;") is None
+            assert script("""
+                const button = document.activeElement;
+                const spinner = getComputedStyle(button, "::before");
+                const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+                return button.ariaDisabled === "true" && button.textContent.includes("Preparing review")
+                    && spinner.display === "inline-block" && (spinner.animationName === "none") === reduceMotion;
+            """)
+            assert script("return document.querySelector('#notice[role=status]').textContent;") == (
+                "Downloading and verifying the extension…"
+            )
+            click(stage)
+            assert script("return requests.filter(([name]) => name === 'stageCatalogInstall').length;") == 1
+            screenshot("staging")
+            reply("installStaged", error="Download failed")
+            assert script("return document.querySelector('#notice.error').textContent;") == "Download failed"
+            assert script("""
+                const button = document.querySelector(arguments[0]);
+                return button === document.activeElement && button.ariaBusy === null && button.ariaDisabled === null;
+            """, stage)
+            click(stage)
+            reply("installStaged", cancelled=True)
+            assert script("return document.querySelector(arguments[0]).textContent;", stage) == review_label
+            click(stage)
+            reply("installedExtensions", **summary)
+            assert script("return document.querySelector(arguments[0]).ariaBusy;", stage) == "true"
             staged = {
                 "token": "opaque-review-token",
                 "icon_key": "package-key",
@@ -229,6 +275,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
             }
             reply("installStaged", **staged)
             assert script("return document.activeElement.id;") == "cancel"
+            assert script("return document.querySelector(arguments[0]).ariaBusy;", stage) is None
             assert sent()[0] == "stageCatalogInstall"
             expect_icon("#review")
             review = script("return document.querySelector('#review').textContent;")
@@ -256,6 +303,7 @@ def run_test(webdriver_binary, theme, width, screenshots):
                 script("internals.setBrowserZoom(1)")
             click("#cancel")
             assert sent() == ["cancelInstall", {"token": staged["token"]}]
+            assert script("return document.activeElement === document.querySelector(arguments[0]);", stage)
             reply("installCancelled")
             click("#pick-file")
             assert sent() == ["pickLocalXpi", {}]
