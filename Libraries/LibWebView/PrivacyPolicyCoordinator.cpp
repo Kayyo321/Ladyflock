@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Hex.h>
+#include <AK/Random.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/HelperProcess.h>
@@ -14,37 +16,97 @@
 
 namespace WebView {
 
-PrivacyPolicyCoordinator::PrivacyPolicyCoordinator(Privacy::NetworkMode default_network_mode)
-    : m_default_network_mode(default_network_mode)
+PrivacyPolicyCoordinator::PrivacyPolicyCoordinator(Configuration configuration)
+    : m_configuration(move(configuration))
 {
 }
 
-Privacy::NetworkMode PrivacyPolicyCoordinator::initial_network_mode_for_session(BrowsingSession const& session) const
+static bool has_configured_proxy()
 {
-    if (m_default_network_mode == Privacy::NetworkMode::Offline || session.identity().network_mode == Privacy::NetworkMode::Offline)
-        return Privacy::NetworkMode::Offline;
-    return Privacy::NetworkMode::Allow;
-}
-
-Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session(BrowsingSession const& session) const
-{
-    auto initial_mode = initial_network_mode_for_session(session);
-    auto policy = initial_mode == Privacy::NetworkMode::Offline
-        ? Privacy::NetworkPolicy::offline()
-        : Privacy::NetworkPolicy::allow_default();
-    bool has_configured_proxy = !Application::request_server_options().proxy_configuration.is_empty()
+    return !Application::request_server_options().proxy_configuration.is_empty()
         || Application::web_content_options().proxy_autoconfig_url.has_value();
+}
+
+static ByteString generate_isolation_secret()
+{
+    Array<u8, 16> secret;
+    fill_with_random(secret);
+    return encode_hex(secret);
+}
+
+Privacy::ProxyRoute PrivacyPolicyCoordinator::route_for_session(Privacy::ProxyRoute route, bool isolate, ByteString const& isolation_secret, u64 isolation_generation)
+{
+    if (isolate) {
+        route.isolation = Privacy::StreamIsolation::PerIdentityAndSite;
+        route.isolation_secret = isolation_secret;
+        route.isolation_generation = isolation_generation;
+    }
+    return route;
+}
+
+Privacy::NetworkPolicy PrivacyPolicyCoordinator::preference_for_mode(Privacy::NetworkMode mode, ByteString const& isolation_secret, u64 isolation_generation) const
+{
+    switch (mode) {
+    case Privacy::NetworkMode::Allow:
+        return Privacy::NetworkPolicy::allow_default();
+    case Privacy::NetworkMode::Offline:
+        return Privacy::NetworkPolicy::offline();
+    case Privacy::NetworkMode::ProxyOnly:
+        // Without a route to take, a proxy-only session takes none.
+        if (!m_configuration.proxy_route.has_value())
+            return Privacy::NetworkPolicy::deny_all();
+        return Privacy::NetworkPolicy::proxy_only(route_for_session(*m_configuration.proxy_route, m_configuration.isolate_proxy_streams, isolation_secret, isolation_generation));
+    }
+    return Privacy::NetworkPolicy::deny_all();
+}
+
+Optional<Privacy::NetworkPolicy> PrivacyPolicyCoordinator::identity_requirement_for_session(BrowsingSession const& session, ByteString const& isolation_secret, u64 isolation_generation) const
+{
+    auto const& identity = session.identity();
+    if (identity.network_mode == Privacy::NetworkMode::Offline || identity.kind == Privacy::IdentityKind::Offline)
+        return Privacy::NetworkPolicy::offline();
+    if (identity.kind == Privacy::IdentityKind::TorRouted) {
+        // A Tor-routed identity never connects directly: without a Tor endpoint, it has no network at all.
+        if (!m_configuration.tor_route.has_value())
+            return Privacy::NetworkPolicy::deny_all();
+        return Privacy::NetworkPolicy::proxy_only(route_for_session(*m_configuration.tor_route, true, isolation_secret, isolation_generation));
+    }
+    return {};
+}
+
+Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session(BrowsingSession const& session, ByteString const& isolation_secret, u64 isolation_generation) const
+{
+    auto preference = preference_for_mode(m_configuration.default_network_mode, isolation_secret, isolation_generation);
+    auto requirement = identity_requirement_for_session(session, isolation_secret, isolation_generation);
+
+    // An identity's own route takes the place of the browser-wide proxy route: a Tor-routed identity keeps to Tor even
+    // when the browser's default mode names a different proxy.
+    if (requirement.has_value() && requirement->route.has_value() && preference.route.has_value())
+        preference = Privacy::NetworkPolicy::allow_default();
+
     return {
         .schema_version = Privacy::CURRENT_POLICY_SCHEMA_VERSION,
-        .user_preference = policy,
-        .has_configured_proxy = has_configured_proxy,
+        .identity_requirement = move(requirement),
+        .user_preference = move(preference),
+        .has_configured_proxy = has_configured_proxy(),
     };
+}
+
+Privacy::NetworkPolicy PrivacyPolicyCoordinator::preview_policy(BrowsingSession const& session) const
+{
+    ByteString const placeholder_secret = "00000000000000000000000000000000"sv;
+    auto compiled = Privacy::PolicyCompiler::compile(session.id() ? session.id() : 1, 1, default_input_for_session(session, placeholder_secret, 1));
+    if (compiled.is_error())
+        return Privacy::NetworkPolicy::deny_all();
+    return compiled.value().snapshot.network;
 }
 
 PrivacyPolicyCoordinator::SessionState& PrivacyPolicyCoordinator::ensure_session_state(BrowsingSession const& session)
 {
     return m_sessions.ensure(session.id(), [&] {
-        auto input = default_input_for_session(session);
+        auto isolation_secret = generate_isolation_secret();
+        u64 isolation_generation = 1;
+        auto input = default_input_for_session(session, isolation_secret, isolation_generation);
         auto compiled = Privacy::PolicyCompiler::compile(session.id(), allocate_epoch(), input);
         if (compiled.is_error()) {
             // Fail closed if initial compilation ever rejects the input.
@@ -55,6 +117,8 @@ PrivacyPolicyCoordinator::SessionState& PrivacyPolicyCoordinator::ensure_session
                 .network = Privacy::NetworkPolicy::offline(),
             };
             return SessionState {
+                .isolation_secret = move(isolation_secret),
+                .isolation_generation = isolation_generation,
                 .input = input,
                 .committed_snapshot = closed,
                 .admission_snapshot = closed,
@@ -62,7 +126,11 @@ PrivacyPolicyCoordinator::SessionState& PrivacyPolicyCoordinator::ensure_session
             };
         }
         auto result = compiled.release_value();
+        for (auto const& diagnostic : result.diagnostics)
+            dbgln("Privacy policy for session {}: {}", session.id(), diagnostic);
         return SessionState {
+            .isolation_secret = move(isolation_secret),
+            .isolation_generation = isolation_generation,
             .input = input,
             .committed_snapshot = result.snapshot,
             .admission_snapshot = result.snapshot,
@@ -87,7 +155,7 @@ Privacy::NetworkMode PrivacyPolicyCoordinator::network_mode(BrowsingSession cons
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.mode;
-    return initial_network_mode_for_session(session);
+    return preview_policy(session).mode;
 }
 
 u64 PrivacyPolicyCoordinator::committed_epoch(BrowsingSession const& session) const
@@ -101,28 +169,29 @@ bool PrivacyPolicyCoordinator::allows_network_egress(BrowsingSession const& sess
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_network_egress();
-    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
+    return preview_policy(session).allows_network_egress();
 }
 
 bool PrivacyPolicyCoordinator::allows_dns_resolution(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_dns_resolution();
-    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
+    return preview_policy(session).allows_dns_resolution();
 }
 
 bool PrivacyPolicyCoordinator::allows_webrtc_network(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_webrtc_network();
-    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
+    return preview_policy(session).allows_webrtc_network();
 }
 
 bool PrivacyPolicyCoordinator::allows_background_services(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
-        return state->admission_snapshot.network.allow_background_services;
-    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
+        return state->admission_snapshot.network.allows_network_egress() && state->admission_snapshot.network.allow_background_services;
+    auto policy = preview_policy(session);
+    return policy.allows_network_egress() && policy.allow_background_services;
 }
 
 ErrorOr<void> PrivacyPolicyCoordinator::install_policy_on_request_server(BrowsingSession const& session, Requests::RequestControlClient& control_client)
@@ -144,12 +213,35 @@ ErrorOr<void> PrivacyPolicyCoordinator::install_policy_on_request_server(Browsin
 PrivacyPolicyCoordinator::TransitionResult PrivacyPolicyCoordinator::set_network_mode(BrowsingSession& session, Privacy::NetworkMode mode)
 {
     auto& state = ensure_session_state(session);
+    if (mode == Privacy::NetworkMode::ProxyOnly && !m_configuration.proxy_route.has_value()) {
+        return {
+            .committed = false,
+            .epoch = state.committed_snapshot.epoch,
+            .reason = Privacy::PolicyReason::MandatoryRouteUnavailable,
+            .diagnostics = { "Proxy-only mode needs a proxy route; the current policy stays."sv },
+        };
+    }
     auto next_input = state.input;
-    next_input.user_preference = mode == Privacy::NetworkMode::Offline
-        ? Privacy::NetworkPolicy::offline()
-        : Privacy::NetworkPolicy::allow_default();
-    next_input.has_configured_proxy = !Application::request_server_options().proxy_configuration.is_empty()
-        || Application::web_content_options().proxy_autoconfig_url.has_value();
+    next_input.user_preference = preference_for_mode(mode, state.isolation_secret, state.isolation_generation);
+    next_input.has_configured_proxy = has_configured_proxy();
+    return apply_policy_input(session, next_input);
+}
+
+PrivacyPolicyCoordinator::TransitionResult PrivacyPolicyCoordinator::renew_route_isolation(BrowsingSession& session)
+{
+    auto& state = ensure_session_state(session);
+    ++state.isolation_generation;
+
+    auto renew = [&](Optional<Privacy::NetworkPolicy>& policy) {
+        if (policy.has_value() && policy->route.has_value() && policy->route->isolation == Privacy::StreamIsolation::PerIdentityAndSite)
+            policy->route->isolation_generation = state.isolation_generation;
+    };
+    auto next_input = state.input;
+    renew(next_input.administrative_ceiling);
+    renew(next_input.identity_requirement);
+    Optional<Privacy::NetworkPolicy> preference = next_input.user_preference;
+    renew(preference);
+    next_input.user_preference = preference.release_value();
     return apply_policy_input(session, next_input);
 }
 

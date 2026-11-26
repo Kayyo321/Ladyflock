@@ -178,9 +178,10 @@ public:
     BrowserWindow* active_window_if_any() const { return m_active_window; }
     BrowserWindow* non_private_window_if_any() const;
 
-    bool is_privacy_offline() const { return m_privacy_network_mode == Privacy::NetworkMode::Offline; }
+    // Sparkle has a network stack of its own, which neither Offline mode nor a mandatory route could constrain.
+    bool privacy_denies_direct_egress() const { return m_privacy_network_mode != Privacy::NetworkMode::Allow; }
 #if defined(LADYBIRD_HAS_SPARKLE)
-    SoftwareUpdater* software_updater() { return is_privacy_offline() ? nullptr : m_software_updater.ptr(); }
+    SoftwareUpdater* software_updater() { return privacy_denies_direct_egress() ? nullptr : m_software_updater.ptr(); }
 #endif
 
     Tab* active_tab() const { return m_active_window ? m_active_window->current_tab() : nullptr; }

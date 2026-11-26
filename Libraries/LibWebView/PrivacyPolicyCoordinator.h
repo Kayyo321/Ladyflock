@@ -35,7 +35,16 @@ public:
         Vector<ByteString> diagnostics;
     };
 
-    explicit PrivacyPolicyCoordinator(Privacy::NetworkMode default_network_mode = Privacy::NetworkMode::Allow);
+    struct Configuration {
+        Privacy::NetworkMode default_network_mode { Privacy::NetworkMode::Allow };
+        // The mandatory route of the ProxyOnly mode. ProxyOnly without one stays closed.
+        Optional<Privacy::ProxyRoute> proxy_route {};
+        bool isolate_proxy_streams { false };
+        // The route of Tor-routed identities, whose streams are always isolated. Without one they stay closed.
+        Optional<Privacy::ProxyRoute> tor_route {};
+    };
+
+    explicit PrivacyPolicyCoordinator(Configuration);
     ~PrivacyPolicyCoordinator() = default;
 
     Privacy::PolicySnapshot const& snapshot_for_session(BrowsingSession const&);
@@ -55,7 +64,12 @@ public:
     ErrorOr<void> install_policy_on_request_server(BrowsingSession const&, Requests::RequestControlClient&);
 
     // Live policy transition with quiesce, acknowledgement verification, and helper cleanup.
+    // ProxyOnly uses the configured proxy route; without one, the transition is rejected and the current policy stays.
     TransitionResult set_network_mode(BrowsingSession&, Privacy::NetworkMode);
+
+    // Starts a new isolation generation for the session's route: every later stream gets new credentials, so it shares
+    // no Tor circuit with an earlier one, and the session's existing connections are closed.
+    TransitionResult renew_route_isolation(BrowsingSession&);
 
     // Installs a custom compiled PolicyInput (e.g., with administrative ceiling or identity requirement).
     TransitionResult apply_policy_input(BrowsingSession&, Privacy::PolicyInput const&);
@@ -66,6 +80,10 @@ public:
 
 private:
     struct SessionState {
+        // Secret that the session's isolation credentials are derived from. Each identity has its own session, and so
+        // its own secret; the secret never leaves Hub and the session's network owners.
+        ByteString isolation_secret;
+        u64 isolation_generation { 1 };
         Privacy::PolicyInput input;
         Privacy::PolicySnapshot committed_snapshot;
         // Effective snapshot used for immediate Hub-side gating during a tightening transition.
@@ -75,11 +93,15 @@ private:
 
     SessionState& ensure_session_state(BrowsingSession const&);
     SessionState const* find_session_state(BrowsingSession const&) const;
-    Privacy::NetworkMode initial_network_mode_for_session(BrowsingSession const&) const;
-    Privacy::PolicyInput default_input_for_session(BrowsingSession const&) const;
+    // The policy a session would start with, for admission checks before its state exists.
+    Privacy::NetworkPolicy preview_policy(BrowsingSession const&) const;
+    Privacy::PolicyInput default_input_for_session(BrowsingSession const&, ByteString const& isolation_secret, u64 isolation_generation) const;
+    static Privacy::ProxyRoute route_for_session(Privacy::ProxyRoute route, bool isolate, ByteString const& isolation_secret, u64 isolation_generation);
+    Privacy::NetworkPolicy preference_for_mode(Privacy::NetworkMode, ByteString const& isolation_secret, u64 isolation_generation) const;
+    Optional<Privacy::NetworkPolicy> identity_requirement_for_session(BrowsingSession const&, ByteString const& isolation_secret, u64 isolation_generation) const;
     u64 allocate_epoch() { return m_next_epoch++; }
 
-    Privacy::NetworkMode m_default_network_mode { Privacy::NetworkMode::Allow };
+    Configuration m_configuration;
     u64 m_next_epoch { 1 };
     HashMap<u64, SessionState> m_sessions;
 };

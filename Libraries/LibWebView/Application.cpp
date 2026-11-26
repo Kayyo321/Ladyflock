@@ -378,6 +378,9 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool enable_amo_catalog = false;
     bool start_offline = false;
     Optional<Privacy::NetworkMode> privacy_network_mode;
+    Optional<Privacy::ProxyRoute> privacy_proxy_route;
+    bool privacy_proxy_isolation = false;
+    Optional<Privacy::ProxyRoute> privacy_tor_route;
     Vector<ByteString> content_blocker_list_paths;
     Vector<ByteString> load_extension_paths;
     Optional<StringView> resource_substitution_map_path;
@@ -514,16 +517,45 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     args_parser.add_option(start_offline, "Start in Offline privacy mode (deny all browser IP egress and DNS)", "offline");
     args_parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
-        .help_string = "Set initial privacy network mode ('allow' or 'offline')",
+        .help_string = "Set initial privacy network mode ('allow', 'offline' or 'proxy-only')",
         .long_name = "privacy-network-mode",
         .value_name = "mode",
         .accept_value = [&](StringView value) {
             auto parsed = Privacy::network_mode_from_string(value);
             if (!parsed.has_value()) {
-                warnln("Unknown privacy network mode '{}': expected 'allow' or 'offline'", value);
+                warnln("Unknown privacy network mode '{}': expected 'allow', 'offline' or 'proxy-only'", value);
                 return false;
             }
             privacy_network_mode = *parsed;
+            return true;
+        },
+    });
+    auto parse_route = [](StringView value, Optional<Privacy::ProxyRoute>& route) {
+        route = Privacy::ProxyRoute::parse(value);
+        if (!route.has_value())
+            warnln("Invalid privacy proxy '{}': expected http, https, socks4a or socks5h with an IP address and port", value);
+        return route.has_value();
+    };
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Set the mandatory route of the proxy-only privacy network mode, e.g. socks5h://127.0.0.1:9050",
+        .long_name = "privacy-proxy",
+        .value_name = "url",
+        .accept_value = [&](StringView value) { return parse_route(value, privacy_proxy_route); },
+    });
+    args_parser.add_option(privacy_proxy_isolation, "Give each identity and top-level site its own SOCKS5 credentials on the privacy proxy", "privacy-proxy-isolation");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Set the Tor SOCKS endpoint that Tor-routed identities must use, e.g. socks5h://127.0.0.1:9050",
+        .long_name = "privacy-tor-proxy",
+        .value_name = "url",
+        .accept_value = [&](StringView value) {
+            if (!parse_route(value, privacy_tor_route))
+                return false;
+            if (privacy_tor_route->type != Privacy::RouteProxyType::SOCKS5Hostname || !privacy_tor_route->credentials.is_empty()) {
+                warnln("The Tor proxy must be a socks5h:// endpoint without credentials, so that its streams can be isolated");
+                return false;
+            }
             return true;
         },
     });
@@ -655,6 +687,9 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .enable_amo_catalog = enable_amo_catalog,
         .load_extension_paths = move(load_extension_paths),
         .privacy_network_mode = start_offline ? Privacy::NetworkMode::Offline : privacy_network_mode.value_or(Privacy::NetworkMode::Allow),
+        .privacy_proxy_route = move(privacy_proxy_route),
+        .privacy_proxy_isolation = privacy_proxy_isolation,
+        .privacy_tor_route = move(privacy_tor_route),
     };
 
     if (web_content_memory_limit_in_mebibytes.has_value()) {
@@ -809,7 +844,12 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     m_font_service_host = FontServiceHost::create(*m_font_service);
     if (m_stats_log)
         m_stats_log->start_sampling();
-    m_privacy_policy_coordinator = make<PrivacyPolicyCoordinator>(m_browser_options.privacy_network_mode);
+    m_privacy_policy_coordinator = make<PrivacyPolicyCoordinator>(PrivacyPolicyCoordinator::Configuration {
+        .default_network_mode = m_browser_options.privacy_network_mode,
+        .proxy_route = m_browser_options.privacy_proxy_route,
+        .isolate_proxy_streams = m_browser_options.privacy_proxy_isolation,
+        .tor_route = m_browser_options.privacy_tor_route,
+    });
     m_identity_manager = make<IdentityManager>();
     TRY(launch_services());
 

@@ -118,6 +118,12 @@ struct BrowserOptions {
     bool enable_amo_catalog { false };
     Vector<ByteString> load_extension_paths {};
     Privacy::NetworkMode privacy_network_mode { Privacy::NetworkMode::Allow };
+    // The mandatory route of the proxy-only network mode.
+    Optional<Privacy::ProxyRoute> privacy_proxy_route {};
+    // Gives each identity and top-level site its own SOCKS5 credentials on privacy_proxy_route.
+    bool privacy_proxy_isolation { false };
+    // The Tor SOCKS endpoint that Tor-routed identities must use. Their streams are always isolated.
+    Optional<Privacy::ProxyRoute> privacy_tor_route {};
     // How much memory a WebContent process may use before it is ended. Zero means that there is no limit, and no value
     // means the default limit for this machine.
     Optional<u64> web_content_memory_limit_in_bytes {};

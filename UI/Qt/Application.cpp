@@ -1322,7 +1322,7 @@ void Application::create_platform_actions()
             hub->send_settings_changes(settings);
     };
 #if defined(LADYBIRD_HAS_SPARKLE)
-    if (!is_privacy_offline()) {
+    if (!privacy_denies_direct_egress()) {
         m_software_updater = SoftwareUpdater::create();
         m_software_updater->on_will_relaunch = [this] {
             m_restart = Restart::ByUpdater;
@@ -3146,7 +3146,7 @@ void Application::did_change_privacy_network_mode(Privacy::NetworkMode mode)
 {
     m_privacy_network_mode = mode;
 #if defined(LADYBIRD_HAS_SPARKLE)
-    if (is_privacy_offline()) {
+    if (privacy_denies_direct_egress()) {
         if (m_software_updater) {
             m_software_updater->set_offline(true);
             m_software_updater = nullptr;
