@@ -360,8 +360,9 @@ bool is_scripting_enabled(EnvironmentSettingsObject const& settings)
         return false;
 
     // NB: The user may also disable scripting per site, by the site of the top-level document. That can only turn
-    //     scripting off, never back on, and leaves browser pages alone.
-    if (!settings.is_scripting_allowed_by_site_policy(document.page()) && !URL::is_webui_url(document.url()))
+    //     scripting off, never back on, and leaves browser pages and the pages of the user's extensions alone, such as an
+    //     extension's own frame inside that site.
+    if (!settings.is_scripting_allowed_by_site_policy(document.page()) && !URL::is_webui_url(document.url()) && document.url().scheme() != "moz-extension"sv)
         return false;
 
     // Either settings's global object is not a Window object, or settings's global object's associated Document's active sandboxing flag set does not have its sandboxed scripts browsing context flag set.
