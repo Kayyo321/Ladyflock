@@ -5,6 +5,7 @@
  */
 
 #include <LibURL/RustIntegration.h>
+#include <LibURL/Site.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/StorageAPI/StorageKey.h>
@@ -40,6 +41,7 @@ extern "C" {
 
 bool web_storage_api_obtain_a_storage_key(HTML::EnvironmentSettingsObject* environment, void* ctx, void (*on_origin)(void*, URL::FFI::FfiOrigin const*));
 void web_storage_api_obtain_a_storage_key_for_non_storage_purposes(HTML::EnvironmentSettingsObject* environment, void* ctx, void (*on_origin)(void*, URL::FFI::FfiOrigin const*));
+bool web_storage_api_obtain_storage_partition_key(HTML::EnvironmentSettingsObject* environment, void* ctx, void (*on_partition)(void*, char const* top_level_site_data, size_t top_level_site_len, bool has_cross_site_ancestor));
 }
 
 bool web_storage_api_obtain_a_storage_key(HTML::EnvironmentSettingsObject* environment, void* ctx, void (*on_origin)(void*, URL::FFI::FfiOrigin const*))
@@ -59,6 +61,18 @@ void web_storage_api_obtain_a_storage_key_for_non_storage_purposes(HTML::Environ
     URL::RustIntegration::lend_origin_to_ffi(storage_key.origin, [&](URL::FFI::FfiOrigin const& origin) {
         on_origin(ctx, &origin);
     });
+}
+
+bool web_storage_api_obtain_storage_partition_key(HTML::EnvironmentSettingsObject* environment, void* ctx, void (*on_partition)(void*, char const* top_level_site_data, size_t top_level_site_len, bool has_cross_site_ancestor))
+{
+    if (!environment->top_level_origin.has_value())
+        return false;
+    auto top_level_site = URL::Site::serialize_for_partitioning(*environment->top_level_origin);
+    if (!top_level_site.has_value())
+        return false;
+    auto utf8 = top_level_site->to_byte_string();
+    on_partition(ctx, utf8.characters(), utf8.length(), environment->has_cross_site_ancestor());
+    return true;
 }
 
 }

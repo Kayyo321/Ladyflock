@@ -358,9 +358,7 @@ pub unsafe extern "C" fn web_rust_broadcast_channel_deliver_message_locally(
     // SAFETY: The caller lends the origins.
     let (storage_key, source_origin) = unsafe {
         (
-            StorageKey {
-                origin: (*storage_key_origin).to_origin(),
-            },
+            StorageKey::from_origin((*storage_key_origin).to_origin()),
             (*source_origin).to_origin(),
         )
     };

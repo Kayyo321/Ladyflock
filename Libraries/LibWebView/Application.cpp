@@ -3301,6 +3301,10 @@ void Application::register_permission_manager(PermissionManager& manager)
         manager.register_observer(*m_permission_manager_observer);
     manager.on_deadlines_changed = [this] { schedule_permission_expiry(); };
 
+    // Managers inheriting from the ordinary session read global defaults live from m_default_session.
+    if (manager.inherits_ordinary_session())
+        return;
+
     for (auto name : Web::Permissions::PERMISSION_NAMES) {
         auto state = [&]() {
             switch (settings().permission_policy(name)) {
@@ -3405,7 +3409,7 @@ void Application::update_permission_defaults()
         m_default_session->permission_manager->set_global_default(name, state);
         if (m_identity_manager) {
             m_identity_manager->for_each_named_session([&](BrowsingSession& session) {
-                if (session.permission_manager)
+                if (session.permission_manager && !session.permission_manager->inherits_ordinary_session())
                     session.permission_manager->set_global_default(name, state);
             });
         }

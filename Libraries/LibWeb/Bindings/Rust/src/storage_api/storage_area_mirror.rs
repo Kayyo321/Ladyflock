@@ -130,10 +130,12 @@ fn client() -> Option<Rc<dyn StorageAreaMirrorClient>> {
 
 fn registry_key_for(endpoint_type: StorageEndpointType, session_page: Option<u64>, storage_key: &StorageKey) -> String {
     let endpoint = endpoint_type as u8;
-    let storage_key = storage_key.origin.serialize();
+    let origin = storage_key.origin.serialize();
+    let top_level_site = storage_key.top_level_site.as_deref().unwrap_or("");
+    let cross_site = u8::from(storage_key.has_cross_site_ancestor);
     match session_page {
-        Some(page) => format!("{endpoint}/{page}/{storage_key}"),
-        None => format!("{endpoint}//{storage_key}"),
+        Some(page) => format!("{endpoint}/{page}/{origin}|{top_level_site}|{cross_site}"),
+        None => format!("{endpoint}//{origin}|{top_level_site}|{cross_site}"),
     }
 }
 
@@ -856,17 +858,15 @@ mod tests {
     }
 
     fn key_for(host: &str) -> StorageKey {
-        StorageKey {
-            origin: Origin::Tuple {
-                scheme: "https".to_owned(),
-                host: Host {
-                    kind: HostKind::Domain,
-                    serialization: host.to_owned(),
-                },
-                port: None,
-                domain: None,
+        StorageKey::from_origin(Origin::Tuple {
+            scheme: "https".to_owned(),
+            host: Host {
+                kind: HostKind::Domain,
+                serialization: host.to_owned(),
             },
-        }
+            port: None,
+            domain: None,
+        })
     }
 
     impl StorageAreaMirror {

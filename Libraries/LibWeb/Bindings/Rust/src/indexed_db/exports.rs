@@ -30,9 +30,7 @@ use crate::storage_api::storage_key::StorageKey;
 /// The origin must be one that LibWeb lends.
 unsafe fn storage_key_from_abi(origin: *const FfiOrigin) -> StorageKey {
     // SAFETY: The caller lends a live origin.
-    StorageKey {
-        origin: unsafe { (*origin).to_origin() },
-    }
+    StorageKey::from_origin(unsafe { (*origin).to_origin() })
 }
 
 #[unsafe(no_mangle)]
