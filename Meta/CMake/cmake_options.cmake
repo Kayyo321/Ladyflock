@@ -33,6 +33,7 @@ else()
 endif()
 
 option(ENABLE_GUI_TARGETS "Enable building GUI targets" ON)
+option(ENABLE_LIBPRIVACY "Enable the Ladyflock LibPrivacy policy engine" ON)
 option(LADYBIRD_BUILD_QT "Build and bundle Qt with vcpkg on Linux" OFF)
 option(ENABLE_INSTALL_HEADERS "Enable installing headers" ON)
 option(ENABLE_INSTALL_FREEDESKTOP_FILES "Enable installing .desktop and .service files" ${freedesktop_files_default})
