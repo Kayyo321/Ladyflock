@@ -713,6 +713,8 @@ ViewState View::current_state() const
     state.crash_overlay_is_for_memory_limit = crash_overlay_is_for_memory_limit();
     state.host_for_settings = current_host_for_settings();
     state.can_report_website_issue = can_report_website_issue();
+    state.identity_id = session().identity_id();
+    state.persists_history = session().persists_history();
     state.can_undo = can_undo();
     state.can_redo = can_redo();
     state.permission_origin = permission_origin();

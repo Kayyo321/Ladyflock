@@ -250,6 +250,8 @@ struct Hub::ViewState {
     Gfx::Color page_background_color;
     Optional<URL::Origin> permission_origin;
     Vector<WebView::SitePermissionRow> site_permission_rows;
+    String identity_id;
+    bool persists_history;
 }
 
 // What the Hub tells the UI.

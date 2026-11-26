@@ -165,6 +165,7 @@ public:
     bool holds_part_of_a_tab_in_the_group_of(CanonicalTraversable const&);
     void release_unneeded_representing_pages();
     bool hosts_an_environment_with_storage_key(Web::StorageAPI::StorageKey const&);
+    bool hosts_an_environment_with_broadcast_partition(Web::StorageAPI::StorageKey const&, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor);
     Optional<CanonicalEnvironmentSettingsObject const&> hosted_environment(Web::HTML::EnvironmentId const& environment_id);
     bool hosts_a_document_of_origin(URL::Origin const&);
 

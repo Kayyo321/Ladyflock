@@ -111,6 +111,7 @@ public:
 
     // Browsing history and the favicons it, the bookmarks and the open tabs show. Private windows keep no history.
     static WebView::HistoryStore& history_store() { return *s_the->m_history_store; }
+    static WebView::HistoryStore& history_store_for_identity(StringView identity_id, bool persists_history);
     static WebView::FaviconStore& favicon_store(WebView::IsPrivate);
     void remove_unreferenced_favicons(HashTable<String> referenced_hashes);
 
@@ -382,7 +383,10 @@ private:
     OwnPtr<WebView::FaviconStore> m_favicon_store;
     OwnPtr<WebView::FaviconStore> m_private_favicon_store;
     OwnPtr<BookmarkStore> m_bookmark_store;
+    RefPtr<Database::Database> m_history_database;
     OwnPtr<WebView::HistoryStore> m_history_store;
+    OwnPtr<WebView::HistoryStore> m_disabled_history_store;
+    HashMap<String, NonnullOwnPtr<WebView::HistoryStore>> m_identity_history_stores;
     OwnPtr<WebView::AutocompleteService> m_autocomplete_service;
     bool m_should_remove_unreferenced_favicons { false };
     Vector<int> m_session_signal_handlers;

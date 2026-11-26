@@ -74,6 +74,8 @@
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/SiteCompatibility.h>
 #include <LibWebView/SpellChecker.h>
+#include <LibPrivacy/Storage/PartitionKey.h>
+#include <LibWebView/IdentityManager.h>
 #include <LibWebView/StorageAreaRegistry.h>
 #include <LibWebView/SystemProbeClient.h>
 #include <LibWebView/TabDiscarder.h>
@@ -808,6 +810,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     if (m_stats_log)
         m_stats_log->start_sampling();
     m_privacy_policy_coordinator = make<PrivacyPolicyCoordinator>(m_browser_options.privacy_network_mode);
+    m_identity_manager = make<IdentityManager>();
     TRY(launch_services());
 
     if (m_browser_options.enable_content_blocker == EnableContentBlocker::Yes) {
@@ -1467,6 +1470,26 @@ void Application::reset_private_browsing_session()
     WorkerAgentManager::the().remove_private_workers_without_owners();
 }
 
+void Application::session_lost_last_view(BrowsingSession& session)
+{
+    if (!session.is_ephemeral())
+        return;
+
+    if (m_private_session.ptr() == &session) {
+        // Release the weak handle to the private session as soon as its last view closes so the next private
+        // view starts a brand-new BrowsingSession with fresh cookies, storage, and worker namespace.
+        // Extended-lifetime workers of the closed session remain isolated to its old session_id until their
+        // timeout expires or reset_private_browsing_session() ends them.
+        m_file_downloader.discard_private_downloads();
+        m_private_session.clear();
+        return;
+    }
+
+    // Named ephemeral/disposable identities tear down their workers and RequestServers once their last view closes.
+    WorkerAgentManager::the().remove_workers_for_session(session.id());
+    RequestServerManager::the().retire_instances_for_session(session);
+}
+
 Web::CompositorContextId Application::allocate_compositor_context_id()
 {
     VERIFY(m_next_page_or_compositor_context_id > 0);
@@ -1794,18 +1817,25 @@ bool Application::tabs_may_share_processes() const
 
 ErrorOr<NonnullRefPtr<WebContentPage>> Application::open_page_for_new_tab(IsPrivate is_private)
 {
+    auto session = session_for_new_view(is_private);
+    return open_page_for_new_tab(*session);
+}
+
+ErrorOr<NonnullRefPtr<WebContentPage>> Application::open_page_for_new_tab(BrowsingSession& session)
+{
     if (m_spare_web_content_process && !m_spare_web_content_process->is_open())
         m_spare_web_content_process = nullptr;
 
     RefPtr<WebContentClient> web_content_client;
-    if (is_private == IsPrivate::Yes) {
-        web_content_client = TRY(create_web_content_client(session_for_new_view(IsPrivate::Yes), allocate_page_id()));
+    if (&session != &default_session()) {
+        // Never reuse the default-session spare process for private or named identities.
+        web_content_client = TRY(create_web_content_client(session, allocate_page_id()));
     } else if (m_spare_web_content_process) {
         web_content_client = m_spare_web_content_process.release_nonnull();
         launch_spare_web_content_process();
     } else {
         launch_spare_web_content_process();
-        web_content_client = TRY(create_web_content_client(default_session(), allocate_page_id()));
+        web_content_client = TRY(create_web_content_client(session, allocate_page_id()));
     }
     return web_content_client->open_initial_page_for_new_top_level_traversable();
 }
@@ -1815,11 +1845,11 @@ ErrorOr<NonnullRefPtr<WebContentClient>> Application::launch_web_content_process
     return create_web_content_client(session, allocate_page_id());
 }
 
-ErrorOr<Application::ChildFrameWebContentProcess> Application::launch_child_frame_web_content_process(IsPrivate is_private, Vector<Web::HTML::RemoteNavigableDescriptor> remote_navigables, Web::HTML::CrossProcessId root_navigable_id, Web::HTML::SessionHistoryEntryDescriptor initial_history_entry, Web::HTML::VisibilityState system_visibility_state)
+ErrorOr<Application::ChildFrameWebContentProcess> Application::launch_child_frame_web_content_process(BrowsingSession& session, Vector<Web::HTML::RemoteNavigableDescriptor> remote_navigables, Web::HTML::CrossProcessId root_navigable_id, Web::HTML::SessionHistoryEntryDescriptor initial_history_entry, Web::HTML::VisibilityState system_visibility_state)
 {
     auto page_id = allocate_page_id();
     auto initial_document_state_id = initial_history_entry.document_state.id;
-    auto client = TRY(create_web_content_client(session_for_new_view(is_private), page_id, root_navigable_id, initial_document_state_id, move(remote_navigables), move(initial_history_entry), system_visibility_state));
+    auto client = TRY(create_web_content_client(session, page_id, root_navigable_id, initial_document_state_id, move(remote_navigables), move(initial_history_entry), system_visibility_state));
     return ChildFrameWebContentProcess {
         .client = move(client),
         .page_id = page_id,
@@ -1857,6 +1887,18 @@ void Application::launch_spare_web_content_process()
         if (auto process = m_process_manager->find_child(m_spare_web_content_process->child_id()); process.has_value())
             process->set_title("(spare)"_utf16);
     });
+}
+
+static Optional<String> first_party_partition_key_for_devtools_host(String const& host)
+{
+    auto url = URL::Parser::basic_parse(host);
+    if (!url.has_value())
+        return {};
+    auto origin = url->origin();
+    auto partition_key = Privacy::StoragePartitionKey::from_context(origin, origin, /*has_cross_site_ancestor=*/false);
+    if (!partition_key.has_value())
+        return {};
+    return partition_key->to_storage_key_string();
 }
 
 // DevTools hears of every change to a jar, whoever made it. Each tab whose page keeps its storage in the changed
@@ -1904,7 +1946,10 @@ static void notify_devtools_of_storage_change(StorageJar& jar, StorageChange con
         if (!owns_jar)
             return IterationDecision::Continue;
         auto host = DevTools::storage_host_for_url(view.url());
-        if (!host.has_value() || DevTools::storage_key_for_host(*host) != change.storage_key)
+        if (!host.has_value())
+            return IterationDecision::Continue;
+        auto expected_partition_key = first_party_partition_key_for_devtools_host(*host);
+        if (expected_partition_key != change.storage_key && DevTools::storage_key_for_host(*host) != change.storage_key)
             return IterationDecision::Continue;
         for (auto devtools_change : devtools_changes) {
             devtools_change.host = *host;
@@ -1957,6 +2002,7 @@ ErrorOr<void> Application::launch_services()
     if (!m_browser_options.headless_mode.has_value() && !m_browser_options.webdriver_browser_endpoint.has_value())
         m_tab_discarder = make<TabDiscarder>();
 
+    RefPtr<Database::Database> browsing_database;
     if (m_browser_options.disable_sql_database == DisableSQLDatabase::No) {
         auto database_path = profile().paths().data;
         auto database = TRY(Database::Database::create(database_path, "Ladybird"sv));
@@ -1999,6 +2045,8 @@ ErrorOr<void> Application::launch_services()
             storage_outcome = Database::MigrationOutcome::DatabaseTooNew;
             downloads_outcome = Database::MigrationOutcome::DatabaseTooNew;
             extensions_outcome = Database::MigrationOutcome::DatabaseTooNew;
+        } else {
+            browsing_database = database;
         }
 
         if (cookies_outcome == Database::MigrationOutcome::Success)
@@ -2039,6 +2087,7 @@ ErrorOr<void> Application::launch_services()
     }
 
     m_default_session->blob_url_store = make<BlobURLStore>();
+    m_identity_manager->register_default_session(*m_default_session, move(browsing_database));
 
     m_file_downloader.adopt_download_store({}, *m_download_store);
 
@@ -3038,14 +3087,21 @@ NonnullRefPtr<Core::Promise<Empty>> Application::clear_browsing_data(ClearBrowsi
         m_file_downloader.remove_inactive_downloads_created_since(options.since);
 
     if (options.delete_site_data == ClearBrowsingDataOptions::Delete::Yes) {
-        m_default_session->cookie_jar->expire_cookies_accessed_since(options.since);
-        m_default_session->storage_jar->remove_items_accessed_since(options.since);
-        m_default_session->hsts_store->remove_policies_observed_since(options.since);
-
-        if (auto private_session = m_private_session.strong_ref()) {
-            private_session->cookie_jar->expire_cookies_accessed_since(options.since);
-            private_session->storage_jar->remove_items_accessed_since(options.since);
-            private_session->hsts_store->remove_policies_observed_since(options.since);
+        auto clear_session = [&](BrowsingSession& session) {
+            if (session.cookie_jar)
+                session.cookie_jar->expire_cookies_accessed_since(options.since);
+            if (session.storage_jar)
+                session.storage_jar->remove_items_accessed_since(options.since);
+            if (session.hsts_store)
+                session.hsts_store->remove_policies_observed_since(options.since);
+        };
+        clear_session(*m_default_session);
+        if (auto private_session = m_private_session.strong_ref())
+            clear_session(*private_session);
+        if (m_identity_manager) {
+            m_identity_manager->for_each_named_session([&](BrowsingSession& session) {
+                clear_session(session);
+            });
         }
     }
 
@@ -3239,6 +3295,28 @@ void Application::permissions_changed(Badge<ApplicationPermissionManagerObserver
     schedule_permission_expiry();
 }
 
+void Application::register_permission_manager(PermissionManager& manager)
+{
+    if (m_permission_manager_observer)
+        manager.register_observer(*m_permission_manager_observer);
+    manager.on_deadlines_changed = [this] { schedule_permission_expiry(); };
+
+    for (auto name : Web::Permissions::PERMISSION_NAMES) {
+        auto state = [&]() {
+            switch (settings().permission_policy(name)) {
+            case PermissionPolicy::Ask:
+                return name == Web::Permissions::PermissionName::Geolocation && !sites_can_ask_for_location()
+                    ? Web::Permissions::EffectiveState::Denied
+                    : Web::Permissions::EffectiveState::Prompt;
+            case PermissionPolicy::Block:
+                return Web::Permissions::EffectiveState::Denied;
+            }
+            VERIFY_NOT_REACHED();
+        }();
+        manager.set_global_default(name, state);
+    }
+}
+
 void Application::schedule_permission_expiry()
 {
     Optional<UnixDateTime> deadline;
@@ -3249,6 +3327,12 @@ void Application::schedule_permission_expiry()
     consider(*m_default_session->permission_manager);
     if (auto private_session = m_private_session.strong_ref())
         consider(*private_session->permission_manager);
+    if (m_identity_manager) {
+        m_identity_manager->for_each_named_session([&](BrowsingSession& session) {
+            if (session.permission_manager)
+                consider(*session.permission_manager);
+        });
+    }
 
     if (!deadline.has_value()) {
         if (m_permission_expiry_timer)
@@ -3262,6 +3346,12 @@ void Application::schedule_permission_expiry()
             m_default_session->permission_manager->run_expiry();
             if (auto private_session = m_private_session.strong_ref())
                 private_session->permission_manager->run_expiry();
+            if (m_identity_manager) {
+                m_identity_manager->for_each_named_session([](BrowsingSession& session) {
+                    if (session.permission_manager)
+                        session.permission_manager->run_expiry();
+                });
+            }
             schedule_permission_expiry();
         });
     }
@@ -3313,6 +3403,12 @@ void Application::update_permission_defaults()
         }();
 
         m_default_session->permission_manager->set_global_default(name, state);
+        if (m_identity_manager) {
+            m_identity_manager->for_each_named_session([&](BrowsingSession& session) {
+                if (session.permission_manager)
+                    session.permission_manager->set_global_default(name, state);
+            });
+        }
     }
 }
 
@@ -3720,9 +3816,11 @@ static ErrorOr<StorageJar*> storage_jar_for_devtools(ViewImplementation& view, W
 }
 
 // The bottle the pages of a DevTools storage host keep their storage in: the host names an origin, and the key is
-// that origin's, the way every page names it.
+// that origin's first-party partitioned storage key.
 static ErrorOr<String> storage_key_for_devtools_host(String const& host)
 {
+    if (auto partition_key = first_party_partition_key_for_devtools_host(host); partition_key.has_value())
+        return partition_key.release_value();
     auto storage_key = DevTools::storage_key_for_host(host);
     if (!storage_key.has_value())
         return Error::from_string_literal("Storage host is not available");

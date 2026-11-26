@@ -19,9 +19,17 @@ PrivacyPolicyCoordinator::PrivacyPolicyCoordinator(Privacy::NetworkMode default_
 {
 }
 
-Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session() const
+Privacy::NetworkMode PrivacyPolicyCoordinator::initial_network_mode_for_session(BrowsingSession const& session) const
 {
-    auto policy = m_default_network_mode == Privacy::NetworkMode::Offline
+    if (m_default_network_mode == Privacy::NetworkMode::Offline || session.identity().network_mode == Privacy::NetworkMode::Offline)
+        return Privacy::NetworkMode::Offline;
+    return Privacy::NetworkMode::Allow;
+}
+
+Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session(BrowsingSession const& session) const
+{
+    auto initial_mode = initial_network_mode_for_session(session);
+    auto policy = initial_mode == Privacy::NetworkMode::Offline
         ? Privacy::NetworkPolicy::offline()
         : Privacy::NetworkPolicy::allow_default();
     bool has_configured_proxy = !Application::request_server_options().proxy_configuration.is_empty()
@@ -36,7 +44,7 @@ Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session() const
 PrivacyPolicyCoordinator::SessionState& PrivacyPolicyCoordinator::ensure_session_state(BrowsingSession const& session)
 {
     return m_sessions.ensure(session.id(), [&] {
-        auto input = default_input_for_session();
+        auto input = default_input_for_session(session);
         auto compiled = Privacy::PolicyCompiler::compile(session.id(), allocate_epoch(), input);
         if (compiled.is_error()) {
             // Fail closed if initial compilation ever rejects the input.
@@ -79,7 +87,7 @@ Privacy::NetworkMode PrivacyPolicyCoordinator::network_mode(BrowsingSession cons
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.mode;
-    return m_default_network_mode;
+    return initial_network_mode_for_session(session);
 }
 
 u64 PrivacyPolicyCoordinator::committed_epoch(BrowsingSession const& session) const
@@ -93,28 +101,28 @@ bool PrivacyPolicyCoordinator::allows_network_egress(BrowsingSession const& sess
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_network_egress();
-    return m_default_network_mode == Privacy::NetworkMode::Allow;
+    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
 }
 
 bool PrivacyPolicyCoordinator::allows_dns_resolution(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_dns_resolution();
-    return m_default_network_mode == Privacy::NetworkMode::Allow;
+    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
 }
 
 bool PrivacyPolicyCoordinator::allows_webrtc_network(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allows_webrtc_network();
-    return m_default_network_mode == Privacy::NetworkMode::Allow;
+    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
 }
 
 bool PrivacyPolicyCoordinator::allows_background_services(BrowsingSession const& session) const
 {
     if (auto const* state = find_session_state(session))
         return state->admission_snapshot.network.allow_background_services;
-    return m_default_network_mode == Privacy::NetworkMode::Allow;
+    return initial_network_mode_for_session(session) == Privacy::NetworkMode::Allow;
 }
 
 ErrorOr<void> PrivacyPolicyCoordinator::install_policy_on_request_server(BrowsingSession const& session, Requests::RequestControlClient& control_client)

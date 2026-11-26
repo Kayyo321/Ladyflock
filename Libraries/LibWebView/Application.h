@@ -133,6 +133,7 @@ public:
 
     static RequestServerManager& request_server_manager() { return *the().m_request_server_manager; }
     static PrivacyPolicyCoordinator& privacy_policy_coordinator() { return *the().m_privacy_policy_coordinator; }
+    static IdentityManager& identity_manager() { return *the().m_identity_manager; }
     static ImageDecoderManager& image_decoder_manager() { return *the().m_image_decoder_manager; }
     // The UI process's own client of the session's RequestServer with no site.
     static ErrorOr<NonnullRefPtr<Requests::RequestClient>> request_server_client(IsPrivate = IsPrivate::No);
@@ -200,6 +201,7 @@ public:
     void permission_settings_changed(Badge<ApplicationSettingsObserver>);
     void global_privacy_control_changed(Badge<ApplicationSettingsObserver>);
     void permissions_changed(Badge<ApplicationPermissionManagerObserver>, PermissionManager const&);
+    void register_permission_manager(PermissionManager&);
 
     bool content_blocking_enabled() const;
     bool has_content_blocking_rules() const;
@@ -250,13 +252,14 @@ public:
     TabProcesses tab_processes() const;
     bool tabs_may_share_processes() const;
     ErrorOr<NonnullRefPtr<WebContentPage>> open_page_for_new_tab(IsPrivate);
+    ErrorOr<NonnullRefPtr<WebContentPage>> open_page_for_new_tab(BrowsingSession&);
     struct ChildFrameWebContentProcess {
         NonnullRefPtr<WebContentClient> client;
         Web::PageId page_id { 0 };
     };
     // For what may share a process with no page. It ends once nothing keeps it.
     ErrorOr<NonnullRefPtr<WebContentClient>> launch_web_content_process_without_page(BrowsingSession&);
-    ErrorOr<ChildFrameWebContentProcess> launch_child_frame_web_content_process(IsPrivate, Vector<Web::HTML::RemoteNavigableDescriptor> remote_navigables, Web::HTML::CrossProcessId root_navigable_id, Web::HTML::SessionHistoryEntryDescriptor initial_history_entry, Web::HTML::VisibilityState system_visibility_state);
+    ErrorOr<ChildFrameWebContentProcess> launch_child_frame_web_content_process(BrowsingSession&, Vector<Web::HTML::RemoteNavigableDescriptor> remote_navigables, Web::HTML::CrossProcessId root_navigable_id, Web::HTML::SessionHistoryEntryDescriptor initial_history_entry, Web::HTML::VisibilityState system_visibility_state);
 
     MediaSessionCoordinator& media_session_coordinator() { return m_media_session_coordinator; }
     virtual OwnPtr<MediaSessionPlatformBackend> create_media_session_platform_backend();
@@ -267,6 +270,7 @@ public:
     Web::HTML::CrossProcessId allocate_ui_process_cross_process_id();
 
     void reset_private_browsing_session();
+    void session_lost_last_view(BrowsingSession&);
 
     virtual void notify_webdriver_window_created(String const& handle);
     void notify_webdriver_window_closed(String const& handle);
@@ -675,6 +679,7 @@ private:
     WebDriverSessionConfig m_webdriver_session_config;
 
     OwnPtr<PrivacyPolicyCoordinator> m_privacy_policy_coordinator;
+    OwnPtr<IdentityManager> m_identity_manager;
     OwnPtr<RequestServerManager> m_request_server_manager;
     OwnPtr<ImageDecoderManager> m_image_decoder_manager;
     RefPtr<CompositorClient> m_compositor_client;

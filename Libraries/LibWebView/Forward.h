@@ -45,6 +45,7 @@ class FontServiceHost;
 class HeadlessWebView;
 class HistoryStore;
 class HSTSStore;
+class IdentityManager;
 class ImageDecoderControlClient;
 class ImageDecoderManager;
 class MicrophoneAuthorizer;

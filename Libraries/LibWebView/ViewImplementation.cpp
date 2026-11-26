@@ -124,8 +124,13 @@ void ViewImplementation::did_leave_owners_tab(Badge<PictureInPictureWindow>)
 }
 
 ViewImplementation::ViewImplementation(IsPrivate is_private)
-    : m_is_private(is_private)
-    , m_session(Application::session_for_new_view(is_private))
+    : ViewImplementation(Application::session_for_new_view(is_private))
+{
+}
+
+ViewImplementation::ViewImplementation(NonnullRefPtr<BrowsingSession> session)
+    : m_is_private(session->is_private())
+    , m_session(move(session))
     , m_document_cookie_version_buffer(Core::create_shared_version_buffer())
     , m_view_id(s_view_count++)
 {
@@ -202,6 +207,16 @@ ViewImplementation::~ViewImplementation()
 
     if (m_top_level_traversable)
         CanonicalTraversable::remove_from_user_agent_top_level_traversable_set(*m_top_level_traversable);
+
+    bool any_other_view_uses_session = false;
+    for (auto const& [_, view] : all_views()) {
+        if (&view->session() == m_session.ptr()) {
+            any_other_view_uses_session = true;
+            break;
+        }
+    }
+    if (!any_other_view_uses_session)
+        Application::the().session_lost_last_view(*m_session);
 }
 
 pid_t ViewImplementation::web_content_pid() const
@@ -3749,13 +3764,13 @@ void ViewImplementation::initialize_tab(Web::HTML::VisibilityState system_visibi
 {
     if (!traversable.has_value()) {
         // FIXME: Fail to open the tab, rather than crashing the whole application if this fails.
-        auto page = MUST(Application::the().open_page_for_new_tab(m_is_private));
+        auto page = MUST(Application::the().open_page_for_new_tab(session()));
         traversable = page->traversable();
     }
     display_traversable(*traversable, system_visibility_state);
     // The launched process's initial page, or the page the opener's process opened for the tab, displays it.
     VERIFY(page().is_open());
-    VERIFY(page().client().is_private() == m_is_private);
+    VERIFY(&page().client().session() == &session());
 
     if (m_window_handle.is_empty()) {
         m_window_handle = generate_random_uuid();

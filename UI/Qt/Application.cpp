@@ -1596,6 +1596,8 @@ void Application::create_session_store(ByteString const& data_directory, bool pe
 
 void Application::create_history_store(ByteString const& data_directory, bool uses_sql_database)
 {
+    m_disabled_history_store = WebView::HistoryStore::create_disabled();
+
     auto create_autocomplete_service = [&](Optional<ByteString> history_database_directory) {
         m_autocomplete_service = make<WebView::AutocompleteService>(Core::EventLoop::current(), move(history_database_directory));
     };
@@ -1619,6 +1621,7 @@ void Application::create_history_store(ByteString const& data_directory, bool us
             return false;
         if (TRY(WebView::HistoryStore::migrate_schema(database)) != Database::MigrationOutcome::Success)
             return false;
+        m_history_database = database;
         m_favicon_store = TRY(WebView::FaviconStore::create(database));
         m_history_store = TRY(WebView::HistoryStore::create(database));
         return true;
@@ -1637,6 +1640,32 @@ void Application::create_history_store(ByteString const& data_directory, bool us
     m_favicon_store = WebView::FaviconStore::create();
     m_history_store = WebView::HistoryStore::create(*m_favicon_store);
     create_autocomplete_service({});
+}
+
+WebView::HistoryStore& Application::history_store_for_identity(StringView identity_id, bool persists_history)
+{
+    if (!persists_history)
+        return *s_the->m_disabled_history_store;
+
+    if (identity_id.is_empty() || identity_id == "default"sv)
+        return *s_the->m_history_store;
+
+    if (auto it = s_the->m_identity_history_stores.find(identity_id); it != s_the->m_identity_history_stores.end())
+        return *it->value;
+
+    auto key = MUST(String::from_utf8(identity_id));
+    if (s_the->m_history_database) {
+        if (auto store = WebView::HistoryStore::create(*s_the->m_history_database, key); !store.is_error()) {
+            auto& ref = *store.value();
+            s_the->m_identity_history_stores.set(move(key), store.release_value());
+            return ref;
+        }
+    }
+
+    auto store = WebView::HistoryStore::create_disabled();
+    auto& ref = *store;
+    s_the->m_identity_history_stores.set(move(key), move(store));
+    return ref;
 }
 
 Function<void()> Application::fetch_remote_suggestions(WebView::SearchEngine const& engine, String const& query, WebView::IsPrivate is_private, Function<void(RemoteResponse)> on_response)
@@ -1693,6 +1722,8 @@ SessionStore& Application::session_store(WebView::IsPrivate is_private)
 void Application::did_clear_history_since(UnixDateTime since)
 {
     m_history_store->remove_entries_accessed_since(since);
+    for (auto& [_, store] : m_identity_history_stores)
+        store->remove_entries_accessed_since(since);
     for (auto* store : { m_session_store.ptr(), m_private_session_store.ptr() }) {
         if (!store)
             continue;

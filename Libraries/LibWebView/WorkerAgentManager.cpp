@@ -458,10 +458,23 @@ void WorkerAgentManager::remove_private_workers_without_owners()
         remove_agent(agent_id, AgentRemovalCause::AgentTerminated);
 }
 
+void WorkerAgentManager::remove_workers_for_session(u64 session_id)
+{
+    Vector<Web::HTML::WorkerAgentId> agents_to_close;
+    for (auto const& entry : m_agents) {
+        auto worker_session = entry.value.client->session();
+        if (entry.value.shared_worker_key.session_id == session_id || (worker_session && worker_session->id() == session_id))
+            agents_to_close.append(entry.key);
+    }
+
+    for (auto agent_id : agents_to_close)
+        remove_agent(agent_id, AgentRemovalCause::AgentTerminated);
+}
+
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-broadcastchannel-postmessage
-// NB: The processes holding the destinations of step 6 are those hosting an environment whose storage key is
-//     sourceStorageKey. Each finds the destinations among its own BroadcastChannel objects.
-void WorkerAgentManager::post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage posted_message, CanonicalEnvironmentSettingsObject const& source_settings, IPC::ConnectionBase const& source_connection, IsPrivate is_private)
+// NB: The processes holding the destinations of step 6 are those in the same browsing session hosting an
+//     environment in the same storage partition (storage_key, top_level_site, has_cross_site_ancestor).
+void WorkerAgentManager::post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage posted_message, CanonicalEnvironmentSettingsObject const& source_settings, IPC::ConnectionBase const& source_connection, u64 source_session_id, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor)
 {
     // 4. Let sourceOrigin be this's relevant settings object's origin.
     // 5. Let sourceStorageKey be the result of running obtain a storage key for non-storage purposes with this's relevant
@@ -477,16 +490,23 @@ void WorkerAgentManager::post_broadcast_channel_message(Web::HTML::PostedBroadca
     };
 
     WebContentClient::for_each_client([&](auto& client) {
-        if (&client == &source_connection || client.is_private() != is_private)
+        if (&client == &source_connection || client.session().id() != source_session_id)
             return IterationDecision::Continue;
-        if (client.hosts_an_environment_with_storage_key(source_storage_key))
+        if (client.hosts_an_environment_with_broadcast_partition(source_storage_key, top_level_site, has_cross_site_ancestor))
             client.async_broadcast_channel_message(message);
         return IterationDecision::Continue;
     });
 
     for_each_client_with_inside_settings([&](WebWorkerClient& client, CanonicalWorkerEnvironmentSettingsObject const& inside_settings) {
-        if (&client != &source_connection && client.is_private() == is_private && obtain_a_storage_key_for_non_storage_purposes(inside_settings) == source_storage_key)
+        auto worker_session = client.session();
+        if (&client != &source_connection
+            && worker_session
+            && worker_session->id() == source_session_id
+            && network_isolation_top_level_site(inside_settings) == top_level_site
+            && inside_settings.has_cross_site_ancestor() == has_cross_site_ancestor
+            && obtain_a_storage_key_for_non_storage_purposes(inside_settings) == source_storage_key) {
             client.async_broadcast_channel_message(message);
+        }
         return IterationDecision::Continue;
     });
 }

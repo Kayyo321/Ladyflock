@@ -106,6 +106,7 @@ public:
     void disk_cache_settings_changed();
     void dns_settings_changed();
     void restart_network_sandboxed_instances_for_session(BrowsingSession&);
+    void retire_instances_for_session(BrowsingSession&);
 
     NonnullRefPtr<Core::Promise<Requests::CacheSizes>> estimate_cache_size_accessed_since(UnixDateTime since);
     NonnullRefPtr<Core::Promise<Empty>> clear_cache(UnixDateTime since);
@@ -124,8 +125,10 @@ private:
     void retire(RequestServerInstance&);
     void retire_idle_instances();
 
+    ByteString cache_root_for_session(BrowsingSession const&) const;
     ByteString sites_directory() const;
-    ByteString cache_path_for_site(Utf16String const& site) const;
+    ByteString sites_directory_for_session(BrowsingSession const&) const;
+    ByteString cache_path_for_site(BrowsingSession const&, Utf16String const& site) const;
     ByteBuffer load_or_create_site_cache_key() const;
     bool is_live_cache_path(ByteString const&) const;
     Vector<ByteString> dormant_site_cache_paths();

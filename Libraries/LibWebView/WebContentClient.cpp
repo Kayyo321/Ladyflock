@@ -155,6 +155,16 @@ bool WebContentClient::hosts_an_environment_with_storage_key(Web::StorageAPI::St
     return hosts_one;
 }
 
+bool WebContentClient::hosts_an_environment_with_broadcast_partition(Web::StorageAPI::StorageKey const& storage_key, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor)
+{
+    bool hosts_one = false;
+    for_each_page([&](WebContentPage& page) {
+        hosts_one = page.hosts_an_environment_with_broadcast_partition(storage_key, top_level_site, has_cross_site_ancestor);
+        return hosts_one ? IterationDecision::Break : IterationDecision::Continue;
+    });
+    return hosts_one;
+}
+
 Optional<CanonicalEnvironmentSettingsObject const&> WebContentClient::hosted_environment(Web::HTML::EnvironmentId const& environment_id)
 {
     Optional<CanonicalEnvironmentSettingsObject const&> environment;

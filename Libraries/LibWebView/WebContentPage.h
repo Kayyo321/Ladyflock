@@ -98,6 +98,7 @@ public:
     Optional<bool> hosted_environment_has_cross_site_ancestor(Web::HTML::EnvironmentId const& environment_id) const;
     Optional<bool> hosted_environment_is_cross_origin_isolated(Web::HTML::EnvironmentId const& environment_id) const;
     bool hosts_an_environment_with_storage_key(Web::StorageAPI::StorageKey const&) const;
+    bool hosts_an_environment_with_broadcast_partition(Web::StorageAPI::StorageKey const&, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor) const;
     void spoof_document_origin_for_testing(Web::HTML::EnvironmentId const& environment_id, URL::Origin);
     // Clears the bottle an environment of this page names, the way the browser's own clearing does: through the jar.
     void clear_storage_for_testing(Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId const&);

@@ -77,9 +77,9 @@ public:
     void remove_web_content_owner(WebContentClient&);
     void remove_web_content_page_owner(WebContentClient&, Web::PageId);
 
-    // The agent behind the source connection has delivered the message to its own channels. Every other agent gets it
-    // over its own connection, wherever it runs.
-    void post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage, CanonicalEnvironmentSettingsObject const& source_settings, IPC::ConnectionBase const& source_connection, IsPrivate);
+    // The agent behind the source connection has delivered the message to its own channels. Every other agent in the
+    // same browsing session and storage partition gets it over its own connection, wherever it runs.
+    void post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage, CanonicalEnvironmentSettingsObject const& source_settings, IPC::ConnectionBase const& source_connection, u64 source_session_id, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor);
     void for_each_request_server_site_bindings(Function<IterationDecision(RequestServerSiteBindings&)> const&);
     WebContentClient* host_of_request_server_client(int client_id) const;
     ErrorOr<void> simulate_request_server_connection_loss_for_testing(WebContentClient&, Web::PageId page_id);
@@ -87,6 +87,10 @@ public:
     // Those of a private session that is over, whose workers only their extended lifetime keeps, are not to meet the next
     // one's documents.
     void remove_private_workers_without_owners();
+
+    // Terminates every worker agent belonging to the given browsing session (e.g., when an identity is destroyed or
+    // the last view of an ephemeral/private session closes).
+    void remove_workers_for_session(u64 session_id);
 
     // A process goes on without pages for as long as it runs a shared worker, as the worker's owners can be anywhere.
     bool hosts_shared_worker(WebContentClient const&) const;

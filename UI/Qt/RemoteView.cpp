@@ -528,26 +528,27 @@ void RemoteView::did_change_favicon(Optional<Gfx::Bitmap const&> favicon)
     if (!m_favicon_hash.has_value() || is_private() == WebView::IsPrivate::Yes)
         return;
 
-    Application::history_store().update_favicon(url(), *m_favicon_hash);
-    Application::bookmark_store().update_favicon(url(), *m_favicon_hash);
+    Application::history_store_for_identity(m_state.identity_id, m_state.persists_history).update_favicon(url(), *m_favicon_hash);
+    if (m_state.identity_id.is_empty() || m_state.identity_id == "default"sv)
+        Application::bookmark_store().update_favicon(url(), *m_favicon_hash);
 }
 
 void RemoteView::did_visit_page(URL::URL const& url, Optional<String> const& title, WebView::HistoryVisitTransition transition)
 {
     if (is_private() == WebView::IsPrivate::No)
-        Application::history_store().record_visit(url, title, UnixDateTime::now(), transition);
+        Application::history_store_for_identity(m_state.identity_id, m_state.persists_history).record_visit(url, title, UnixDateTime::now(), transition);
 }
 
 void RemoteView::did_change_visited_page_title(URL::URL const& url, String const& title)
 {
     if (is_private() == WebView::IsPrivate::No)
-        Application::history_store().update_title(url, title);
+        Application::history_store_for_identity(m_state.identity_id, m_state.persists_history).update_title(url, title);
 }
 
 void RemoteView::did_finish_loading(URL::URL const& url)
 {
     if (is_private() == WebView::IsPrivate::No && m_favicon_hash.has_value())
-        Application::history_store().update_favicon(url, *m_favicon_hash);
+        Application::history_store_for_identity(m_state.identity_id, m_state.persists_history).update_favicon(url, *m_favicon_hash);
 }
 
 // The browser's own strings are English, so languages are named in English.

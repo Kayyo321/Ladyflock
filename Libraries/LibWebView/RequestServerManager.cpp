@@ -123,7 +123,7 @@ void RequestServerManager::for_each_instance(Function<IterationDecision(RequestS
 
 ErrorOr<NonnullRefPtr<RequestServerInstance>> RequestServerManager::launch(NonnullRefPtr<BrowsingSession> session, Optional<Utf16String> site)
 {
-    auto cache_path = site.has_value() ? cache_path_for_site(*site) : Application::request_server_options().cache_path;
+    auto cache_path = site.has_value() ? cache_path_for_site(*session, *site) : cache_root_for_session(*session);
     auto instance = adopt_ref(*new RequestServerInstance(session, move(site), move(cache_path)));
     TRY(launch_process(*instance));
     m_instances.append(instance);
@@ -134,10 +134,11 @@ ErrorOr<NonnullRefPtr<RequestServerInstance>> RequestServerManager::launch(Nonnu
 
 ErrorOr<void> RequestServerManager::launch_process(RequestServerInstance& instance)
 {
-    // Private sessions keep nothing on disk. Every RequestServer of a session would open the same cache otherwise.
+    // Private and ephemeral sessions keep nothing on disk. Every RequestServer of a session would open the same cache otherwise.
     // A site's responses only pass through the RequestServer with no site on their way to the site's own.
-    auto is_private = instance.session().is_private();
-    auto keeps_disk_cache = is_private == IsPrivate::No && (instance.site().has_value() || !uses_site_request_servers());
+    auto is_ephemeral = instance.session().is_ephemeral();
+    auto is_private = is_ephemeral ? IsPrivate::Yes : IsPrivate::No;
+    auto keeps_disk_cache = !is_ephemeral && (instance.site().has_value() || !uses_site_request_servers());
     auto disk_cache_mode = keeps_disk_cache ? Application::request_server_options().http_disk_cache_mode : HTTPDiskCacheMode::Disabled;
     bool disable_network = !Application::privacy_policy_coordinator().allows_network_egress(instance.session());
     instance.m_network_sandbox_denied = disable_network;
@@ -383,18 +384,46 @@ void RequestServerManager::restart_network_sandboxed_instances_for_session(Brows
     }
 }
 
+void RequestServerManager::retire_instances_for_session(BrowsingSession& session)
+{
+    Vector<NonnullRefPtr<RequestServerInstance>> instances_to_retire;
+    for (auto& instance : m_instances) {
+        if (&instance->session() == &session)
+            instances_to_retire.append(instance);
+    }
+
+    for (auto& instance : instances_to_retire) {
+        if (instance->m_control_client)
+            instance->m_control_client->on_request_server_died = nullptr;
+        retire(*instance);
+    }
+}
+
+ByteString RequestServerManager::cache_root_for_session(BrowsingSession const& session) const
+{
+    auto const& base_cache_path = Application::request_server_options().cache_path;
+    if (session.identity_id() == Privacy::DEFAULT_IDENTITY_ID || session.identity_id() == Privacy::PRIVATE_IDENTITY_ID)
+        return base_cache_path;
+    return LexicalPath::join(base_cache_path, "Identities"sv, session.identity_id().to_byte_string()).string();
+}
+
 ByteString RequestServerManager::sites_directory() const
 {
     return LexicalPath::join(Application::request_server_options().cache_path, "RequestServer"sv, "Sites"sv).string();
 }
 
+ByteString RequestServerManager::sites_directory_for_session(BrowsingSession const& session) const
+{
+    return LexicalPath::join(cache_root_for_session(session), "RequestServer"sv, "Sites"sv).string();
+}
+
 // The sandbox of a RequestServer does not stop it from asking whether a path exists, so a name that it could work out
 // itself would tell it which other sites the user has visited.
-ByteString RequestServerManager::cache_path_for_site(Utf16String const& site) const
+ByteString RequestServerManager::cache_path_for_site(BrowsingSession const& session, Utf16String const& site) const
 {
     auto site_bytes = site.to_byte_string();
     auto digest = MUST(Crypto::Authentication::hmac(Crypto::Hash::HashKind::SHA256, m_site_cache_key, site_bytes.bytes()));
-    return LexicalPath::join(sites_directory(), encode_hex(digest.bytes())).string();
+    return LexicalPath::join(sites_directory_for_session(session), encode_hex(digest.bytes())).string();
 }
 
 ByteBuffer RequestServerManager::load_or_create_site_cache_key() const

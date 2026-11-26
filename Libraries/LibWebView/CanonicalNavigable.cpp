@@ -24,6 +24,7 @@
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
+#include <LibWebView/IdentityManager.h>
 #include <LibWebView/PictureInPictureManager.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
@@ -201,6 +202,62 @@ void CanonicalNavigable::begin_navigation(Web::HTML::PreparedNavigationDescripto
     auto const& url = navigation.url;
     auto user_involvement = navigation.user_involvement;
     auto const& navigation_id = navigation.navigation_id;
+
+    // Cross-identity navigation handoff check MUST run BEFORE any DNS lookup or network dispatch in the source identity.
+    if (!parent()) {
+        if (auto view = traversable.view(); view.has_value()) {
+            bool has_post_body = navigation.document_resource.has<Web::HTML::POSTResource>();
+            auto http_method = has_post_body ? "POST"sv : "GET"sv;
+            bool has_opener = active_browsing_context().opener_browsing_context() != nullptr;
+            bool has_referrer = navigation.initiator_base_url_snapshot.scheme() == "http"sv
+                || navigation.initiator_base_url_snapshot.scheme() == "https"sv;
+            bool has_credentials = !url.username().is_empty() || !url.password().is_empty();
+
+            auto decision = Application::identity_manager().evaluate_navigation_handoff(
+                view->session(),
+                url,
+                http_method,
+                has_post_body,
+                has_opener,
+                has_referrer,
+                has_credentials,
+                /*user_confirmed=*/false);
+
+            if (decision.action == Privacy::HandoffAction::RequiresConfirmation) {
+                bool confirmed = view->on_confirm_identity_handoff
+                    ? view->on_confirm_identity_handoff(decision, url)
+                    : false;
+                if (!confirmed) {
+                    if (auto* webdriver_bidi = WebDriverBiDi::the())
+                        webdriver_bidi->navigation_failed(*this, { .id = navigation_id, .status = WebDriverBiDi::NavigationStatusType::Canceled, .url = url });
+                    return;
+                }
+                decision = Application::identity_manager().evaluate_navigation_handoff(
+                    view->session(),
+                    url,
+                    http_method,
+                    has_post_body,
+                    has_opener,
+                    has_referrer,
+                    has_credentials,
+                    /*user_confirmed=*/true);
+            }
+
+            if (decision.action == Privacy::HandoffAction::HandoffToNewContext) {
+                if (view->on_identity_handoff)
+                    view->on_identity_handoff(decision, url);
+                if (auto* webdriver_bidi = WebDriverBiDi::the())
+                    webdriver_bidi->navigation_failed(*this, { .id = navigation_id, .status = WebDriverBiDi::NavigationStatusType::Canceled, .url = url });
+                return;
+            }
+
+            if (decision.action == Privacy::HandoffAction::Deny) {
+                if (auto* webdriver_bidi = WebDriverBiDi::the())
+                    webdriver_bidi->navigation_failed(*this, { .id = navigation_id, .status = WebDriverBiDi::NavigationStatusType::Canceled, .url = url });
+                return;
+            }
+        }
+    }
 
     // 9. If navigable's active document's unload counter is greater than 0, then invoke WebDriver BiDi navigation failed
     //    with navigable and a WebDriver BiDi navigation status whose id is navigationId, status is "canceled", and url
@@ -1095,7 +1152,7 @@ ErrorOr<NonnullRefPtr<WebContentPage>> CanonicalNavigable::obtain_page_to_host_i
         host->register_embedded_page(page_id, traversable);
         traversable.represent_group_in(*host);
     } else {
-        auto process = TRY(Application::the().launch_child_frame_web_content_process(reporting_page()->client().is_private(), traversable.remote_navigable_graph(), id(), current_entry_descriptor(), traversable.system_visibility_state()));
+        auto process = TRY(Application::the().launch_child_frame_web_content_process(reporting_page()->client().session(), traversable.remote_navigable_graph(), id(), current_entry_descriptor(), traversable.system_visibility_state()));
         host = move(process.client);
         page_id = process.page_id;
         host->register_embedded_page(page_id, traversable);
@@ -1360,7 +1417,7 @@ void CanonicalNavigable::set_hosted_state(Web::HTML::HostedNavigableState state)
 // The lost document neither paints into its container nor delays its load event.
 void CanonicalNavigable::did_lose_active_document()
 {
-    if (auto host = active_document().host(); host && is_top_level_traversable()) {
+    if (auto host = active_document().host(); host && host->is_open() && is_top_level_traversable()) {
         if (auto* ext_manager = host->client().session().extension_manager.ptr()) {
             ext_manager->revoke_document_worlds(*host, active_document().id());
             if (auto view = top_level_traversable().view(); view.has_value())

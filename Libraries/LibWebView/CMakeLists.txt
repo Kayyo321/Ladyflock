@@ -53,6 +53,7 @@ set(SOURCES
     HistoryDebug.cpp
     HistoryStore.cpp
     HSTSStore.cpp
+    IdentityManager.cpp
     ImageDecoderControlClient.cpp
     ImageDecoderManager.cpp
     LingeringIndicator.cpp

@@ -60,6 +60,8 @@ public:
     // Installs a custom compiled PolicyInput (e.g., with administrative ceiling or identity requirement).
     TransitionResult apply_policy_input(BrowsingSession&, Privacy::PolicyInput const&);
 
+    void remove_session(u64 session_id) { m_sessions.remove(session_id); }
+
     Function<void(BrowsingSession const&, Privacy::PolicySnapshot const&)> on_policy_committed;
 
 private:
@@ -73,7 +75,8 @@ private:
 
     SessionState& ensure_session_state(BrowsingSession const&);
     SessionState const* find_session_state(BrowsingSession const&) const;
-    Privacy::PolicyInput default_input_for_session() const;
+    Privacy::NetworkMode initial_network_mode_for_session(BrowsingSession const&) const;
+    Privacy::PolicyInput default_input_for_session(BrowsingSession const&) const;
     u64 allocate_epoch() { return m_next_epoch++; }
 
     Privacy::NetworkMode m_default_network_mode { Privacy::NetworkMode::Allow };

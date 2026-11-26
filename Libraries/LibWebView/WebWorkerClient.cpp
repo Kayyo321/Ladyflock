@@ -252,8 +252,13 @@ Messages::WebWorkerClient::RequestCompositorConnectionResponse WebWorkerClient::
 
 void WebWorkerClient::did_post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage message)
 {
-    if (auto settings = hosted_environment(message.environment_id); settings.has_value())
-        WorkerAgentManager::the().post_broadcast_channel_message(move(message), *settings, *this, m_is_private);
+    auto session = m_session.strong_ref();
+    if (!session || !m_inside_settings)
+        return;
+    if (auto settings = hosted_environment(message.environment_id); settings.has_value()) {
+        auto top_level_site = network_isolation_top_level_site(*settings);
+        WorkerAgentManager::the().post_broadcast_channel_message(move(message), *settings, *this, session->id(), top_level_site, m_inside_settings->has_cross_site_ancestor());
+    }
 }
 
 void WebWorkerClient::register_dedicated_worker(Web::HTML::WorkerAgentStartRequest request, IPC::TransportHandle worker_transport)

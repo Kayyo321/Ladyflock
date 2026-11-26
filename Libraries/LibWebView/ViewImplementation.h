@@ -37,6 +37,7 @@
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibHTTP/Header.h>
+#include <LibPrivacy/Identity/NavigationHandoff.h>
 #include <LibRequests/CacheState.h>
 #include <LibRequests/Forward.h>
 #include <LibRequests/NetworkError.h>
@@ -711,6 +712,10 @@ public:
     Function<void(Utf16String const& message)> on_request_set_prompt_text;
     Function<void()> on_before_browser_initiated_navigation;
     Function<void(URL::URL const&, URL::Origin const&, ExternalURLHandler const&, Function<void(bool)>)> on_request_external_url_confirmation;
+    // Cross-identity navigation handoff hooks evaluated BEFORE DNS or dispatch in the source identity.
+    // on_confirm_identity_handoff must return true to permit crossing from a more restrictive route to a less restrictive one.
+    Function<bool(Privacy::NavigationHandoffDecision const&, URL::URL const&)> on_confirm_identity_handoff;
+    Function<void(Privacy::NavigationHandoffDecision const&, URL::URL const&)> on_identity_handoff;
     Function<void()> on_request_accept_dialog;
     Function<void()> on_request_website_issue_report;
     Function<void()> on_request_screenshot;
@@ -869,6 +874,7 @@ protected:
     void update_compositor_display_metadata(WebContentPage&);
 
     explicit ViewImplementation(IsPrivate = IsPrivate::No);
+    explicit ViewImplementation(NonnullRefPtr<BrowsingSession>);
 
     void set_owner_view(ViewImplementation& owner_view);
 

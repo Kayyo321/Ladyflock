@@ -36,6 +36,7 @@
 #include <LibWebView/PictureInPictureManager.h>
 #include <LibWebView/RecordingNotificationBackend.h>
 #include <LibWebView/RequestServerManager.h>
+#include <LibPrivacy/Storage/PartitionKey.h>
 #include <LibWebView/StorageAreaRegistry.h>
 #include <LibWebView/StorageJar.h>
 #include <LibWebView/URL.h>
@@ -286,6 +287,24 @@ bool WebContentPage::hosts_an_environment_with_storage_key(Web::StorageAPI::Stor
     return hosts_one;
 }
 
+bool WebContentPage::hosts_an_environment_with_broadcast_partition(Web::StorageAPI::StorageKey const& storage_key, Optional<Utf16String> const& top_level_site, bool has_cross_site_ancestor) const
+{
+    bool hosts_one = false;
+    for_each_hosted_document([&](CanonicalDocument& document) {
+        auto const& settings = document.relevant_global_object().relevant_settings_object();
+        if (obtain_a_storage_key_for_non_storage_purposes(settings) != storage_key)
+            return IterationDecision::Continue;
+        if (network_isolation_top_level_site(settings) != top_level_site)
+            return IterationDecision::Continue;
+        auto doc_has_cross_site_ancestor = hosted_environment_has_cross_site_ancestor(settings.id());
+        if (!doc_has_cross_site_ancestor.has_value() || *doc_has_cross_site_ancestor != has_cross_site_ancestor)
+            return IterationDecision::Continue;
+        hosts_one = true;
+        return IterationDecision::Break;
+    });
+    return hosts_one;
+}
+
 Optional<CanonicalEnvironmentSettingsObject const&> WebContentPage::hosted_environment(Web::HTML::EnvironmentId const& environment_id) const
 {
     auto document = document_with_hosted_environment(environment_id);
@@ -418,16 +437,23 @@ StorageJar* WebContentPage::storage_jar(Web::StorageAPI::StorageEndpointType sto
     return client().session().storage_jar.ptr();
 }
 
-// The browser process obtains a key a page names again from the environment it was obtained for.
+// The browser process obtains a partitioned storage key from the canonical environment it hosts.
+// Partition tuple: (origin, top_level_site, has_cross_site_ancestor). Opaque origins return empty.
 Optional<String> WebContentPage::canonical_storage_key(Web::HTML::EnvironmentId const& environment_id) const
 {
     auto environment = hosted_environment(environment_id);
     if (!environment.has_value())
         return {};
-    auto storage_key = obtain_a_storage_key(*environment);
-    if (!storage_key.has_value())
+    auto has_cross_site_ancestor = hosted_environment_has_cross_site_ancestor(environment_id);
+    if (!has_cross_site_ancestor.has_value())
         return {};
-    return storage_key->to_string();
+    auto partition_key = Privacy::StoragePartitionKey::from_context(
+        environment->origin(),
+        environment->top_level_origin(),
+        *has_cross_site_ancestor);
+    if (!partition_key.has_value())
+        return {};
+    return partition_key->to_storage_key_string();
 }
 
 // A position a page sends is in the viewport of a local root it hosts, which the tab's view places in its own.
@@ -3677,8 +3703,11 @@ Messages::WebContentClient::DidRequestStorageUsageResponse WebContentPage::did_r
 
 void WebContentPage::did_post_broadcast_channel_message(Web::HTML::PostedBroadcastChannelMessage message)
 {
-    if (auto settings = hosted_environment(message.environment_id); settings.has_value())
-        WorkerAgentManager::the().post_broadcast_channel_message(move(message), *settings, client(), client().is_private());
+    if (auto settings = hosted_environment(message.environment_id); settings.has_value()) {
+        auto top_level_site = network_isolation_top_level_site(*settings);
+        auto has_cross_site_ancestor = hosted_environment_has_cross_site_ancestor(message.environment_id).value_or(true);
+        WorkerAgentManager::the().post_broadcast_channel_message(move(message), *settings, client(), client().session().id(), top_level_site, has_cross_site_ancestor);
+    }
 }
 
 void WebContentPage::did_finish_test(String text)

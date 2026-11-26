@@ -5,6 +5,7 @@
  */
 
 #include <LibCore/EventLoop.h>
+#include <LibWebView/Application.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/PictureInPictureWindow.h>
 
@@ -62,9 +63,17 @@ NonnullOwnPtr<HeadlessWebView> HeadlessWebView::create(Core::AnonymousBuffer the
     return view;
 }
 
+NonnullOwnPtr<HeadlessWebView> HeadlessWebView::create_for_session(Core::AnonymousBuffer theme, Web::DevicePixelSize window_size, NonnullRefPtr<BrowsingSession> session)
+{
+    auto view = adopt_own(*new HeadlessWebView(move(theme), window_size, move(session)));
+    view->initialize_tab(Web::HTML::VisibilityState::Visible);
+
+    return view;
+}
+
 NonnullOwnPtr<HeadlessWebView> HeadlessWebView::create_child(HeadlessWebView& parent, CanonicalTraversable& traversable, IsOwnedByParent is_owned_by_parent)
 {
-    auto view = adopt_own(*new HeadlessWebView(parent.m_theme, parent.m_viewport_size, parent.is_private()));
+    auto view = adopt_own(*new HeadlessWebView(parent.m_theme, parent.m_viewport_size, NonnullRefPtr<BrowsingSession> { parent.session() }));
     if (is_owned_by_parent == IsOwnedByParent::Yes)
         view->set_owner_view(parent);
 
@@ -74,7 +83,12 @@ NonnullOwnPtr<HeadlessWebView> HeadlessWebView::create_child(HeadlessWebView& pa
 }
 
 HeadlessWebView::HeadlessWebView(Core::AnonymousBuffer theme, Web::DevicePixelSize viewport_size, IsPrivate is_private)
-    : ViewImplementation(is_private)
+    : HeadlessWebView(move(theme), viewport_size, Application::session_for_new_view(is_private))
+{
+}
+
+HeadlessWebView::HeadlessWebView(Core::AnonymousBuffer theme, Web::DevicePixelSize viewport_size, NonnullRefPtr<BrowsingSession> session)
+    : ViewImplementation(move(session))
     , m_theme(move(theme))
     , m_viewport_size(viewport_size)
 {

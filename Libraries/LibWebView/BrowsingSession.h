@@ -15,6 +15,7 @@
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <AK/Weakable.h>
+#include <LibPrivacy/Identity/Types.h>
 #include <LibWebView/Export.h>
 #include <LibWebView/Forward.h>
 
@@ -25,16 +26,22 @@ enum class IsPrivate : u8 {
     Yes,
 };
 
-// The ordinary session lives as long as the application. A private one is owned by its views and content processes,
-// and everything else holds it weakly, so nothing outliving them can bring one back.
+// The ordinary session lives as long as the application. Named identities own isolated
+// sessions managed by IdentityManager, and private/ephemeral sessions are owned by their
+// views and content processes and held weakly elsewhere so nothing outliving them can bring one back.
 class WEBVIEW_API BrowsingSession
     : public RefCounted<BrowsingSession>
     , public Weakable<BrowsingSession> {
 public:
     static NonnullRefPtr<BrowsingSession> create(IsPrivate);
+    static NonnullRefPtr<BrowsingSession> create_for_identity(Privacy::IdentityDescriptor);
     ~BrowsingSession();
 
     IsPrivate is_private() const { return m_is_private; }
+    Privacy::IdentityDescriptor const& identity() const { return m_identity; }
+    String const& identity_id() const { return m_identity.id; }
+    bool is_ephemeral() const { return m_is_private == IsPrivate::Yes || m_identity.is_ephemeral(); }
+    bool persists_history() const { return m_is_private == IsPrivate::No && m_identity.persist_history; }
 
     // No two sessions of the application share an ID.
     u64 id() const { return m_id; }
@@ -67,10 +74,11 @@ public:
     Vector<CertificateException> trusted_certificates;
 
 private:
-    explicit BrowsingSession(IsPrivate);
+    explicit BrowsingSession(IsPrivate, Privacy::IdentityDescriptor);
 
     u64 m_id { 0 };
     IsPrivate m_is_private { IsPrivate::No };
+    Privacy::IdentityDescriptor m_identity;
 };
 
 }
