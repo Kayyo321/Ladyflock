@@ -17,6 +17,7 @@
 #include <LibIPC/Encoder.h>
 #include <LibJS/HostClassBuilder.h>
 #include <LibWeb/Bindings/CSS.h>
+#include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleEngineInput.h>
 #include <LibWeb/Compositor/CompositorHost.h>
@@ -27,6 +28,7 @@
 #include <LibWeb/Editing/SpellCheckController.h>
 #include <LibWeb/Editing/SpellingMarkers.h>
 #include <LibWeb/Editing/WritingSuggestionController.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/Fetch/Engine/NetworkActivity.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CheckUnloadingCanceledState.h>
@@ -184,6 +186,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_pending_permission_requests);
     visitor.visit(m_notifications_list);
     visitor.visit(m_unloading_canceled_checks);
+    visitor.visit(m_pending_web_request_checks);
     m_pending_fullscreen_operations.for_each([&](auto const& operation) {
         operation.visit([&](PendingFullscreenEnter const& enter_operation) {
                 visitor.visit(enter_operation.element);
@@ -2944,6 +2947,166 @@ void Page::when_translation_settled(GC::Ref<GC::Function<void()>> callback)
 NonnullRefPtr<Audio::RecordStream::CreatePromise> PageClient::create_audio_record_stream(StringView, Audio::RecordStream::RecordCallback)
 {
     VERIFY_NOT_REACHED();
+}
+
+void Page::set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json)
+{
+    m_hosted_extension_id = move(extension_id);
+    m_hosted_extension_uuid = move(extension_uuid);
+    m_hosted_extension_manifest_json = move(manifest_json);
+
+    for (auto const& navigable : hosted_navigables()) {
+        auto document = navigable->active_document();
+        if (!document)
+            continue;
+        if (document->url().scheme() == "moz-extension"sv
+            && document->url().serialized_host() == *m_hosted_extension_uuid) {
+            document->initialize_extension_page_context(*m_hosted_extension_id, *m_hosted_extension_uuid, *m_hosted_extension_manifest_json);
+        }
+    }
+}
+
+void Page::register_extension_document(DOM::Document& document)
+{
+    m_extension_documents.set(document.id(), document);
+}
+
+void Page::unregister_extension_document(HTML::CrossProcessId document_id)
+{
+    m_extension_documents.remove(document_id);
+    m_pending_extension_scripts.remove(document_id);
+}
+
+Vector<Extensions::AttachedContentScript> Page::take_pending_extension_scripts(HTML::CrossProcessId document_id)
+{
+    return m_pending_extension_scripts.take(document_id).value_or({});
+}
+
+static Vector<GC::Root<DOM::Document>> target_documents_for_extension_op(Page& page, HashMap<HTML::CrossProcessId, GC::Weak<DOM::Document>>& extension_documents, Optional<HTML::CrossProcessId> document_id)
+{
+    Vector<GC::Root<DOM::Document>> targets;
+    if (document_id.has_value()) {
+        if (auto it = extension_documents.find(*document_id); it != extension_documents.end()) {
+            if (auto doc = it->value.ptr()) {
+                targets.append(*doc);
+                return targets;
+            }
+        }
+        for (auto const& navigable : page.hosted_navigables()) {
+            if (auto doc = navigable->active_document(); doc && doc->id() == *document_id) {
+                targets.append(*doc);
+                return targets;
+            }
+        }
+        return targets;
+    }
+
+    for (auto const& entry : extension_documents) {
+        if (auto doc = entry.value.ptr())
+            targets.append(*doc);
+    }
+    for (auto const& navigable : page.hosted_navigables()) {
+        if (auto doc = navigable->active_document()) {
+            bool already_added = any_of(targets, [&](auto const& existing) { return existing.ptr() == doc.ptr(); });
+            if (!already_added)
+                targets.append(*doc);
+        }
+    }
+    return targets;
+}
+
+void Page::attach_extension_content_scripts(HTML::CrossProcessId document_id, Vector<Extensions::AttachedContentScript> scripts)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    if (!targets.is_empty()) {
+        for (auto& doc : targets)
+            doc->ensure_extension_content_script_host().attach_scripts(scripts);
+        return;
+    }
+
+    auto& pending = m_pending_extension_scripts.ensure(document_id);
+    pending.extend(move(scripts));
+}
+
+void Page::execute_extension_script(u64 execution_id, String const& extension_id, String const& extension_uuid, u64 grant_generation, Vector<String> const& sources, Optional<String> const& func_source, Optional<String> const& args_json, Optional<HTML::CrossProcessId> document_id)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    if (targets.is_empty()) {
+        client().page_did_finish_extension_script_execution(execution_id, false, "Target document not found"_string);
+        return;
+    }
+
+    auto& doc = targets.first();
+    doc->ensure_extension_content_script_host().execute_script_dynamically(execution_id, extension_id, extension_uuid, grant_generation, sources, func_source, args_json);
+}
+
+void Page::inject_extension_css(String const& extension_id, String const& key, String const& css, bool remove, Optional<HTML::CrossProcessId> document_id)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    for (auto& doc : targets) {
+        if (remove)
+            doc->remove_extension_style_sheet(extension_id, key);
+        else
+            doc->add_extension_style_sheet(extension_id, key, css);
+    }
+}
+
+void Page::handle_extension_api_response(HTML::CrossProcessId document_id, u64 call_id, bool success, String const& result_or_error_json)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    for (auto& doc : targets) {
+        if (auto* host = doc->extension_content_script_host())
+            host->handle_api_response(call_id, success, result_or_error_json);
+    }
+    // Run the isolated world's promise reactions after delivery, even if the page has no further tasks.
+    if (!Bindings::main_thread_vm().has_running_execution_context())
+        HTML::perform_a_microtask_checkpoint();
+}
+
+void Page::dispatch_extension_event(String const& extension_id, String const& namespace_name, String const& event_name, String const& args_json, Optional<u64> reply_id, Optional<HTML::CrossProcessId> document_id)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    bool dispatched = false;
+    for (auto& doc : targets) {
+        if (auto* host = doc->extension_content_script_host()) {
+            host->dispatch_event(extension_id, namespace_name, event_name, args_json, dispatched ? Optional<u64> {} : reply_id);
+            dispatched = true;
+        }
+    }
+    if (!dispatched && reply_id.has_value())
+        client().page_did_reply_extension_event(*reply_id, false, "null"_string);
+    if (!Bindings::main_thread_vm().has_running_execution_context())
+        HTML::perform_a_microtask_checkpoint();
+}
+
+void Page::revoke_extension_world(String const& extension_id, Optional<HTML::CrossProcessId> document_id, u64 new_grant_generation)
+{
+    auto targets = target_documents_for_extension_op(*this, m_extension_documents, document_id);
+    for (auto& doc : targets) {
+        if (auto* host = doc->extension_content_script_host())
+            host->revoke_extension(extension_id, new_grant_generation);
+        doc->remove_all_extension_style_sheets_for_extension(extension_id);
+    }
+    for (auto& pending_entry : m_pending_extension_scripts) {
+        if (document_id.has_value() && pending_entry.key != *document_id)
+            continue;
+        pending_entry.value.remove_all_matching([&](auto const& script) {
+            return script.extension_id == extension_id;
+        });
+    }
+}
+
+void Page::check_web_request_before_request(Extensions::WebRequestBeforeRequestDetails details, WebRequestDecisionCallback callback)
+{
+    auto check_id = m_next_web_request_check_id++;
+    m_pending_web_request_checks.set(check_id, callback);
+    client().page_did_check_web_request_before_request(check_id, details);
+}
+
+void Page::did_check_web_request_before_request(u64 check_id, Extensions::WebRequestDecision decision)
+{
+    if (auto callback = m_pending_web_request_checks.take(check_id); callback.has_value())
+        (*callback)->function()(move(decision));
 }
 
 }

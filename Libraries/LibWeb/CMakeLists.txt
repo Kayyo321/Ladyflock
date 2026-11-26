@@ -11,6 +11,7 @@ set(SOURCES
     ARIA/Roles.cpp
     ARIA/StateAndProperties.cpp
     Bindings/AudioConstructor.cpp
+    Bindings/ExtensionWorld.cpp
     Bindings/HostDefined.cpp
     Bindings/ImageConstructor.cpp
     Bindings/InterfaceObject.cpp
@@ -271,6 +272,8 @@ set(SOURCES
     Editing/ReplaceSelection.cpp
     EntriesAPI/FileSystemEntry.cpp
     EventTiming/EventTiming.cpp
+    Extensions/ExtensionContentScriptHost.cpp
+    Extensions/WebRequestClient.cpp
     Fetch/Body.cpp
     Fetch/BodyInit.cpp
     Fetch/Engine/FetchBodyDeliveryGate.cpp

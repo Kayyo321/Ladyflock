@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <LibRequests/ExtensionRequestCheck.h>
 #include <LibRequests/NetworkUsage.h>
 
 #include <AK/ByteBuffer.h>
@@ -65,7 +66,8 @@ public:
         HTTP::Cookie::SameSiteContext,
         Optional<Requests::RequestTransferLeaseKey>,
         Optional<u32> address_selection_hint,
-        bool notify_on_cache_miss);
+        bool notify_on_cache_miss,
+        Requests::ExtensionRequestCheck = Requests::ExtensionRequestCheck::NotApplicable);
 
     static NonnullOwnPtr<Request> connect(
         u64 request_id,
@@ -151,6 +153,7 @@ private:
 
     enum class State : u8 {
         Init,              // Decide whether to service this request from cache or the network.
+        WaitForWebRequest, // Wait for extension webRequest.onBeforeRequest decision before cache/DNS/network.
         ReadCache,         // Read the cached response from disk.
         WaitForCache,      // Wait for an existing cache entry to complete before proceeding.
         FailedCacheOnly,   // An only-if-cached request failed to find a cache entry.
@@ -170,6 +173,8 @@ private:
         switch (state) {
         case State::Init:
             return "Init"sv;
+        case State::WaitForWebRequest:
+            return "WaitForWebRequest"sv;
         case State::ReadCache:
             return "ReadCache"sv;
         case State::WaitForCache:
@@ -343,6 +348,7 @@ private:
     RefPtr<AIACollector> m_aia_collector;
     size_t m_aia_fetch_count { 0 };
     bool m_notify_on_cache_miss { false };
+    Requests::ExtensionRequestCheck m_extension_request_check { Requests::ExtensionRequestCheck::NotApplicable };
     bool m_informed_client_requires_network { false };
     bool m_informed_client_request_started { false };
     bool m_cache_entry_was_revalidated { false };

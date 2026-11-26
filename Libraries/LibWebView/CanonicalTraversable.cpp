@@ -17,6 +17,7 @@
 #include <LibWebView/CanonicalEnvironmentSettingsObject.h>
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/StorageJar.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
@@ -1729,6 +1730,7 @@ void CanonicalTraversable::did_activate_history_entry(HistoryOperation& operatio
     if (navigable.is_top_level_traversable())
         operation.has_unactivated_load = false;
     auto const* replaced_document = &navigable.active_document();
+    auto* ext_manager = source_page->client().session().extension_manager.ptr();
     // NB: The page that activated the document hosts it: the job's, which hosts the document the job populated, or else
     //     the navigable's.
     navigable.did_commit_navigation(target_entry, move(activated_navigable_state), operation.sequence_number, navigation_id, move(source_page));
@@ -1747,6 +1749,8 @@ void CanonicalTraversable::did_activate_history_entry(HistoryOperation& operatio
             view->apply_zoom_for_current_host();
             view->send_force_dark_to_embedded_pages();
             view->m_external_url_request_policy.clear_page_request_allowance();
+            if (ext_manager && view->is_private() == IsPrivate::No && &navigable.active_document() != replaced_document)
+                ext_manager->clear_tab_grants_on_navigation(view->view_id());
             if (view->on_top_level_navigation_commit)
                 view->on_top_level_navigation_commit();
         }

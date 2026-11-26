@@ -22,11 +22,18 @@ class QAction;
 class QHBoxLayout;
 class QToolButton;
 
+namespace Hub {
+
+struct ExtensionItem;
+
+}
+
 namespace Ladybird {
 
 class BrowserWindow;
 class DownloadsButton;
 class DownloadsPopover;
+class ExtensionButtons;
 class FeedbackButton;
 class FeedbackPopover;
 class LocationEdit;
@@ -97,6 +104,10 @@ public:
     // While the sidebar opens or closes, the field's panel shows only within this part of the window, as the page and the
     // sidebar slide under it.
     void set_field_clip(Optional<QRect>);
+
+    void set_extension_state(Tab&, bool available, Vector<Hub::ExtensionItem>, u32 width);
+    void close_extension_popup(Tab&);
+    void show_extension_popup(Tab&, String const& id, URL::URL const&);
 
     void show_downloads_popover();
     void update_downloads_button();
@@ -179,6 +190,12 @@ private:
     QAction* m_open_downloads_page_action { nullptr };
     ReloadButton* m_reload_button { nullptr };
 
+    ExtensionButtons* m_extension_buttons { nullptr };
+    QPointer<Popover> m_extension_popup;
+    Optional<String> m_popup_extension_id;
+    QPointer<QWidget> m_extension_sidebar;
+    Optional<URL::URL> m_sidebar_url;
+    Optional<u64> m_sidebar_owner;
     DownloadsButton* m_downloads_button { nullptr };
     QPointer<DownloadsPopover> m_downloads_popover;
     size_t m_completed_download_count { 0 };

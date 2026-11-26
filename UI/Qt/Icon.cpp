@@ -348,6 +348,8 @@ static StringView chrome_icon_path(ChromeIcon icon)
         return GLOBE_ICON_PATH;
     case ChromeIcon::Compositor:
         return COMPOSITOR_ICON_PATH;
+    case ChromeIcon::Extensions:
+        return "M2 4h4v-1a1.75 1.75 0 0 1 3.5 0v1h3v3h.75a1.75 1.75 0 0 1 0 3.5h-.75v3h-4v-1a1.5 1.5 0 0 0-3 0v1H2z"sv;
     case ChromeIcon::Hub:
         return HUB_ICON_PATH;
     case ChromeIcon::Image:

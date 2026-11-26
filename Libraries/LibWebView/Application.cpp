@@ -40,6 +40,7 @@
 #include <LibURL/InternalURLs.h>
 #include <LibURL/Parser.h>
 #include <LibWebCommon/CSS/PropertyList.h>
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/Fetch/Infrastructure/HTTP/Statuses.h>
 #include <LibWebCommon/Loader/DownloadFilename.h>
 #include <LibWebCommon/Loader/UserAgent.h>
@@ -53,6 +54,8 @@
 #include <LibWebView/CrashReport.h>
 #include <LibWebView/CrashReportOutbox.h>
 #include <LibWebView/CrashReportStore.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
+#include <LibWebView/Extensions/ExtensionStorage.h>
 #include <LibWebView/FontService.h>
 #include <LibWebView/FontServiceHost.h>
 #include <LibWebView/HSTSStore.h>
@@ -261,6 +264,9 @@ Application::~Application()
         m_cpu_profiler_control_socket.clear();
     }
 
+    if (m_default_session && m_default_session->extension_manager)
+        m_default_session->extension_manager->shutdown();
+
     m_spare_web_content_process = nullptr;
 
     PictureInPictureManager::the().destroy_all_windows();
@@ -360,7 +366,10 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool disable_content_blocker = false;
     bool disable_sandbox = false;
     bool force_video_decoder_server = false;
+    bool enable_extensions = false;
+    bool enable_amo_catalog = false;
     Vector<ByteString> content_blocker_list_paths;
+    Vector<ByteString> load_extension_paths;
     Optional<StringView> resource_substitution_map_path;
     bool enable_autoplay = false;
     bool expose_experimental_interfaces = false;
@@ -490,6 +499,21 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
             return true;
         },
     });
+    args_parser.add_option(enable_extensions, "Enable WebExtensions support", "enable-extensions");
+    args_parser.add_option(enable_amo_catalog, "Enable experimental Mozilla Add-ons catalog search and installation", "enable-amo-catalog");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Load an unpacked WebExtension from a directory. May be specified multiple times.",
+        .long_name = "load-extension",
+        .value_name = "path",
+        .accept_value = [&](ByteString value) {
+            if (value.is_empty())
+                return false;
+
+            load_extension_paths.append(move(value));
+            return true;
+        },
+    });
     args_parser.add_option(enable_autoplay, "Enable multimedia autoplay", "enable-autoplay");
     args_parser.add_option(expose_experimental_interfaces, "Expose experimental IDL interfaces", "expose-experimental-interfaces");
     args_parser.add_option(expose_internals_object, "Expose internals object", "expose-internals-object");
@@ -601,6 +625,9 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .enable_content_blocker = disable_content_blocker ? EnableContentBlocker::No : EnableContentBlocker::Yes,
         .disable_sandbox = disable_sandbox ? DisableSandbox::Yes : DisableSandbox::No,
         .force_video_decoder_server = force_video_decoder_server ? ForceVideoDecoderServer::Yes : ForceVideoDecoderServer::No,
+        .enable_extensions = enable_extensions || !load_extension_paths.is_empty(),
+        .enable_amo_catalog = enable_amo_catalog,
+        .load_extension_paths = move(load_extension_paths),
     };
 
     if (web_content_memory_limit_in_mebibytes.has_value()) {
@@ -1200,6 +1227,9 @@ ErrorOr<NonnullRefPtr<WebContentClient>> Application::create_web_content_client(
 
     if (m_content_blocker_list_buffer.has_value())
         client->async_set_content_blockers(*m_content_blocker_list_buffer);
+
+    if (session.is_private() == IsPrivate::No && session.extension_manager)
+        client->async_set_web_request_watch_snapshot(session.extension_manager->web_request_coordinator().snapshot());
 
     m_web_content_clients.set(client);
     return client;
@@ -1902,8 +1932,9 @@ ErrorOr<void> Application::launch_services()
         auto hsts_outcome = TRY(HSTSStore::migrate_schema(database, Database::MigrationMode::CheckOnly));
         auto storage_outcome = TRY(StorageJar::migrate_schema(database, Database::MigrationMode::CheckOnly));
         auto downloads_outcome = TRY(DownloadStore::migrate_schema(database, Database::MigrationMode::CheckOnly));
+        auto extensions_outcome = TRY(Extensions::ExtensionStorage::migrate_schema(database, Database::MigrationMode::CheckOnly));
 
-        if (cookies_outcome == Database::MigrationOutcome::Success && hsts_outcome == Database::MigrationOutcome::Success && storage_outcome == Database::MigrationOutcome::Success && downloads_outcome == Database::MigrationOutcome::Success) {
+        if (cookies_outcome == Database::MigrationOutcome::Success && hsts_outcome == Database::MigrationOutcome::Success && storage_outcome == Database::MigrationOutcome::Success && downloads_outcome == Database::MigrationOutcome::Success && extensions_outcome == Database::MigrationOutcome::Success) {
             // Apply in order, stopping at the first store that finds the database too new
             // (a concurrent process may have migrated it since the preflight).
             cookies_outcome = TRY(CookieJar::migrate_schema(database));
@@ -1916,17 +1947,21 @@ ErrorOr<void> Application::launch_services()
             downloads_outcome = storage_outcome == Database::MigrationOutcome::Success
                 ? TRY(DownloadStore::migrate_schema(database))
                 : Database::MigrationOutcome::DatabaseTooNew;
+            extensions_outcome = downloads_outcome == Database::MigrationOutcome::Success
+                ? TRY(Extensions::ExtensionStorage::migrate_schema(database))
+                : Database::MigrationOutcome::DatabaseTooNew;
         }
 
         // If any store finds the shared file too new, including a concurrent process migrating it
         // between the preflight and an apply above, none of them may persist this session, even if
         // an earlier store already migrated. Otherwise, we would keep writing to a vetoed database.
-        if (cookies_outcome != Database::MigrationOutcome::Success || hsts_outcome != Database::MigrationOutcome::Success || storage_outcome != Database::MigrationOutcome::Success || downloads_outcome != Database::MigrationOutcome::Success) {
+        if (cookies_outcome != Database::MigrationOutcome::Success || hsts_outcome != Database::MigrationOutcome::Success || storage_outcome != Database::MigrationOutcome::Success || downloads_outcome != Database::MigrationOutcome::Success || extensions_outcome != Database::MigrationOutcome::Success) {
             warnln("Browsing database was created by a newer Ladybird version; cookies, web storage, HSTS policies and unfinished downloads will not be persisted this session");
             cookies_outcome = Database::MigrationOutcome::DatabaseTooNew;
             hsts_outcome = Database::MigrationOutcome::DatabaseTooNew;
             storage_outcome = Database::MigrationOutcome::DatabaseTooNew;
             downloads_outcome = Database::MigrationOutcome::DatabaseTooNew;
+            extensions_outcome = Database::MigrationOutcome::DatabaseTooNew;
         }
 
         if (cookies_outcome == Database::MigrationOutcome::Success)
@@ -1949,6 +1984,10 @@ ErrorOr<void> Application::launch_services()
         else
             m_download_store = DownloadStore::create_disabled();
 
+        m_default_session->extension_manager = TRY(Extensions::ExtensionManager::create(
+            database_path,
+            extensions_outcome == Database::MigrationOutcome::Success ? database.ptr() : nullptr));
+
         // A headless run, a browser that WebDriver drives, and one that logs process statistics never join a browser
         // already running on their profile. Yet startup recovery would still rewrite the saved session, reset the
         // unclean-exit count, and demote the open windows of a browser running on this profile. So none of them keeps
@@ -1959,6 +1998,7 @@ ErrorOr<void> Application::launch_services()
         m_default_session->hsts_store = HSTSStore::create();
         m_default_session->storage_jar = StorageJar::create();
         m_download_store = DownloadStore::create_disabled();
+        m_default_session->extension_manager = TRY(Extensions::ExtensionManager::create(profile().paths().data, nullptr));
     }
 
     m_default_session->blob_url_store = make<BlobURLStore>();
@@ -2002,6 +2042,17 @@ ErrorOr<void> Application::launch_services()
         when_platform_features_are_current([this] {
             bring_up_compositor_process();
         });
+    }
+
+    if (m_default_session->extension_manager) {
+        m_default_session->extension_manager->set_extensions_enabled(true);
+        m_default_session->extension_manager->catalog_client().set_enable_public_amo_catalog(m_browser_options.enable_amo_catalog);
+        if (auto result = m_default_session->extension_manager->initialize_persisted_extensions(); result.is_error())
+            warnln("Failed to initialize persisted extensions: {}", result.error());
+        for (auto const& path : m_browser_options.load_extension_paths) {
+            if (auto result = m_default_session->extension_manager->load_unpacked(path, true); result.is_error())
+                warnln("Failed to load unpacked extension '{}': {}", path, result.error());
+        }
     }
 
     if (m_browser_options.devtools_port.has_value()) {
@@ -2465,6 +2516,27 @@ void Application::configure_request_server_control_client(Requests::RequestContr
         return cookie;
     };
 
+    control_client.on_check_web_request_before_request = [weak_control = control_client.make_weak_ptr<Requests::RequestControlClient>()](u64 check_id, int client_id, URL::URL const& url, ByteString const& method) {
+        auto session = Application::the().session_for_request_server_client(client_id);
+        if (!session || session->is_private() == IsPrivate::Yes || !session->extension_manager) {
+            if (auto control = weak_control.strong_ref())
+                control->async_did_check_web_request_before_request(check_id, false);
+            return;
+        }
+
+        Web::Extensions::WebRequestBeforeRequestDetails details;
+        details.request_id = check_id;
+        details.url = url;
+        details.method = String::from_utf8_without_validation(method.bytes());
+        details.type = Web::Extensions::WebRequestResourceType::MainFrame;
+        details.is_navigation = true;
+
+        session->extension_manager->web_request_coordinator().evaluate_before_request(details, [weak_control, check_id](Web::Extensions::WebRequestDecision decision) {
+            if (auto control = weak_control.strong_ref())
+                control->async_did_check_web_request_before_request(check_id, decision.cancel);
+        });
+    };
+
     TabPerformanceMonitor::configure(control_client);
 }
 
@@ -2683,6 +2755,9 @@ void Application::process_did_exit(Process&& process, Optional<int>)
         break;
     case ProcessType::WebRTCClient:
         // The WebContent process it served asks for a new one the next time it needs one.
+        break;
+    case ProcessType::ExtensionVerifier:
+        // Transient/on-demand sandboxed XPI verification helper.
         break;
     case ProcessType::RequestServer:
         if (auto client = process.client<Requests::RequestControlClient>()) {

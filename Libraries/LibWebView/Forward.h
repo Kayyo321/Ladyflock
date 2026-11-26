@@ -38,9 +38,11 @@ class CookieJar;
 class DefaultBrowser;
 class DownloadStore;
 class ExternalURLHandler;
+class ExtensionVerifierClient;
 class FaviconStore;
 class FontService;
 class FontServiceHost;
+class HeadlessWebView;
 class HistoryStore;
 class HSTSStore;
 class ImageDecoderControlClient;
@@ -61,6 +63,7 @@ class RequestServerSiteBindings;
 class PermissionManager;
 class Settings;
 class CertificateUI;
+class AddonsUI;
 class SettingsUI;
 class SpellChecker;
 class Translator;
@@ -90,6 +93,18 @@ class WebContentPage;
 
 enum class UpdateCheckTrigger : u8;
 
+namespace Extensions {
+
+class ExtensionManager;
+class ExtensionStorage;
+class ExtensionActionController;
+class ExtensionSidebarController;
+class ExtensionInstaller;
+class WebRequestCoordinator;
+class CatalogClient;
+class RevocationList;
+
+}
 }
 
 namespace AK {

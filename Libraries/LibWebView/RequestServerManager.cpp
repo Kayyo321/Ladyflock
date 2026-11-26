@@ -16,6 +16,7 @@
 #include <LibFileSystem/FileSystem.h>
 #include <LibHTTP/Cache/Utilities.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/HelperProcess.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/RequestServerSiteBindings.h>
@@ -160,6 +161,12 @@ ErrorOr<void> RequestServerManager::launch_process(RequestServerInstance& instan
 
     for (auto const& exception : instance.session().trusted_certificates)
         control_client->async_trust_certificate(exception.host, exception.port, exception.fingerprint);
+
+    if (instance.session().is_private() == IsPrivate::No && instance.session().extension_manager) {
+        Extensions::ExtensionManager::push_watch_filter_to_request_server(
+            *control_client,
+            instance.session().extension_manager->web_request_coordinator().snapshot());
+    }
 
     instance.m_control_client = move(control_client);
     instance.m_ui_client = nullptr;

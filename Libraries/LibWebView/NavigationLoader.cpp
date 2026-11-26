@@ -30,6 +30,7 @@
 #include <LibWebView/CanonicalNavigable.h>
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/NavigationLoader.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/RequestServerSiteBindings.h>
@@ -398,7 +399,7 @@ void NavigationLoader::acquire_response_body(WebContentClient const& population_
     m_completion_steps = move(completion_steps);
 
     auto const* body_handle = response_body_handle(*m_result);
-    if (auto const* navigation_params = m_result->navigation_params.get_pointer<Web::HTML::NavigationParamsDescriptor>()) {
+    if (auto* navigation_params = m_result->navigation_params.get_pointer<Web::HTML::NavigationParamsDescriptor>()) {
         auto const& response_url = navigation_params->response.url_list.is_empty() ? m_request.history_entry.url : navigation_params->response.url_list.last();
         if (response_url.scheme() == "file"sv) {
             // NB: Only the UI process reads the file, so a response for it that names a body is made up.
@@ -407,6 +408,36 @@ void NavigationLoader::acquire_response_body(WebContentClient const& population_
                 return;
             }
             read_local_file_for_response();
+            return;
+        }
+        if (response_url.scheme() == "moz-extension"sv) {
+            auto* ext_manager = population_worker.session().extension_manager.ptr();
+            if (population_worker.is_private() == IsPrivate::Yes || !ext_manager) {
+                did_acquire(false);
+                return;
+            }
+            Optional<URL::Origin> initiator = m_request.history_entry.document_state.initiator_origin;
+            // A direct browser navigation has an opaque origin snapshot and no source document.
+            // Redirects and navigations requested by a web document still need a public resource.
+            if (m_request.user_involvement == Web::HTML::UserNavigationInvolvement::BrowserUI
+                && !m_request.source_snapshot_params.fetch_client.has_value()
+                && all_of(navigation_params->response.url_list, [&](auto const& url) { return url == response_url; }))
+                initiator.clear();
+            auto served = ext_manager->serve_resource(response_url, initiator);
+            if (!served.allowed) {
+                did_acquire(false);
+                return;
+            }
+            auto header_list = HTTP::HeaderList::create();
+            header_list->append(HTTP::Header::isomorphic_encode("Content-Type"sv, served.mime_type));
+            if (served.content_security_policy.has_value() && !served.content_security_policy->is_empty())
+                header_list->append(HTTP::Header::isomorphic_encode("Content-Security-Policy"sv, *served.content_security_policy));
+            navigation_params->response.status = 200;
+            navigation_params->response.status_message = "OK";
+            navigation_params->response.headers = header_list->headers();
+            navigation_params->response.body = move(served.data);
+            m_response_header_list = move(header_list);
+            did_acquire(true);
             return;
         }
     }

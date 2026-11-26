@@ -442,11 +442,13 @@ NonnullOwnPtr<Request> Request::fetch(
     HTTP::Cookie::SameSiteContext same_site_context,
     Optional<Requests::RequestTransferLeaseKey> transfer_lease,
     Optional<u32> address_selection_hint,
-    bool notify_on_cache_miss)
+    bool notify_on_cache_miss,
+    Requests::ExtensionRequestCheck extension_request_check)
 {
     auto request = adopt_own(*new Request { request_id, RequestType::Fetch, disk_cache, move(network_isolation_key), cache_mode, client, curl_multi, resolver, move(url), move(method), move(request_headers), move(request_body), include_credentials, same_site_context, move(transfer_lease) });
     request->m_address_selection_hint = address_selection_hint;
     request->m_notify_on_cache_miss = notify_on_cache_miss;
+    request->m_extension_request_check = extension_request_check;
     request->process();
 
     return request;
@@ -978,6 +980,9 @@ void Request::process()
     case State::Init:
         handle_initial_state();
         break;
+    case State::WaitForWebRequest:
+        // Waiting asynchronously on the launching process for extension webRequest.onBeforeRequest.
+        break;
     case State::ReadCache:
         handle_read_cache_state();
         break;
@@ -1019,6 +1024,23 @@ void Request::process()
 
 void Request::handle_initial_state()
 {
+    // Evaluate extension webRequest.onBeforeRequest BEFORE substitutions, disk cache, DNS, or network.
+    if (m_extension_request_check == Requests::ExtensionRequestCheck::MainFrame) {
+        if (auto control = ControlConnectionFromClient::the(); control.has_value() && control->should_check_web_request(m_url)) {
+            transition_to_state(State::WaitForWebRequest);
+            control->check_web_request_before_request(m_client->client_id(), m_url, m_method, weak_callback(*this, [](auto& self, bool cancel) {
+                if (cancel) {
+                    self.m_network_error = Requests::NetworkError::BlockedByExtension;
+                    self.transition_to_state(State::Error);
+                    return;
+                }
+                self.m_extension_request_check = Requests::ExtensionRequestCheck::AlreadyChecked;
+                self.transition_to_state(State::Init);
+            }));
+            return;
+        }
+    }
+
     // Check for resource substitution before anything else.
     if (g_resource_substitution_map) {
         if (g_resource_substitution_map->lookup(m_url).has_value()) {

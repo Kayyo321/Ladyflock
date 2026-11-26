@@ -41,6 +41,10 @@ public:
     // Tells the UI where the view has changed, which it must hear of before anything that makes it look.
     void push_state_to_ui();
 
+    bool is_tab() const { return m_is_tab; }
+    virtual void pick_local_extension_package(Function<void(Optional<ByteString>)>) override;
+    void did_pick_extension_package(u64, Optional<ByteString>);
+
     void did_get_answer(u64 answer_id, bool answer);
     void did_get_permission_answer(u64 answer_id, Web::Permissions::PromptOutcome);
 
@@ -97,6 +101,7 @@ private:
     // What the view waits to hear from the user, through the UI.
     HashMap<u64, Function<void(bool)>> m_pending_answers;
     HashMap<u64, WebView::PermissionPromptCallback> m_pending_permission_answers;
+    HashMap<u64, Function<void(Optional<ByteString>)>> m_extension_package_requests;
     u64 m_next_answer_id { 1 };
 };
 

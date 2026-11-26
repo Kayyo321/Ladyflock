@@ -37,6 +37,9 @@ public:
     // Resolves a name through the system resolver of the process that launched RequestServer.
     DNS::Resolver::CancelRemoteSystemResolution resolve_host_with_system_resolver(ByteString const& host, Core::Socket::AddressFamily, Function<void(DNS::Resolver::SystemResolution)>);
 
+    bool should_check_web_request(URL::URL const&) const;
+    void check_web_request_before_request(int client_id, URL::URL const&, ByteString const& method, Function<void(bool cancel)> callback);
+
 private:
     ControlConnectionFromClient(NonnullOwnPtr<IPC::Transport>, RequestServer::ConnectionFromClient::ConnectionMap&, RequestServer::ConnectionFromClient::RequestTransferLeaseMap&, Optional<HTTP::DiskCache&>);
 
@@ -67,6 +70,9 @@ private:
 
     virtual void resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses) override;
 
+    virtual void set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts) override;
+    virtual void did_check_web_request_before_request(u64 check_id, bool cancel) override;
+
     struct ClientSocket {
         IPC::TransportHandle handle;
         int client_id { -1 };
@@ -88,6 +94,13 @@ private:
     HashMap<u64, Function<void(DNS::Resolver::SystemResolution)>> m_pending_system_resolutions;
     HashTable<u64> m_cancelled_system_resolutions;
     u64 m_next_system_resolution_id { 0 };
+
+    bool m_web_request_watch_enabled { false };
+    bool m_web_request_match_all_urls { false };
+    Vector<String> m_web_request_exact_hosts;
+    Vector<String> m_web_request_suffix_hosts;
+    HashMap<u64, Function<void(bool cancel)>> m_pending_web_request_checks;
+    u64 m_next_web_request_check_id { 1 };
 };
 
 }

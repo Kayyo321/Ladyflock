@@ -17,6 +17,7 @@
 #include <LibWebView/Application.h>
 #include <LibWebView/AudioServerControlClient.h>
 #include <LibWebView/CompositorClient.h>
+#include <LibWebView/Extensions/ExtensionVerifierClient.h>
 #include <LibWebView/FontService.h>
 #include <LibWebView/FontServiceHost.h>
 #include <LibWebView/HelperProcess.h>
@@ -429,6 +430,21 @@ ErrorOr<NonnullRefPtr<ImageDecoderControlClient>> launch_image_decoder_process(u
     }
 
     return launch_server_process_for<ImageDecoderControlClient>(owner_child_id, is_private, "ImageDecoder"sv, move(arguments), site);
+}
+
+ErrorOr<NonnullRefPtr<ExtensionVerifierClient>> launch_extension_verifier_process()
+{
+    auto const& browser_options = WebView::Application::browser_options();
+
+    Vector<ByteString> arguments;
+    if (browser_options.disable_sandbox == DisableSandbox::Yes)
+        arguments.append("--disable-sandbox"sv);
+    if (auto server = mach_server_name(); server.has_value()) {
+        arguments.append("--mach-server-name"sv);
+        arguments.append(server.value());
+    }
+
+    return launch_server_process<ExtensionVerifierClient>("ExtensionVerifier"sv, move(arguments), IsPrivate::No);
 }
 
 ErrorOr<IPC::TransportHandle> launch_webrtc_client_process(WebContentClient& client)

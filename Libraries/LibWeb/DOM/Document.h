@@ -80,6 +80,7 @@
 #include <LibWeb/TrustedTypes/TrustedHTML.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWebCommon/CSS/PreferredColorScheme.h>
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/Fullscreen/FullscreenRequestType.h>
 #include <LibWebCommon/HTML/CrossOrigin/OpenerPolicy.h>
 #include <LibWebCommon/HTML/CrossProcessId.h>
@@ -1873,6 +1874,17 @@ public:
     void invalidate_content_blocker_style_sheet();
     bool content_blocker_style_sheet_may_need_refresh_for_class_or_id(Utf16FlyString const* id, ReadonlySpan<Utf16FlyString> class_names);
 
+    Optional<Utf16String> extension_style_sheet_source() const;
+    void add_extension_style_sheet(String extension_id, String key, String css);
+    void remove_extension_style_sheet(StringView extension_id, StringView key);
+    void remove_all_extension_style_sheets_for_extension(StringView extension_id);
+
+    Extensions::ExtensionContentScriptHost* extension_content_script_host() const { return m_extension_content_script_host.ptr(); }
+    Extensions::ExtensionContentScriptHost& ensure_extension_content_script_host();
+    void run_extension_content_scripts(Extensions::RunAt);
+    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json);
+    void detach_extension_worlds();
+
     void exit_pointer_lock();
 
     RefPtr<SelectorQuery const> selector_query_for(Utf16String const&) const;
@@ -2689,6 +2701,14 @@ private:
 
     // https://html.spec.whatwg.org/multipage/dom.html#concept-document-ancestor-origins-list
     GC::Ptr<HTML::DOMStringList> m_ancestor_origins_list;
+
+    struct ExtensionStyleSheetEntry {
+        String extension_id;
+        String key;
+        String css;
+    };
+    Vector<ExtensionStyleSheetEntry> m_extension_style_sheets;
+    GC::Ptr<Extensions::ExtensionContentScriptHost> m_extension_content_script_host;
 };
 
 template<>

@@ -32,6 +32,7 @@
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
 #include <LibWebView/CookieJar.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
 #include <LibWebView/HSTSStore.h>
 #include <LibWebView/HelperProcess.h>
@@ -1484,6 +1485,51 @@ Optional<u64> WebContentClient::exclusive_performance_owner() const
     if (owners.size() != 1)
         return {};
     return owners.first();
+}
+
+Messages::WebContentClient::DidRequestExtensionResourceResponse WebContentClient::did_request_extension_resource(Web::PageId page_id, URL::URL url, Web::HTML::CrossProcessId document_id)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager)
+        return Web::Extensions::ExtensionResourceResponse { .allowed = false, .data = {}, .mime_type = {}, .content_security_policy = {}, .error = "Extensions unavailable in this session"_string };
+    auto* requesting_page = page(page_id);
+    auto document = requesting_page && requesting_page->is_open() && requesting_page->has_traversable()
+        ? requesting_page->hosted_document_with_id(document_id)
+        : nullptr;
+    if (!document || document->unload_counter() > 0)
+        return Web::Extensions::ExtensionResourceResponse { .allowed = false, .data = {}, .mime_type = {}, .content_security_policy = {}, .error = "Extension resource requires a live document"_string };
+    return m_session->extension_manager->serve_resource(url, document->origin());
+}
+
+void WebContentClient::did_call_extension_api(Web::PageId page_id, u64 call_id, String extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager) {
+        async_extension_api_response(page_id, document_id, call_id, false, "\"Extensions unavailable\""_string);
+        return;
+    }
+    m_session->extension_manager->handle_api_call(*this, page_id, call_id, extension_id, context_type, document_id, grant_generation, namespace_name, method_name, args_json);
+}
+
+void WebContentClient::did_reply_extension_event(Web::PageId page_id, u64 reply_id, bool has_value, String result_json)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager)
+        return;
+    m_session->extension_manager->handle_event_reply(*this, page_id, reply_id, has_value, result_json);
+}
+
+void WebContentClient::did_finish_extension_script_execution(Web::PageId page_id, u64 call_id, bool success, String result_or_error_json)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager)
+        return;
+    m_session->extension_manager->handle_script_execution_finished(*this, page_id, call_id, success, result_or_error_json);
+}
+
+void WebContentClient::did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails details)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager) {
+        async_did_check_web_request_before_request(page_id, check_id, { .cancel = false });
+        return;
+    }
+    m_session->extension_manager->handle_web_request_check(*this, page_id, check_id, details);
 }
 
 }

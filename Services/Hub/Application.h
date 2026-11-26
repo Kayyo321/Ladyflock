@@ -54,6 +54,11 @@ public:
     void detach_from_host() { m_host = nullptr; }
 
     View& create_view(View::InitialState, Optional<WebView::CanonicalTraversable&> = {});
+    View* find_ui_view(u64 id)
+    {
+        auto it = m_views.find(id);
+        return it == m_views.end() ? nullptr : it->value.ptr();
+    }
     void destroy_view(u64 view_id);
     void destroy_all_views() { m_views.clear(); }
 

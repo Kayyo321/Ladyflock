@@ -989,6 +989,8 @@ void HTMLParserEndState::advance_to_dom_content_loaded_phase()
         if (Core::StatsLog::the())
             log_document_stats_event(*document, "DOMContentLoaded"sv);
 
+        document->run_extension_content_scripts(Extensions::RunAt::DocumentEnd);
+
         // 2. Fire an event named DOMContentLoaded at the Document object, with its bubbles attribute initialized to true.
         auto content_loaded_event = DOM::Event::create(
             HTML::EventNames::DOMContentLoaded,

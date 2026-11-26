@@ -1,6 +1,7 @@
 set(ladybird_helper_processes
     AudioServer
     Compositor
+    ExtensionVerifier
     Hub
     ImageDecoder
     MediaServer

@@ -7,6 +7,7 @@
 #include <Hub/Application.h>
 #include <Hub/ConnectionFromUI.h>
 #include <Hub/View.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/PageTranslation.h>
 
 namespace Hub {
@@ -110,8 +111,10 @@ View::View(InitialState initial_state)
     forward_callbacks_to_ui(initial_state.is_tab);
 
     if (initial_state.owner_view_id.has_value()) {
-        if (auto owner_view = find_view_by_id(*initial_state.owner_view_id); owner_view.has_value())
+        if (auto owner_view = find_view_by_id(*initial_state.owner_view_id); owner_view.has_value()) {
             set_owner_view(*owner_view);
+            set_extension_window_id(owner_view->extension_window_id());
+        }
     }
     set_page_background_color_to_system_canvas(m_websites_prefer_dark);
 }
@@ -161,6 +164,24 @@ void View::set_screen_rects(ScreenRects screen_rects)
 {
     m_screen_rects = move(screen_rects);
     update_screen_rects();
+}
+
+void View::pick_local_extension_package(Function<void(Optional<ByteString>)> callback)
+{
+    auto* ui = ConnectionFromUI::the();
+    if (!ui || !m_is_tab || is_private() == WebView::IsPrivate::Yes || !m_extension_package_requests.is_empty()) {
+        callback({});
+        return;
+    }
+    auto id = m_next_answer_id++;
+    m_extension_package_requests.set(id, move(callback));
+    ui->async_view_pick_extension_package(view_id(), id);
+}
+
+void View::did_pick_extension_package(u64 id, Optional<ByteString> path)
+{
+    if (auto callback = m_extension_package_requests.take(id); callback.has_value())
+        (*callback)(move(path));
 }
 
 void View::did_get_answer(u64 answer_id, bool answer)
@@ -300,16 +321,20 @@ void View::forward_callbacks_to_ui(bool is_tab)
     };
 
     on_load_start = [this] {
+        if (m_is_tab && session().extension_manager && session().extension_manager->extensions_enabled())
+            session().extension_manager->notify_tab_updated(view_id(), WebView::Extensions::ExtensionManager::TabChange::Loading);
         if (auto* ui = ConnectionFromUI::the()) {
             push_state_to_ui();
             ui->async_view_load_start(view_id());
         }
     };
 
-    on_load_finish = [this](auto const&... arguments) {
+    on_load_finish = [this](URL::URL const& url) {
+        if (m_is_tab && session().extension_manager && session().extension_manager->extensions_enabled())
+            session().extension_manager->notify_tab_updated(view_id(), WebView::Extensions::ExtensionManager::TabChange::Complete);
         if (auto* ui = ConnectionFromUI::the()) {
             push_state_to_ui();
-            ui->async_view_load_finish(view_id(), arguments...);
+            ui->async_view_load_finish(view_id(), url);
         }
     };
 
@@ -342,6 +367,8 @@ void View::forward_callbacks_to_ui(bool is_tab)
     };
 
     on_title_change = [this](auto const&... arguments) {
+        if (m_is_tab && session().extension_manager && session().extension_manager->extensions_enabled())
+            session().extension_manager->notify_tab_updated(view_id(), WebView::Extensions::ExtensionManager::TabChange::Title);
         if (auto* ui = ConnectionFromUI::the()) {
             push_state_to_ui();
             ui->async_view_title_change(view_id(), arguments...);
@@ -349,6 +376,8 @@ void View::forward_callbacks_to_ui(bool is_tab)
     };
 
     on_url_change = [this](auto const&... arguments) {
+        if (m_is_tab && session().extension_manager && session().extension_manager->extensions_enabled())
+            session().extension_manager->notify_tab_updated(view_id(), WebView::Extensions::ExtensionManager::TabChange::URL);
         if (auto* ui = ConnectionFromUI::the()) {
             push_state_to_ui();
             ui->async_view_url_change(view_id(), arguments...);

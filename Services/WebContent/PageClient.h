@@ -440,6 +440,11 @@ private:
     virtual void flush_pending_dom_mutations() override;
     virtual void page_did_change_accessibility_tree() override;
     virtual void page_did_take_screenshot(Gfx::ShareableBitmap const& screenshot) override;
+    virtual Web::Extensions::ExtensionResourceResponse page_did_request_extension_resource(URL::URL const&, Web::HTML::CrossProcessId) override;
+    virtual void page_did_call_extension_api(u64 call_id, String const& extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String const& namespace_name, String const& method_name, String const& args_json) override;
+    virtual void page_did_reply_extension_event(u64 reply_id, bool has_value, String const& result_json) override;
+    virtual void page_did_finish_extension_script_execution(u64 call_id, bool success, String const& result_or_error_json) override;
+    virtual void page_did_check_web_request_before_request(u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails const& details) override;
     virtual void received_message_from_web_ui(Utf16String const& name, JS::Value data) override;
     virtual void page_did_block_resource(URL::URL const&, StringView kind) override;
     virtual void page_did_start_network_request(u64 request_id, URL::URL const&, ByteString const&, Vector<HTTP::Header> const&, ReadonlyBytes, Optional<String>, String const& referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::Request::Priority) override;

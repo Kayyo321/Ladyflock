@@ -157,6 +157,7 @@ public:
     BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow is_popup_window = IsPopupWindow::No, WebView::IsPrivate = WebView::IsPrivate::No, Optional<u64> hub_view_id = {}, Optional<SessionWindowId> restored_session_window_id = {});
     virtual ~BrowserWindow() override;
 
+    u64 extension_window_id() const { return m_extension_window_id; }
     WebContentView& view() const { return m_current_tab->view(); }
     WebView::IsPrivate is_private() const { return m_is_private; }
     SessionStore& session() const;
@@ -364,6 +365,7 @@ private:
 
     IsPopupWindow m_is_popup_window { IsPopupWindow::No };
 
+    u64 m_extension_window_id { 0 };
     Optional<SessionWindowId> m_session_window_id;
     size_t m_failed_download_count { 0 };
     size_t m_acknowledged_failed_download_count { 0 };

@@ -80,6 +80,10 @@ void ControlConnectionFromClient::die()
     for (auto& [resolution_id, on_resolved] : pending_system_resolutions)
         on_resolved(Error::from_string_literal("The system resolver's process is gone"));
 
+    auto pending_web_request_checks = move(m_pending_web_request_checks);
+    for (auto& [check_id, callback] : pending_web_request_checks)
+        callback(false);
+
     if (m_connections.is_empty())
         Core::EventLoop::current().quit(0);
 }
@@ -349,6 +353,57 @@ void ControlConnectionFromClient::stored_response_cookies_and_hsts_policy(int cl
             }
         }
     }
+}
+
+void ControlConnectionFromClient::set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts)
+{
+    m_web_request_watch_enabled = enabled;
+    m_web_request_match_all_urls = match_all_urls;
+    m_web_request_exact_hosts = move(exact_hosts);
+    m_web_request_suffix_hosts = move(suffix_hosts);
+}
+
+bool ControlConnectionFromClient::should_check_web_request(URL::URL const& url) const
+{
+    if (!m_web_request_watch_enabled)
+        return false;
+    if (m_web_request_match_all_urls)
+        return true;
+
+    auto host_view = url.serialized_host();
+    if (host_view.is_empty())
+        return false;
+
+    for (auto const& exact : m_web_request_exact_hosts) {
+        if (host_view.equals_ignoring_ascii_case(exact))
+            return true;
+    }
+
+    for (auto const& suffix : m_web_request_suffix_hosts) {
+        auto suffix_view = suffix.bytes_as_string_view();
+        if (host_view.equals_ignoring_ascii_case(suffix_view))
+            return true;
+        if (host_view.length() > suffix_view.length()
+            && host_view.ends_with(suffix_view, CaseSensitivity::CaseInsensitive)
+            && host_view[host_view.length() - suffix_view.length() - 1] == '.') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void ControlConnectionFromClient::check_web_request_before_request(int client_id, URL::URL const& url, ByteString const& method, Function<void(bool cancel)> callback)
+{
+    auto check_id = m_next_web_request_check_id++;
+    m_pending_web_request_checks.set(check_id, move(callback));
+    async_check_web_request_before_request(check_id, client_id, url, method);
+}
+
+void ControlConnectionFromClient::did_check_web_request_before_request(u64 check_id, bool cancel)
+{
+    if (auto callback = m_pending_web_request_checks.take(check_id); callback.has_value())
+        (*callback)(cancel);
 }
 
 }

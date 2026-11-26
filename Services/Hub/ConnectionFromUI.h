@@ -14,6 +14,12 @@
 #include <LibWebView/CrashReportOutbox.h>
 #include <LibWebView/FileDownloader.h>
 
+namespace ImageDecoderClient {
+
+class Client;
+
+}
+
 namespace Hub {
 
 // The Hub's end of its connection to the UI.
@@ -60,6 +66,23 @@ private:
     virtual Messages::HubServer::InitializeResponse initialize() override;
     virtual Messages::HubServer::CreateViewResponse create_view(Hub::NewViewRequest request) override;
     virtual Messages::HubServer::ViewDescriptionResponse view_description(u64 view_id) override;
+    Optional<Gfx::ShareableBitmap> extension_icon(URL::URL const&, String const& version, WebView::Extensions::ExtensionManager&);
+    RefPtr<ImageDecoderClient::Client> m_icon_decoder;
+    HashMap<String, Optional<Gfx::ShareableBitmap>> m_extension_icons;
+    HashMap<String, Vector<String>> m_recent_extension_icons;
+    HashTable<String> m_pending_icon_hosts;
+    void send_extension_state(View&);
+    void schedule_extension_state_refresh();
+    bool m_extension_refresh_pending { false };
+    HashMap<u64, u64> m_extension_tab_windows;
+    virtual void extension_window_closed(u64) override;
+    virtual void view_set_extension_window(u64, u64) override;
+    virtual void view_invoke_extension(u64, String) override;
+    virtual void view_pin_extension(u64, String, bool) override;
+    virtual void view_toggle_extension_sidebar(u64, String) override;
+    virtual void view_set_extension_sidebar_width(u64, u32) override;
+    virtual void view_open_extension_options(u64, String) override;
+    virtual void view_extension_package_picked(u64, u64, Optional<ByteString>) override;
     virtual void ui_did_start() override;
     virtual void add_web_ui_page(String host, String title) override;
     virtual void send_web_ui_message(u64 web_ui_id, String name, JsonValue data) override;

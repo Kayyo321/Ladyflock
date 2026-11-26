@@ -16,6 +16,7 @@
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
 #include <LibWebCommon/ContentSecurityPolicy/Directives/NavigationType.h>
 #include <LibWebCommon/ContentSecurityPolicy/RemoteViolationDirective.h>
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/Fullscreen/FullscreenRequestType.h>
 #include <LibWebCommon/Gamepad/GamepadSnapshot.h>
 #include <LibWebCommon/Gamepad/GamepadStateBuffer.h>
@@ -362,4 +363,14 @@ endpoint WebContentServer routed by Web::PageId page_id
     set_picture_in_picture_window_controls_in_use(Web::PageId page_id, bool in_use) =|
 
     media_session_action(Web::PageId page_id, Web::Bindings::MediaSessionAction action, Optional<double> seek_offset, Optional<double> seek_time, Optional<bool> fast_seek) =|
+
+    set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json) =|
+    attach_extension_content_scripts(Web::PageId page_id, Web::HTML::CrossProcessId document_id, Vector<Web::Extensions::AttachedContentScript> scripts) =|
+    execute_extension_script(Web::PageId page_id, u64 execution_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json, Optional<Web::HTML::CrossProcessId> document_id) =|
+    inject_extension_css(Web::PageId page_id, String extension_id, String key, String css, bool remove, Optional<Web::HTML::CrossProcessId> document_id) =|
+    extension_api_response(Web::PageId page_id, Web::HTML::CrossProcessId document_id, u64 call_id, bool success, String result_or_error_json) =|
+    dispatch_extension_event(Web::PageId page_id, String extension_id, String namespace_name, String event_name, String args_json, Optional<u64> reply_id, Optional<Web::HTML::CrossProcessId> document_id) =|
+    revoke_extension_world(Web::PageId page_id, String extension_id, Optional<Web::HTML::CrossProcessId> document_id, u64 new_grant_generation) =|
+    set_web_request_watch_snapshot(Web::Extensions::WebRequestWatchSnapshot snapshot) =|
+    did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestDecision decision) =|
 }

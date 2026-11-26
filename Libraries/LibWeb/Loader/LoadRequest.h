@@ -14,6 +14,7 @@
 #include <LibHTTP/Cookie/IncludeCredentials.h>
 #include <LibHTTP/HeaderList.h>
 #include <LibHTTP/NetworkIsolationKey.h>
+#include <LibRequests/ExtensionRequestCheck.h>
 #include <LibURL/URL.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
@@ -63,6 +64,9 @@ public:
     bool is_navigation_request() const { return m_is_navigation_request; }
     void set_is_navigation_request(bool is_navigation_request) { m_is_navigation_request = is_navigation_request; }
 
+    Requests::ExtensionRequestCheck extension_request_check() const { return m_extension_request_check; }
+    void set_extension_request_check(Requests::ExtensionRequestCheck check) { m_extension_request_check = check; }
+
     Fetch::Infrastructure::Request::Priority priority() const { return m_priority; }
     void set_priority(Fetch::Infrastructure::Request::Priority priority) { m_priority = priority; }
 
@@ -100,6 +104,7 @@ private:
     Fetch::Infrastructure::Request::Mode m_request_mode { Fetch::Infrastructure::Request::Mode::NoCORS };
     ReferrerPolicy::ReferrerPolicy m_referrer_policy { ReferrerPolicy::DEFAULT_REFERRER_POLICY };
     bool m_is_navigation_request { false };
+    Requests::ExtensionRequestCheck m_extension_request_check { Requests::ExtensionRequestCheck::NotApplicable };
     Fetch::Infrastructure::Request::Priority m_priority { Fetch::Infrastructure::Request::Priority::Auto };
     Optional<URL::URL> m_source_url;
     Optional<URL::URL> m_top_level_creation_url;

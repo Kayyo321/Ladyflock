@@ -23,6 +23,7 @@
 #include <LibWebView/CanonicalEnvironmentSettingsObject.h>
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/PictureInPictureManager.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
@@ -988,12 +989,15 @@ RefPtr<WebContentClient> CanonicalNavigable::process_to_host(CanonicalDocument c
         return process;
     auto process_has_hosted_local_file_content = process && process->has_hosted_local_file_content();
     auto process_has_hosted_web_ui = process && process->hosted_web_ui().has_value();
+    auto process_has_hosted_extension = process && process->hosted_extension_id().has_value();
 
+    if (document.extension_id().has_value())
+        return process && process->hosted_extension_id() == document.extension_id() ? process : nullptr;
     if (document.web_ui_host().has_value())
         return process && process->hosted_web_ui() == document.web_ui_host() ? process : nullptr;
     if (document.is_local_file_content())
         return process_has_hosted_local_file_content ? process : nullptr;
-    if (!process_has_hosted_local_file_content && !process_has_hosted_web_ui)
+    if (!process_has_hosted_local_file_content && !process_has_hosted_web_ui && !process_has_hosted_extension)
         return process;
     if (process_has_hosted_local_file_content && document.origin().is_file_origin())
         return process;
@@ -1031,6 +1035,13 @@ ErrorOr<NonnullRefPtr<WebContentPage>> CanonicalNavigable::obtain_page_to_host(C
         page->client().set_hosted_web_ui(*web_ui_host);
         // NB: The page took the view's preferences before it hosted the WebUI, so it now takes the interface theme.
         page->async_set_preferred_color_scheme(Application::the().interface_color_scheme());
+    }
+    if (auto const& ext_id = document.extension_id(); ext_id.has_value()) {
+        page->client().set_hosted_extension_id(*ext_id);
+        if (auto const* ext_manager = Application::default_session().extension_manager.ptr()) {
+            if (auto ext = ext_manager->extension_by_id(*ext_id); ext.has_value())
+                page->client().async_set_hosted_extension_context(page->id(), ext->extension_id, ext->uuid, ext->manifest.raw_json());
+        }
     }
     return page;
 }
@@ -1338,6 +1349,13 @@ void CanonicalNavigable::set_hosted_state(Web::HTML::HostedNavigableState state)
 // The lost document neither paints into its container nor delays its load event.
 void CanonicalNavigable::did_lose_active_document()
 {
+    if (auto host = active_document().host(); host && is_top_level_traversable()) {
+        if (auto* ext_manager = host->client().session().extension_manager.ptr()) {
+            ext_manager->revoke_document_worlds(*host, active_document().id());
+            if (auto view = top_level_traversable().view(); view.has_value())
+                ext_manager->clear_tab_grants_on_navigation(view->view_id());
+        }
+    }
     active_document().set_host(nullptr);
     if (!m_hosted_state.has_value())
         return;

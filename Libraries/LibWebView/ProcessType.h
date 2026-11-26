@@ -23,6 +23,7 @@ enum class ProcessType : u8 {
     AudioServer,
     VideoDecoderServer,
     WebRTCClient,
+    ExtensionVerifier,
 };
 
 }

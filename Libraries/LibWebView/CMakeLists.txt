@@ -30,6 +30,15 @@ set(SOURCES
     CrashReportSubmission.cpp
     DownloadSegmentation.cpp
     DownloadStore.cpp
+    Extensions/CatalogClient.cpp
+    Extensions/ExtensionActionController.cpp
+    Extensions/ExtensionInstaller.cpp
+    Extensions/ExtensionManager.cpp
+    Extensions/ExtensionSidebarController.cpp
+    Extensions/ExtensionStorage.cpp
+    Extensions/ExtensionVerifierClient.cpp
+    Extensions/RevocationList.cpp
+    Extensions/WebRequestCoordinator.cpp
     ExternalURLHandler.cpp
     FaviconStore.cpp
     FileDownloader.cpp
@@ -97,6 +106,7 @@ set(SOURCES
     WebDriverBrowserConnection.cpp
     WebUI.cpp
     WebUI/AboutUI.cpp
+    WebUI/AddonsUI.cpp
     WebUI/ApplicationWebUI.cpp
     WebUI/CertificateUI.cpp
     WebUI/CrashReportsUI.cpp
@@ -139,6 +149,8 @@ set(GENERATED_SOURCES
     ${GENERATED_SOURCES}
     ../../Services/AudioServer/AudioServerControlClientEndpoint.h
     ../../Services/AudioServer/AudioServerControlEndpoint.h
+    ../../Services/ExtensionVerifier/ExtensionVerifierClientEndpoint.h
+    ../../Services/ExtensionVerifier/ExtensionVerifierServerEndpoint.h
     ../../Services/ImageDecoder/ImageDecoderControlClientEndpoint.h
     ../../Services/ImageDecoder/ImageDecoderControlEndpoint.h
     ../../Services/RequestServer/RequestClientEndpoint.h
@@ -183,7 +195,7 @@ if (LADYBIRD_ENABLE_UPDATE_CHECK)
 endif()
 
 target_link_libraries(LibWebView PUBLIC LibCompositing LibPlatformFeatures LibSandbox LibWebCommon)
-target_link_libraries(LibWebView PRIVATE LibCore LibCrypto LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibMedia LibMediaClient LibUnicode LibURL LibTextCodec LibThreading)
+target_link_libraries(LibWebView PRIVATE LibCore LibCrypto LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibMedia LibMediaClient LibUnicode LibURL LibTextCodec LibThreading OpenSSL::Crypto)
 
 if (LINUX)
     # The connect broker asks the audio library where the daemon is before connecting a helper to it.

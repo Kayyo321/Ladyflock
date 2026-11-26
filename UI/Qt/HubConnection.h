@@ -79,6 +79,9 @@ private:
     virtual void die() override;
 
     // ^HubClientEndpoint
+    virtual void view_extension_state(u64, bool, Vector<Hub::ExtensionItem>, u32) override;
+    virtual void view_open_extension_popup(u64, String, URL::URL) override;
+    virtual void view_pick_extension_package(u64, u64) override;
     virtual void crash_reports_changed() override;
     virtual void request_finished(u64 request_id, bool had_network_error, Optional<u32> response_code, Vector<HTTP::Header> response_headers, ByteString body) override;
     virtual void app_open_new_tab(Vector<URL::URL> urls) override;

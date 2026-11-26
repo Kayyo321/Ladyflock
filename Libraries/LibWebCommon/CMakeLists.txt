@@ -2,6 +2,11 @@ set(SOURCES
     Clipboard/SystemClipboard.cpp
     ContentSecurityPolicy/Directives/SerializedDirective.cpp
     ContentSecurityPolicy/SerializedPolicy.cpp
+    Extensions/ExtensionManifest.cpp
+    Extensions/ExtensionTypes.cpp
+    Extensions/MatchPattern.cpp
+    Extensions/SupportMatrix.cpp
+    Extensions/ZipReader.cpp
     CSS/PreferredColorScheme.cpp
     CSS/StyleSheetIdentifier.cpp
     CSS/SystemColor.cpp
@@ -133,8 +138,11 @@ compile_ipc(WebDriver/BiDi.ipc WebDriver/BiDiCodecs.h)
 
 # NB: The protocols between the UI process and the processes it hosts web content in only use LibWebCommon types, so
 #     both sides generate their endpoints from here.
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Services/ExtensionVerifier)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Services/WebContent)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Services/WebDriver)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/ExtensionVerifier/ExtensionVerifierClient.ipc ${CMAKE_BINARY_DIR}/Services/ExtensionVerifier/ExtensionVerifierClientEndpoint.h)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/ExtensionVerifier/ExtensionVerifierServer.ipc ${CMAKE_BINARY_DIR}/Services/ExtensionVerifier/ExtensionVerifierServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentClientEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentServer.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentTestClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentTestClientEndpoint.h)
@@ -149,6 +157,8 @@ compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebWorkerServer.ipc ${CMA
 set(GENERATED_SOURCES
     CSS/PropertyList.cpp
     CSS/PseudoElement.h
+    ../../Services/ExtensionVerifier/ExtensionVerifierClientEndpoint.h
+    ../../Services/ExtensionVerifier/ExtensionVerifierServerEndpoint.h
     ../../Services/WebContent/WebContentClientEndpoint.h
     ../../Services/WebContent/WebContentServerEndpoint.h
     ../../Services/WebContent/WebContentTestClientEndpoint.h
@@ -168,7 +178,7 @@ endif()
 ladybird_lib(LibWebCommon webcommon EXPLICIT_SYMBOL_EXPORT)
 # NB: The enumerations of LibWeb's IDL modules are generated into LibWebCommon along with LibWeb's bindings.
 add_dependencies(LibWebCommon generate_bindings)
-target_link_libraries(LibWebCommon PRIVATE LibCore LibCrypto LibGfx LibHTTP LibIPC LibRequests LibURL)
+target_link_libraries(LibWebCommon PRIVATE LibCore LibCrypto LibGfx LibHTTP LibIPC LibRequests LibURL ZLIB::ZLIB)
 
 import_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME libwebcommon_rust FEATURES allocator FFI_HEADER RustFFI.h)
 target_link_libraries(LibWebCommon PRIVATE libwebcommon_rust)

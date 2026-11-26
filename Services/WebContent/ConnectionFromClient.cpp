@@ -58,6 +58,7 @@
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/Dump.h>
+#include <LibWeb/Extensions/WebRequestClient.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/FileAPI/BlobURLStore.h>
 #include <LibWeb/Gamepad/GamepadRegistry.h>
@@ -4146,6 +4147,59 @@ void ConnectionFromClient::set_picture_in_picture_window_controls_in_use(Web::Pa
 {
     if (auto page = this->page(page_id); page.has_value())
         page->page().set_picture_in_picture_window_controls_in_use(in_use);
+}
+
+void ConnectionFromClient::set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().set_hosted_extension_context(move(extension_id), move(extension_uuid), move(manifest_json));
+}
+
+void ConnectionFromClient::attach_extension_content_scripts(Web::PageId page_id, Web::HTML::CrossProcessId document_id, Vector<Web::Extensions::AttachedContentScript> scripts)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().attach_extension_content_scripts(document_id, move(scripts));
+}
+
+void ConnectionFromClient::execute_extension_script(Web::PageId page_id, u64 execution_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json, Optional<Web::HTML::CrossProcessId> document_id)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().execute_extension_script(execution_id, extension_id, extension_uuid, grant_generation, sources, func_source, args_json, document_id);
+}
+
+void ConnectionFromClient::inject_extension_css(Web::PageId page_id, String extension_id, String key, String css, bool remove, Optional<Web::HTML::CrossProcessId> document_id)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().inject_extension_css(extension_id, key, css, remove, document_id);
+}
+
+void ConnectionFromClient::extension_api_response(Web::PageId page_id, Web::HTML::CrossProcessId document_id, u64 call_id, bool success, String result_or_error_json)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().handle_extension_api_response(document_id, call_id, success, result_or_error_json);
+}
+
+void ConnectionFromClient::dispatch_extension_event(Web::PageId page_id, String extension_id, String namespace_name, String event_name, String args_json, Optional<u64> reply_id, Optional<Web::HTML::CrossProcessId> document_id)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().dispatch_extension_event(extension_id, namespace_name, event_name, args_json, reply_id, document_id);
+}
+
+void ConnectionFromClient::revoke_extension_world(Web::PageId page_id, String extension_id, Optional<Web::HTML::CrossProcessId> document_id, u64 new_grant_generation)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().revoke_extension_world(extension_id, document_id, new_grant_generation);
+}
+
+void ConnectionFromClient::set_web_request_watch_snapshot(Web::Extensions::WebRequestWatchSnapshot snapshot)
+{
+    Web::Extensions::WebRequestClient::set_watch_snapshot(move(snapshot));
+}
+
+void ConnectionFromClient::did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestDecision decision)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().did_check_web_request_before_request(check_id, move(decision));
 }
 
 }

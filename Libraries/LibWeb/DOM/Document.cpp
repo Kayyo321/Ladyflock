@@ -130,6 +130,7 @@
 #include <LibWeb/Editing/SpellCheckController.h>
 #include <LibWeb/Editing/SpellingMarkers.h>
 #include <LibWeb/Editing/WritingSuggestionController.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/Fetch/Engine/NetworkTransportHandle.h>
 #include <LibWeb/Fetch/Fetching/Checks.h>
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
@@ -614,6 +615,22 @@ WebIDL::ExceptionOr<GC::Ref<Document>> Document::create_and_initialize(Type type
     // 13. Run CSP initialization for a Document given document.
     document->run_csp_initialization();
 
+    // AD-HOC: Register document with its Page and initialize any extension page context or pre-activation content scripts
+    //         before parser or inline scripts execute.
+    auto& page = browsing_context->page();
+    page.register_extension_document(*document);
+    if (document->url().scheme() == "moz-extension"sv
+        && page.hosted_extension_id().has_value()
+        && page.hosted_extension_uuid().has_value()
+        && page.hosted_extension_manifest_json().has_value()
+        && document->url().serialized_host() == *page.hosted_extension_uuid()) {
+        document->initialize_extension_page_context(*page.hosted_extension_id(), *page.hosted_extension_uuid(), *page.hosted_extension_manifest_json());
+    }
+    if (auto pending_scripts = page.take_pending_extension_scripts(document->id()); !pending_scripts.is_empty()) {
+        document->ensure_extension_content_script_host().attach_scripts(move(pending_scripts));
+    }
+    document->run_extension_content_scripts(Extensions::RunAt::DocumentStart);
+
     // 14. If navigationParams's request is non-null, then:
     if (navigation_params.request) {
         // 1. Set document's referrer to the empty string.
@@ -960,6 +977,12 @@ bool Document::is_running_update_layout() const
 
 void Document::finalize()
 {
+    if (m_extension_content_script_host) {
+        m_extension_content_script_host->detach_all();
+        m_extension_content_script_host = nullptr;
+    }
+    if (m_id.has_value())
+        m_page->unregister_extension_document(*m_id);
     stop_compositor_animation_timers();
     if (m_layout_node_arena)
         m_layout_node_arena->stop_reporting_box_presence({});
@@ -1126,6 +1149,7 @@ void Document::visit_edges(Cell::Visitor& visitor)
 
     visitor.visit(m_adopted_style_sheets);
     visitor.visit(m_script_blocking_style_sheet_set);
+    visitor.visit(m_extension_content_script_host);
 
     visitor.visit(m_active_view_transition);
     visitor.visit(m_dynamic_view_transition_style_sheet);
@@ -5185,6 +5209,7 @@ void Document::completely_finish_loading()
         container->content_navigable_completely_finished_loading();
     navigable->page().did_completely_load_document(*this);
     navigable->page().client().page_did_completely_finish_loading(navigable->id(), *this);
+    run_extension_content_scripts(Extensions::RunAt::DocumentIdle);
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
@@ -6928,6 +6953,7 @@ void Document::unload(GC::Ptr<Document> new_document, Optional<UnloadOfReplacedD
     }
 
     did_stop_being_active_document_in_navigable();
+    detach_extension_worlds();
 }
 
 // https://html.spec.whatwg.org/multipage/document-lifecycle.html#unload-a-document
@@ -7522,6 +7548,8 @@ void Document::make_active()
 
     // 4. Set window's relevant settings object's execution ready flag.
     HTML::relevant_settings_object(window).execution_ready = true;
+
+    run_extension_content_scripts(Extensions::RunAt::DocumentStart);
 
     if (m_needs_to_call_page_did_load) {
         navigable()->page().client().page_did_finish_loading(navigable()->id(), id());
@@ -12520,6 +12548,94 @@ JS::Value document_named_item_value(WrapperWorld& wrapper_world, JS::Realm& real
     // 4. Otherwise return an HTMLCollection rooted at the Document node, whose filter matches only named elements with the name name.
     auto collection = DOM::HTMLCollection::create(*const_cast<DOM::Document*>(&document), DOM::HTMLCollection::Scope::Descendants, GC::create_function(document.heap(), GC::captures(name), [](auto const& name, DOM::Element const& element) { return DOM::Document::is_named_element_with_name(element, name); }), DOM::HTMLCollection::AttributeInvalidationType::IdOrName);
     return wrap(wrapper_world, realm, collection);
+}
+
+}
+
+namespace Web::DOM {
+
+Optional<Utf16String> Document::extension_style_sheet_source() const
+{
+    if (m_extension_style_sheets.is_empty())
+        return {};
+    StringBuilder builder;
+    for (size_t i = 0; i < m_extension_style_sheets.size(); ++i) {
+        if (i > 0)
+            builder.append('\n');
+        builder.append(m_extension_style_sheets[i].css);
+    }
+    return Utf16String::from_utf8(builder.string_view());
+}
+
+void Document::add_extension_style_sheet(String extension_id, String key, String css)
+{
+    for (auto& entry : m_extension_style_sheets) {
+        if (entry.extension_id == extension_id && entry.key == key) {
+            entry.css = move(css);
+            style_scope().invalidate_user_style_sheet();
+            return;
+        }
+    }
+    m_extension_style_sheets.append(ExtensionStyleSheetEntry {
+        .extension_id = move(extension_id),
+        .key = move(key),
+        .css = move(css),
+    });
+    style_scope().invalidate_user_style_sheet();
+}
+
+void Document::remove_extension_style_sheet(StringView extension_id, StringView key)
+{
+    bool removed = false;
+    m_extension_style_sheets.remove_all_matching([&](ExtensionStyleSheetEntry const& entry) {
+        if (entry.extension_id == extension_id && (entry.key == key || entry.css == key)) {
+            removed = true;
+            return true;
+        }
+        return false;
+    });
+    if (removed)
+        style_scope().invalidate_user_style_sheet();
+}
+
+void Document::remove_all_extension_style_sheets_for_extension(StringView extension_id)
+{
+    bool removed = false;
+    m_extension_style_sheets.remove_all_matching([&](ExtensionStyleSheetEntry const& entry) {
+        if (entry.extension_id == extension_id) {
+            removed = true;
+            return true;
+        }
+        return false;
+    });
+    if (removed)
+        style_scope().invalidate_user_style_sheet();
+}
+
+Extensions::ExtensionContentScriptHost& Document::ensure_extension_content_script_host()
+{
+    if (!m_extension_content_script_host)
+        m_extension_content_script_host = Extensions::ExtensionContentScriptHost::create(*this);
+    return *m_extension_content_script_host;
+}
+
+void Document::run_extension_content_scripts(Extensions::RunAt run_at)
+{
+    if (m_extension_content_script_host)
+        m_extension_content_script_host->run_scripts_for(run_at);
+}
+
+void Document::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json)
+{
+    ensure_extension_content_script_host().initialize_extension_page_context(move(extension_id), move(extension_uuid), move(manifest_json));
+}
+
+void Document::detach_extension_worlds()
+{
+    if (m_extension_content_script_host)
+        m_extension_content_script_host->detach_all();
+    if (m_id.has_value())
+        m_page->unregister_extension_document(*m_id);
 }
 
 }

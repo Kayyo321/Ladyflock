@@ -70,6 +70,7 @@
 #include <LibWebCommon/CSS/PreferredContrast.h>
 #include <LibWebCommon/CSS/PreferredMotion.h>
 #include <LibWebCommon/ContentSecurityPolicy/RemoteViolationDirective.h>
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/FileAPI/SerializedBlobURLEntry.h>
 #include <LibWebCommon/Fullscreen/FullscreenRequestType.h>
 #include <LibWebCommon/Gamepad/GamepadSnapshot.h>
@@ -548,6 +549,26 @@ public:
     void set_viewport_is_fullscreen(ViewportIsFullscreen);
     void did_deny_fullscreen_window();
 
+    void set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json);
+    Optional<String> const& hosted_extension_id() const { return m_hosted_extension_id; }
+    Optional<String> const& hosted_extension_uuid() const { return m_hosted_extension_uuid; }
+    Optional<String> const& hosted_extension_manifest_json() const { return m_hosted_extension_manifest_json; }
+
+    void register_extension_document(DOM::Document&);
+    void unregister_extension_document(HTML::CrossProcessId);
+    Vector<Extensions::AttachedContentScript> take_pending_extension_scripts(HTML::CrossProcessId);
+
+    void attach_extension_content_scripts(HTML::CrossProcessId document_id, Vector<Extensions::AttachedContentScript>);
+    void execute_extension_script(u64 execution_id, String const& extension_id, String const& extension_uuid, u64 grant_generation, Vector<String> const& sources, Optional<String> const& func_source, Optional<String> const& args_json, Optional<HTML::CrossProcessId> document_id);
+    void inject_extension_css(String const& extension_id, String const& key, String const& css, bool remove, Optional<HTML::CrossProcessId> document_id);
+    void handle_extension_api_response(HTML::CrossProcessId document_id, u64 call_id, bool success, String const& result_or_error_json);
+    void dispatch_extension_event(String const& extension_id, String const& namespace_name, String const& event_name, String const& args_json, Optional<u64> reply_id, Optional<HTML::CrossProcessId> document_id);
+    void revoke_extension_world(String const& extension_id, Optional<HTML::CrossProcessId> document_id, u64 new_grant_generation = 0);
+
+    using WebRequestDecisionCallback = GC::Ref<GC::Function<void(Extensions::WebRequestDecision)>>;
+    void check_web_request_before_request(Extensions::WebRequestBeforeRequestDetails, WebRequestDecisionCallback);
+    void did_check_web_request_before_request(u64 check_id, Extensions::WebRequestDecision);
+
 private:
     explicit Page(GC::Ref<PageClient>);
     virtual void visit_edges(Visitor&) override;
@@ -763,6 +784,16 @@ private:
     ViewportIsFullscreen m_viewport_is_fullscreen { ViewportIsFullscreen::No };
     bool m_fullscreen_ipc_sent_to_ui { false };
     bool m_processing_fullscreen_operations { false };
+
+    Optional<String> m_hosted_extension_id;
+    Optional<String> m_hosted_extension_uuid;
+    Optional<String> m_hosted_extension_manifest_json;
+
+    HashMap<HTML::CrossProcessId, GC::Weak<DOM::Document>> m_extension_documents;
+    HashMap<HTML::CrossProcessId, Vector<Extensions::AttachedContentScript>> m_pending_extension_scripts;
+
+    HashMap<u64, WebRequestDecisionCallback> m_pending_web_request_checks;
+    u64 m_next_web_request_check_id { 1 };
 };
 
 class WEB_API PageClient : public JS::Cell {
@@ -1090,6 +1121,12 @@ public:
     virtual void page_did_change_accessibility_tree() { }
 
     virtual void page_did_take_screenshot(Gfx::ShareableBitmap const&) { }
+
+    virtual Extensions::ExtensionResourceResponse page_did_request_extension_resource(URL::URL const&, HTML::CrossProcessId) { return {}; }
+    virtual void page_did_call_extension_api([[maybe_unused]] u64 call_id, [[maybe_unused]] String const& extension_id, [[maybe_unused]] Extensions::ContextType context_type, [[maybe_unused]] HTML::CrossProcessId document_id, [[maybe_unused]] u64 grant_generation, [[maybe_unused]] String const& namespace_name, [[maybe_unused]] String const& method_name, [[maybe_unused]] String const& args_json) { }
+    virtual void page_did_reply_extension_event([[maybe_unused]] u64 reply_id, [[maybe_unused]] bool has_value, [[maybe_unused]] String const& result_json) { }
+    virtual void page_did_finish_extension_script_execution([[maybe_unused]] u64 call_id, [[maybe_unused]] bool success, [[maybe_unused]] String const& result_or_error_json) { }
+    virtual void page_did_check_web_request_before_request([[maybe_unused]] u64 check_id, [[maybe_unused]] Extensions::WebRequestBeforeRequestDetails const& details) { }
 
     virtual void received_message_from_web_ui([[maybe_unused]] Utf16String const& name, [[maybe_unused]] JS::Value data) { }
 

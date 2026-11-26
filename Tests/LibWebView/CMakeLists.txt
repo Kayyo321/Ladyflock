@@ -1,5 +1,6 @@
 if (BUILD_TESTING AND NOT WIN32)
     if (APPLE OR LINUX)
+        ladybird_python_test(test-addons-profile-controls.py ARGS $<TARGET_FILE:ladybird>)
         ladybird_python_test(test-devtools-catch-up-layout.py ARGS $<TARGET_FILE:ladybird>)
         ladybird_python_test(test-devtools-client-follows-the-tab.py ARGS $<TARGET_FILE:ladybird>)
         ladybird_python_test(test-devtools-network-events.py ARGS $<TARGET_FILE:ladybird>)
@@ -30,6 +31,7 @@ if (BUILD_TESTING AND NOT WIN32)
         ladybird_python_test(test-webdriver-graphical-pointer-actions.py ARGS $<TARGET_FILE:WebDriver>)
     endif()
 
+    ladybird_python_test(test-webdriver-addons.py ARGS $<TARGET_FILE:WebDriver>)
     ladybird_python_test(test-webdriver-bidi.py ARGS $<TARGET_FILE:WebDriver>)
     ladybird_python_test(test-webdriver-command-privileges.py ARGS $<TARGET_FILE:WebDriver>)
     ladybird_python_test(test-webdriver-content-blockers.py ARGS $<TARGET_FILE:WebDriver> TIMEOUT 180)
@@ -63,7 +65,7 @@ endif()
 
 ladybird_test_suite(LibWebView)
 # TestHelperProcessPaths looks for these where the browser would.
-add_dependencies(TestLibWebView Compositor ImageDecoder RequestServer SystemProbe WebContent)
+add_dependencies(TestLibWebView Compositor ExtensionVerifier ImageDecoder RequestServer SystemProbe WebContent)
 
 set(TEST_SOURCES
     TestAccessibilityTreeManager.cpp
@@ -157,6 +159,9 @@ if (NOT WIN32)
         TestCompositorStartup.cpp
         TestCrashOverlay.cpp
         TestCrashReportSubmission.cpp
+        TestExtensionCore.cpp
+        TestExtensionInstaller.cpp
+        TestExtensionRuntime.cpp
         TestFavicon.cpp
         TestFileDownloader.cpp
         TestFocusWithoutSystemFocus.cpp
@@ -248,7 +253,7 @@ endif()
 
 if (NOT WIN32)
     target_sources(TestLibWebView PRIVATE HeadlessTest.cpp)
-    target_link_libraries(TestLibWebView PRIVATE LibCrypto LibDiff LibImageDecoders LibImageDecoderClient LibJS)
+    target_link_libraries(TestLibWebView PRIVATE LibCrypto LibDiff LibImageDecoders LibImageDecoderClient LibJS ZLIB::ZLIB)
     add_dependencies(TestLibWebView ladybird_build_resource_files ${ladybird_helper_processes})
     set_tests_properties(TestLibWebView PROPERTIES TIMEOUT 1800 ENVIRONMENT LADYBIRD_SOURCE_DIR=${LADYBIRD_SOURCE_DIR})
     if (APPLE)

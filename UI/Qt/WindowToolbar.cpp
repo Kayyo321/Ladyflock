@@ -19,6 +19,7 @@
 #include <UI/Qt/ChromeStyle.h>
 #include <UI/Qt/DownloadPresentation.h>
 #include <UI/Qt/ElidedLabel.h>
+#include <UI/Qt/ExtensionButtons.h>
 #include <UI/Qt/FeedbackPopover.h>
 #include <UI/Qt/Icon.h>
 #include <UI/Qt/LadybirdButton.h>
@@ -51,7 +52,9 @@
 #include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QStyleOptionToolButton>
 #include <QStylePainter>
 #include <QTimer>
@@ -1223,6 +1226,27 @@ WindowToolbar::WindowToolbar(WebView::IsPrivate is_private, QWidget* parent)
     toolbar_container_layout->setSpacing(0);
     toolbar_container_layout->setContentsMargins(0, 0, 0, TOOLBAR_BOTTOM_LINE_HEIGHT);
 
+    m_extension_buttons = new ExtensionButtons(m_toolbar);
+    m_extension_buttons->on_invoke = [this](auto const& id) {
+        if (m_tab)
+            HubConnection::the().async_view_invoke_extension(m_tab->view().view_id(), id);
+    };
+    m_extension_buttons->on_pin = [this](auto const& id, bool pinned) {
+        if (m_tab)
+            HubConnection::the().async_view_pin_extension(m_tab->view().view_id(), id, pinned);
+    };
+    m_extension_buttons->on_sidebar = [this](auto const& id) {
+        if (m_tab)
+            HubConnection::the().async_view_toggle_extension_sidebar(m_tab->view().view_id(), id);
+    };
+    m_extension_buttons->on_options = [this](auto const& id) {
+        if (m_tab)
+            HubConnection::the().async_view_open_extension_options(m_tab->view().view_id(), id);
+    };
+    m_extension_buttons->on_manage = [this] {
+        browser_window().new_tab_from_url(URL::URL::about("addons"sv), Web::HTML::ActivateTab::Yes, BrowserWindow::TabLocation::after_current_tab());
+    };
+
     m_downloads_button = new DownloadsButton(m_toolbar);
     QObject::connect(m_downloads_button, &QToolButton::clicked, this, [this] {
         // NB: The button only stays checked while the list is open, which showing it sees to.
@@ -1436,6 +1460,7 @@ void WindowToolbar::lay_out_as_row()
     toolbar_layout->addWidget(m_navigation_buttons, 0, Qt::AlignVCenter);
     m_navigation_buttons->show();
     toolbar_layout->addWidget(&field_slot(), 1);
+    toolbar_layout->addWidget(m_extension_buttons, 0, Qt::AlignVCenter);
     toolbar_layout->addWidget(m_downloads_button, 0, Qt::AlignVCenter);
     if (m_feedback_button)
         toolbar_layout->addWidget(m_feedback_button, 0, Qt::AlignVCenter);
@@ -1474,6 +1499,7 @@ void WindowToolbar::lay_out_in_sidebar()
     m_window_controls_separator->hide();
 
     auto* footer_layout = static_cast<QBoxLayout*>(m_sidebar_footer->layout());
+    footer_layout->addWidget(m_extension_buttons, 0, Qt::AlignVCenter);
     footer_layout->addWidget(m_downloads_button, 0, Qt::AlignVCenter);
     if (m_feedback_button)
         footer_layout->addWidget(m_feedback_button, 0, Qt::AlignVCenter);
@@ -1615,6 +1641,8 @@ void WindowToolbar::update_field_panel()
 
 bool WindowToolbar::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::Resize && watched == window() && m_extension_buttons)
+        m_extension_buttons->set_pin_capacity(m_arrangement == ToolbarArrangement::Sidebar ? 0 : qBound(0, (window()->width() - 560) / 100, 6));
     if (!m_field_panel)
         return false;
 
@@ -1655,6 +1683,7 @@ void WindowToolbar::set_arrangement(ToolbarArrangement arrangement, bool window_
     if (m_arrangement == arrangement && m_sidebar_inset == sidebar_inset && m_window_controls_on_left == window_controls_on_left)
         return;
     m_arrangement = arrangement;
+    m_extension_buttons->set_pin_capacity(arrangement == ToolbarArrangement::Sidebar ? 0 : qBound(0, (window()->width() - 560) / 100, 6));
     m_sidebar_inset = sidebar_inset;
     m_window_controls_on_left = window_controls_on_left;
     if constexpr (!use_native_macos_window_controls())
@@ -1753,6 +1782,14 @@ BrowserWindow& WindowToolbar::browser_window() const
 
 void WindowToolbar::bind(Tab* tab)
 {
+    if (m_tab != tab) {
+        if (m_extension_popup)
+            m_extension_popup->close();
+        m_extension_buttons->close_menu();
+        m_extension_buttons->hide();
+        if (m_extension_sidebar)
+            m_extension_sidebar->hide();
+    }
     if (m_tab)
         QObject::disconnect(m_tab, nullptr, this, nullptr);
     m_tab = tab;
@@ -2037,6 +2074,7 @@ void WindowToolbar::recreate_icons()
     m_navigate_forward_action.action().setIcon(create_chrome_icon(ChromeIcon::Forward, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     m_reload_action->setIcon(create_chrome_icon(ChromeIcon::Reload, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     m_stop_action->setIcon(create_chrome_icon(ChromeIcon::Stop, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
+    m_extension_buttons->update_icons();
     m_downloads_button->setIcon(create_chrome_icon(ChromeIcon::Download, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
     if (m_feedback_button)
         m_feedback_button->setIcon(create_chrome_icon(ChromeIcon::Feedback, Theme::chrome_palette(*this), activity, TOOLBAR_ICON_SIZE));
@@ -2098,6 +2136,143 @@ void WindowToolbar::fit_feedback_popover()
     m_feedback_popover->card().layout()->activate();
     m_feedback_popover->adjustSize();
     move_popover_to_button(*m_feedback_popover, *m_feedback_button);
+}
+
+class ExtensionPopup final : public Popover {
+public:
+    explicit ExtensionPopup(QWidget* parent)
+        : Popover(parent)
+    {
+    }
+};
+
+static WebContentView& create_extension_view(QWidget& parent, BrowserWindow& window, Tab& tab, URL::URL const& url)
+{
+    auto* view = new WebContentView(&parent, {}, {
+                                                     .is_private = WebView::IsPrivate::No,
+                                                     .maximum_frames_per_second = window.refresh_rate(),
+                                                     .display_id = window.display_id(),
+                                                     .screen_shows_high_dynamic_range = window.screen_shows_high_dynamic_range(),
+                                                     .owner_view_id = tab.view().view_id(),
+                                                     .is_tab = false,
+                                                 });
+    view->load(url);
+    return *view;
+}
+
+void WindowToolbar::close_extension_popup(Tab& tab)
+{
+    if (m_tab == &tab && m_extension_popup)
+        m_extension_popup->close();
+}
+
+void WindowToolbar::show_extension_popup(Tab& tab, String const& id, URL::URL const& url)
+{
+    if (m_tab != &tab || m_is_private == WebView::IsPrivate::Yes || !m_extension_buttons->isVisible())
+        return;
+    if (m_extension_popup)
+        m_extension_popup->close();
+    auto* popup = new ExtensionPopup(this);
+    m_extension_popup = popup;
+    m_popup_extension_id = id;
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    auto* layout = new QVBoxLayout(&popup->card());
+    layout->setContentsMargins(2, 2, 2, 2);
+    auto& view = create_extension_view(popup->card(), browser_window(), tab, url);
+    view.setAccessibleName(tr("Extension popup"));
+    layout->addWidget(&view);
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), popup);
+    QObject::connect(escape, &QShortcut::activated, popup, &QWidget::close);
+    // The popup stays inside the current screen even when the window spans monitors.
+    auto available = m_extension_buttons->screen()->availableGeometry().size();
+    popup->resize(QSize(380, 420).boundedTo(available));
+    auto& anchor = m_extension_buttons->anchor_for(id);
+    move_popover_to_button(*popup, anchor);
+    popup->on_visibility_change = [popup](bool visible) {
+        if (!visible)
+            popup->deleteLater();
+    };
+    popup->show();
+    view.setFocus();
+}
+
+void WindowToolbar::set_extension_state(Tab& tab, bool available, Vector<Hub::ExtensionItem> items, u32 width)
+{
+    if (m_tab != &tab)
+        return;
+    available &= m_is_private == WebView::IsPrivate::No;
+    m_extension_buttons->setVisible(available);
+    m_extension_buttons->set_pin_capacity(m_arrangement == ToolbarArrangement::Sidebar ? 0 : qBound(0, (window()->width() - 560) / 100, 6));
+
+    Hub::ExtensionItem const* sidebar = nullptr;
+    bool popup_enabled = false;
+    for (auto const& item : items) {
+        if (available && item.sidebar_url.has_value())
+            sidebar = &item;
+        if (available && item.enabled && item.id == m_popup_extension_id)
+            popup_enabled = true;
+    }
+    if (!popup_enabled && m_extension_popup)
+        m_extension_popup->close();
+
+    if (!sidebar || m_sidebar_url != sidebar->sidebar_url || (m_sidebar_owner.has_value() && !RemoteView::find(*m_sidebar_owner))) {
+        delete m_extension_sidebar.data();
+        m_sidebar_url.clear();
+        m_sidebar_owner.clear();
+    }
+    if (sidebar) {
+        auto& splitter = browser_window().tab_widget().page_splitter();
+        if (!m_extension_sidebar) {
+            auto* pane = new QWidget(&splitter);
+            m_extension_sidebar = pane;
+            m_sidebar_url = sidebar->sidebar_url;
+            m_sidebar_owner = tab.view().view_id();
+            pane->setMinimumWidth(200);
+            pane->setMaximumWidth(640);
+            auto* layout = new QVBoxLayout(pane);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(0);
+            auto* heading = new QHBoxLayout;
+            heading->setContentsMargins(8, 2, 4, 2);
+            auto* icon = new QLabel(pane);
+            icon->setObjectName("ExtensionSidebarIcon");
+            heading->addWidget(icon);
+            auto* title = new QLabel(pane);
+            title->setObjectName("ExtensionSidebarTitle");
+            title->setTextFormat(Qt::PlainText);
+            title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+            heading->addWidget(title, 1);
+            auto* close = new QToolButton(pane);
+            close->setAccessibleName(tr("Close sidebar"));
+            close->setToolTip(tr("Close sidebar"));
+            close->setAutoRaise(true);
+            close->setIcon(create_chrome_icon(ChromeIcon::Close, Theme::chrome_palette(*pane)));
+            QObject::connect(close, &QToolButton::clicked, pane, [this, id = sidebar->id] {
+                if (m_tab)
+                    HubConnection::the().async_view_toggle_extension_sidebar(m_tab->view().view_id(), id);
+            });
+            heading->addWidget(close);
+            layout->addLayout(heading);
+            layout->addWidget(&create_extension_view(*pane, browser_window(), tab, *sidebar->sidebar_url), 1);
+            splitter.addWidget(pane);
+            splitter.setStretchFactor(1, 0);
+            QObject::connect(&splitter, &QSplitter::splitterMoved, pane, [this, pane] {
+                if (m_tab)
+                    HubConnection::the().async_view_set_extension_sidebar_width(m_tab->view().view_id(), pane->width());
+            });
+        }
+        auto* icon = m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarIcon");
+        auto sidebar_icon = ExtensionButtons::package_icon(sidebar->sidebar_icon);
+        icon->setVisible(!sidebar_icon.isNull());
+        icon->setPixmap(sidebar_icon.pixmap({ 16, 16 }, devicePixelRatioF()));
+        m_extension_sidebar->findChild<QLabel*>("ExtensionSidebarTitle")->setText(qstring_from_ak_string(sidebar->sidebar_title));
+        m_extension_sidebar->setAccessibleName(qstring_from_ak_string(sidebar->sidebar_title));
+        m_extension_sidebar->show();
+        auto desired_width = static_cast<int>(width);
+        if (m_extension_sidebar->width() != desired_width)
+            splitter.setSizes({ qMax(1, splitter.width() - desired_width - splitter.handleWidth()), desired_width });
+    }
+    m_extension_buttons->set_items(AK::move(items));
 }
 
 void WindowToolbar::show_feedback_popover()

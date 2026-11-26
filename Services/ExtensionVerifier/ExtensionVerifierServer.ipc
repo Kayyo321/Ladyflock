@@ -1,0 +1,12 @@
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
+
+endpoint ExtensionVerifierServer
+{
+    verify_xpi(
+        ByteBuffer xpi_bytes,
+        Optional<String> expected_addon_id,
+        Vector<String> trusted_root_pems,
+        Vector<String> revoked_addon_ids,
+        Vector<String> revoked_sha256_hexes
+    ) => (Web::Extensions::XpiVerificationResult result, Vector<String> file_names, Vector<ByteBuffer> file_contents)
+}

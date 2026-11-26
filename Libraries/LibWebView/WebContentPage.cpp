@@ -26,6 +26,7 @@
 #include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CanonicalWindow.h>
 #include <LibWebView/CookieJar.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/NavigationLoader.h>
@@ -380,7 +381,16 @@ bool WebContentPage::continue_navigation_population_in_selected_process(Web::HTM
             // 5. Queue a global task on the navigation and traversal task source, given navigable's active window, to run
             //    these steps:
             // NB: The page to host the document runs the task.
-            host->async_populate_navigation(weak_loader->request(), weak_loader->take_result());
+            auto result = weak_loader->take_result();
+            if (auto* ext_manager = host->client().session().extension_manager.ptr();
+                ext_manager && result.document_id.has_value()) {
+                if (auto const* nav_params = result.navigation_params.get_pointer<Web::HTML::NavigationParamsDescriptor>()) {
+                    auto const& url = nav_params->response.url_list.is_empty() ? weak_loader->request().history_entry.url : nav_params->response.url_list.last();
+                    if (url.scheme() != "moz-extension"sv)
+                        ext_manager->attach_content_scripts_for_document(*host, url, navigable->is_top_level_traversable(), *result.document_id);
+                }
+            }
+            host->async_populate_navigation(weak_loader->request(), move(result));
         });
     };
     // Wait for the destination RequestServer to acknowledge the import before the host adopts it.

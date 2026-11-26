@@ -12,12 +12,15 @@
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
 #include <LibHTTP/HeaderList.h>
+#include <LibImageDecoderClient/Client.h>
 #include <LibRequests/RequestClient.h>
 #include <LibWebCommon/Loader/UserAgent.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CrashReportStore.h>
 #include <LibWebView/DefaultBrowser.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
+#include <LibWebView/ImageDecoderManager.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/ProcessSnapshot.h>
@@ -655,8 +658,221 @@ void ConnectionFromUI::crash_reports_changed()
     async_crash_reports_changed();
 }
 
+static WebView::Extensions::ExtensionManager* extension_manager_for_tab(View* view)
+{
+    if (!view || !view->is_tab() || view->is_private() == WebView::IsPrivate::Yes)
+        return nullptr;
+    auto* manager = view->session().extension_manager.ptr();
+    return manager && manager->extensions_enabled() ? manager : nullptr;
+}
+
+Optional<Gfx::ShareableBitmap> ConnectionFromUI::extension_icon(URL::URL const& url, String const& version, WebView::Extensions::ExtensionManager& manager)
+{
+    auto key = MUST(String::formatted("{} {}", version, url));
+    if (auto cached = m_extension_icons.find(key); cached != m_extension_icons.end())
+        return cached->value;
+    // Limit the cache and outstanding decodes even when a script continually changes its icon.
+    auto host = MUST(String::from_utf8(url.serialized_host()));
+    if (m_pending_icon_hosts.contains(host))
+        return {};
+    auto& recent = m_recent_extension_icons.ensure(host);
+    if (recent.size() == 4)
+        m_extension_icons.remove(recent.take_first());
+    recent.append(key);
+    m_extension_icons.set(key, {});
+    auto resource = manager.serve_resource(url, {}, 1024 * 1024);
+    if (!resource.allowed || resource.data.is_empty())
+        return {};
+    if (!m_icon_decoder) {
+        // The browser's process ID in the process manager is zero. Its decoder is separate from page decoders.
+        auto handle = Application::image_decoder_manager().connect_new_client(0, &Application::default_session(), {});
+        if (handle.is_error())
+            return {};
+        auto transport = handle.value().create_transport();
+        if (transport.is_error())
+            return {};
+        m_icon_decoder = make_ref_counted<ImageDecoderClient::Client>(transport.release_value());
+        m_icon_decoder->on_death = [this] { m_icon_decoder = nullptr; };
+    }
+    auto weak_this = make_weak_ptr<ConnectionFromUI>();
+    m_pending_icon_hosts.set(host);
+    (void)m_icon_decoder->decode_image(resource.data.bytes(), [weak_this, key, host](auto& image) -> ErrorOr<void> {
+        auto self = weak_this.strong_ref();
+        if (!self)
+            return {};
+        self->m_pending_icon_hosts.remove(host);
+        self->schedule_extension_state_refresh();
+        if (image.frames.is_empty())
+            return {};
+        if (image.session_id && self->m_icon_decoder)
+            self->m_icon_decoder->stop_animation_decode(image.session_id);
+        auto& bitmap = *image.frames.first().bitmap;
+        if (bitmap.width() > 512 || bitmap.height() > 512)
+            return {};
+        self->m_extension_icons.set(key, bitmap.to_shareable_bitmap());
+        return {}; }, [weak_this, host](Error&) {
+        if (auto self = weak_this.strong_ref()) {
+            self->m_pending_icon_hosts.remove(host);
+            self->schedule_extension_state_refresh();
+        } }, Gfx::IntSize { 48, 48 }, resource.mime_type.to_byte_string());
+    return {};
+}
+
+void ConnectionFromUI::send_extension_state(View& view)
+{
+    auto* manager = extension_manager_for_tab(&view);
+    if (!manager) {
+        async_view_extension_state(view.view_id(), false, {}, 0);
+        return;
+    }
+    Vector<ExtensionItem> items;
+    auto window_id = view.extension_window_id();
+    auto tab_id = view.view_id();
+    for (auto const* ext : manager->all_extensions()) {
+        if (!ext->enabled)
+            continue;
+        auto action = manager->action_controller().resolved_state(ext->extension_id, tab_id, window_id);
+        auto sidebar = manager->sidebar_controller().resolved_state(ext->extension_id, tab_id, window_id);
+        Optional<URL::URL> sidebar_url;
+        if (sidebar.is_open && sidebar.panel_url.has_value())
+            sidebar_url = manager->package_page_url(*ext, *sidebar.panel_url);
+        Optional<Gfx::ShareableBitmap> icon;
+        auto icon_path = ext->manifest.action().has_value() ? action.icon_path : sidebar.icon_path.value_or_lazy_evaluated_optional([&] { return action.icon_path; });
+        if (icon_path.has_value()) {
+            if (auto url = manager->package_page_url(*ext, *icon_path); url.has_value())
+                icon = extension_icon(*url, ext->manifest.version(), *manager);
+        }
+        Optional<Gfx::ShareableBitmap> sidebar_icon;
+        if (sidebar_url.has_value() && sidebar.icon_path.has_value()) {
+            if (auto url = manager->package_page_url(*ext, *sidebar.icon_path); url.has_value())
+                sidebar_icon = extension_icon(*url, ext->manifest.version(), *manager);
+        }
+        items.append({
+            .id = ext->extension_id,
+            .name = ext->manifest.name(),
+            .title = action.title,
+            .badge = action.badge_text,
+            .badge_color = action.badge_background_color,
+            .icon = move(icon),
+            .has_action = ext->manifest.action().has_value(),
+            .enabled = action.enabled,
+            .pinned = action.pinned,
+            .has_options = ext->manifest.options_ui().has_value(),
+            .has_sidebar = ext->manifest.sidebar_action().has_value(),
+            .sidebar_title = sidebar.title,
+            .sidebar_icon = move(sidebar_icon),
+            .sidebar_url = move(sidebar_url),
+        });
+    }
+    async_view_extension_state(tab_id, true, move(items), manager->sidebar_controller().window_state(window_id).width_px);
+}
+
+void ConnectionFromUI::schedule_extension_state_refresh()
+{
+    if (exchange(m_extension_refresh_pending, true))
+        return;
+    deferred_invoke([this] {
+        m_extension_refresh_pending = false;
+        WebView::ViewImplementation::for_each_view([this](auto& implementation) {
+            auto* view = find_view(implementation.view_id());
+            if (view && view->is_tab() && view->is_current_tab_of_window() && view->is_private() == WebView::IsPrivate::No)
+                send_extension_state(*view);
+            return IterationDecision::Continue;
+        });
+    });
+}
+
+void ConnectionFromUI::extension_window_closed(u64 window_id)
+{
+    auto& manager = Application::default_session().extension_manager;
+    if (!manager || !manager->extensions_enabled())
+        return;
+    m_extension_tab_windows.remove_all_matching([&](u64 tab_id, u64 window) {
+        if (window != window_id)
+            return false;
+        manager->notify_tab_removed(tab_id, true);
+        return true;
+    });
+    manager->action_controller().clear_window_state(window_id);
+    manager->sidebar_controller().clear_window_state(window_id);
+}
+
+void ConnectionFromUI::view_set_extension_window(u64 view_id, u64 window_id)
+{
+    if (auto* view = find_view(view_id); view && view->is_tab()) {
+        view->set_extension_window_id(window_id);
+        if (auto* manager = extension_manager_for_tab(view)) {
+            if (m_extension_tab_windows.set(view_id, window_id) == AK::HashSetResult::InsertedNewEntry)
+                manager->notify_tab_created(*view);
+        }
+        if (view->is_current_tab_of_window())
+            send_extension_state(*view);
+    }
+}
+
+void ConnectionFromUI::view_invoke_extension(u64 view_id, String id)
+{
+    auto* view = find_view(view_id);
+    if (auto* manager = extension_manager_for_tab(view); manager && view->is_current_tab_of_window()) {
+        manager->invoke_action_for_tab(id, view_id, view->extension_window_id(), [&](auto const& url) {
+            async_view_open_extension_popup(view_id, id, url);
+        });
+    }
+}
+
+void ConnectionFromUI::view_pin_extension(u64 view_id, String id, bool pinned)
+{
+    auto* view = find_view(view_id);
+    if (auto* manager = extension_manager_for_tab(view); manager && view->is_current_tab_of_window())
+        if (auto result = manager->set_action_pinned(id, pinned); result.is_error())
+            warnln("Could not save extension pin: {}", result.error());
+}
+
+void ConnectionFromUI::view_toggle_extension_sidebar(u64 view_id, String id)
+{
+    auto* view = find_view(view_id);
+    if (auto* manager = extension_manager_for_tab(view); manager && view->is_current_tab_of_window()) {
+        auto ext = manager->extension_by_id(id);
+        if (ext.has_value() && ext->enabled && !manager->sidebar_controller().toggle(id, view->extension_window_id(), true).is_error())
+            manager->notify_chrome_changed();
+    }
+}
+
+void ConnectionFromUI::view_set_extension_sidebar_width(u64 view_id, u32 width)
+{
+    auto* view = find_view(view_id);
+    if (auto* manager = extension_manager_for_tab(view); manager && view->is_current_tab_of_window())
+        if (auto result = manager->set_sidebar_width(view->extension_window_id(), width); result.is_error())
+            warnln("Could not save extension sidebar width: {}", result.error());
+}
+
+void ConnectionFromUI::view_open_extension_options(u64 view_id, String id)
+{
+    auto* view = find_view(view_id);
+    auto* manager = extension_manager_for_tab(view);
+    if (!manager || !view->is_current_tab_of_window())
+        return;
+    auto ext = manager->extension_by_id(id);
+    if (ext.has_value() && ext->enabled && ext->manifest.options_ui().has_value()) {
+        if (auto url = manager->package_page_url(*ext, ext->manifest.options_ui()->page); url.has_value())
+            WebView::Application::the().open_url_in_new_tab(*url, Web::HTML::ActivateTab::Yes, view);
+    }
+}
+
+void ConnectionFromUI::view_extension_package_picked(u64 view_id, u64 request_id, Optional<ByteString> path)
+{
+    if (auto* view = find_view(view_id))
+        view->did_pick_extension_package(request_id, move(path));
+}
+
 void ConnectionFromUI::ui_did_start()
 {
+    if (auto& manager = Application::default_session().extension_manager; manager) {
+        manager->on_chrome_changed = [] {
+            if (auto* ui = the())
+                ui->schedule_extension_state_refresh();
+        };
+    }
     Application::the().ui_did_start();
 }
 
@@ -944,6 +1160,10 @@ void ConnectionFromUI::update_settings(u64 change_id, ByteString changes_json)
 
 void ConnectionFromUI::destroy_view(u64 view_id)
 {
+    if (m_extension_tab_windows.remove(view_id)) {
+        if (auto* manager = extension_manager_for_tab(find_view(view_id)))
+            manager->notify_tab_removed(view_id, false);
+    }
     Application::the().destroy_view(view_id);
 }
 
@@ -975,10 +1195,7 @@ void ConnectionFromUI::view_set_page_background_color_to_system_canvas(u64 view_
 
 View* ConnectionFromUI::find_view(u64 view_id)
 {
-    auto view = WebView::ViewImplementation::find_view_by_id(view_id);
-    if (!view.has_value())
-        return nullptr;
-    return static_cast<View*>(&view.value());
+    return Application::the().find_ui_view(view_id);
 }
 
 void ConnectionFromUI::view_load(u64 view_id, URL::URL url, Web::Bindings::NavigationHistoryBehavior history_behavior)
@@ -1079,14 +1296,24 @@ void ConnectionFromUI::view_commit_synchronized_resize(u64 view_id, u64 token)
 
 void ConnectionFromUI::view_set_pinned(u64 view_id, bool pinned)
 {
-    if (auto* view = find_view(view_id))
+    if (auto* view = find_view(view_id); view && view->is_pinned() != pinned) {
         view->set_pinned(pinned);
+        if (auto* manager = extension_manager_for_tab(view))
+            manager->notify_tab_updated(view_id, WebView::Extensions::ExtensionManager::TabChange::Pinned);
+    }
 }
 
 void ConnectionFromUI::view_set_current_tab_of_window(u64 view_id, bool current_tab_of_window)
 {
-    if (auto* view = find_view(view_id))
+    if (auto* view = find_view(view_id)) {
+        auto was_current = view->is_current_tab_of_window();
         view->set_current_tab_of_window(current_tab_of_window);
+        if (current_tab_of_window && view->is_tab()) {
+            send_extension_state(*view);
+            if (auto* manager = extension_manager_for_tab(view); manager && !was_current)
+                manager->notify_tab_activated(view_id, view->extension_window_id());
+        }
+    }
 }
 
 void ConnectionFromUI::view_set_presents_from_cpu_memory(u64 view_id, bool presents_from_cpu_memory)

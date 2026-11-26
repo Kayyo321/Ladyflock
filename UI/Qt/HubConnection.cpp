@@ -61,6 +61,26 @@ void HubConnection::die()
     Core::Process::terminate_immediately(1);
 }
 
+void HubConnection::view_extension_state(u64 view_id, bool available, Vector<Hub::ExtensionItem> items, u32 width)
+{
+    if (auto* view = RemoteView::find(view_id); view && view->on_extension_state)
+        view->on_extension_state(available, move(items), width);
+}
+
+void HubConnection::view_open_extension_popup(u64 view_id, String id, URL::URL url)
+{
+    if (auto* view = RemoteView::find(view_id); view && view->on_extension_popup)
+        view->on_extension_popup(id, url);
+}
+
+void HubConnection::view_pick_extension_package(u64 view_id, u64 request_id)
+{
+    if (auto* view = RemoteView::find(view_id); view && view->on_pick_extension_package)
+        view->on_pick_extension_package(request_id);
+    else
+        async_view_extension_package_picked(view_id, request_id, {});
+}
+
 void HubConnection::crash_reports_changed()
 {
 #ifdef LADYBIRD_HUB_IN_OWN_PROCESS

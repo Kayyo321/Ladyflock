@@ -30,6 +30,7 @@ set(TEST_SOURCES
     TestBackingStoreRelease.cpp
     TestChromeIcons.cpp
     TestDownloadPresentation.cpp
+    TestExtensionButtons.cpp
     TestHiddenPageSizing.cpp
     TestJavaScriptDialog.cpp
     TestLadybirdMenu.cpp

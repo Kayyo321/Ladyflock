@@ -196,4 +196,14 @@ void RequestControlClient::request_adopter_designated(u64 designation_id)
         (*promise)->resolve({});
 }
 
+void RequestControlClient::check_web_request_before_request(u64 check_id, int client_id, URL::URL url, ByteString method)
+{
+    if (on_check_web_request_before_request) {
+        on_check_web_request_before_request(check_id, client_id, url, method);
+        return;
+    }
+
+    async_did_check_web_request_before_request(check_id, false);
+}
+
 }

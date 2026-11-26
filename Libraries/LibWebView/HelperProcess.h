@@ -18,6 +18,7 @@
 #include <LibWebCommon/Page/PageId.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/Forward.h>
+#include <LibWebView/Options.h>
 #include <LibWebView/WebContentClient.h>
 #include <RequestServer/SiteBinding.h>
 
@@ -61,6 +62,9 @@ WEBVIEW_API void apply_dns_settings(Requests::RequestControlClient&);
 
 // Launches an ImageDecoder, which is listed with the given site, or with the given process if it serves no site.
 WEBVIEW_API ErrorOr<NonnullRefPtr<ImageDecoderControlClient>> launch_image_decoder_process(u64 owner_child_id, IsPrivate, Optional<Utf16String> const& site);
+
+// Launches a sandboxed ExtensionVerifier helper process for XPI signature/manifest validation.
+WEBVIEW_API ErrorOr<NonnullRefPtr<ExtensionVerifierClient>> launch_extension_verifier_process();
 
 // Launches a WebRTCClient that serves the given renderer alone, which talks to it over the returned handle, and ends any
 // helper the renderer had before. The helper exits once that renderer's end of the transport is gone.

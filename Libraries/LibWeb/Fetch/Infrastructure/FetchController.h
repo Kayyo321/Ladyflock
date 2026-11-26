@@ -88,6 +88,7 @@ public:
     void set_task_destination(TaskDestination task_destination) { m_task_destination = move(task_destination); }
 
     // The page of the realm that started the fetch.
+    [[nodiscard]] bool has_page() const { return m_page != nullptr; }
     [[nodiscard]] GC::Ref<Page> page() const;
     void set_page(Page& page) { m_page = page; }
 

@@ -411,6 +411,9 @@ public:
     decltype(Hub::View::on_cancel_permission_prompt) on_cancel_permission_prompt;
     decltype(Hub::View::on_tab_indicator_change) on_tab_indicator_change;
     Function<void(Hub::ViewState const& previous_state)> on_state_change;
+    Function<void(bool, Vector<Hub::ExtensionItem>, u32)> on_extension_state;
+    Function<void(String const&, URL::URL const&)> on_extension_popup;
+    Function<void(u64)> on_pick_extension_package;
     decltype(Hub::View::on_request_file_picker) on_request_file_picker;
     decltype(Hub::View::on_request_select_dropdown) on_request_select_dropdown;
     decltype(Hub::View::on_finish_handling_key_event) on_finish_handling_key_event;

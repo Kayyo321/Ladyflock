@@ -1,0 +1,66 @@
+<!doctype html>
+<!--
+Copyright (c) 2026-present, the Ladyflock developers.
+SPDX-License-Identifier: BSD-2-Clause
+-->
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Add-ons</title>
+        <link rel="icon" type="image/png" href="resource://icons/48x48/app-browser.png" />
+        <link rel="stylesheet" href="resource://ladybird/ladybird.css" />
+        <link rel="stylesheet" href="resource://ladybird/about-pages/webui.css" />
+        <link rel="stylesheet" href="resource://ladybird/about-pages/addons.css" />
+        <script type="module" src="resource://ladybird/about-pages/addons.js"></script>
+    </head>
+    <body>
+        <header>
+            <h1>Add-ons</h1>
+            <button id="pick-file" class="secondary-button" disabled>Install from File...</button>
+        </header>
+        <main>
+            <p id="notice" role="status"></p>
+            <section aria-labelledby="installed-heading">
+                <h2 class="card-title" id="installed-heading" tabindex="-1">Installed extensions</h2>
+                <div class="card card-body" id="installed">
+                    <p class="description">Loading extensions…</p>
+                </div>
+            </section>
+            <section aria-labelledby="catalog-heading">
+                <h2 class="card-title" id="catalog-heading">Find extensions</h2>
+                <div class="card card-body">
+                    <form role="search" id="catalog-search">
+                        <label for="query">Search Mozilla Add-ons</label>
+                        <div class="controls">
+                            <input
+                                id="query"
+                                type="search"
+                                placeholder="Extension name or keyword"
+                                maxlength="100"
+                                required
+                                disabled
+                            />
+                            <button class="primary-button" id="search" disabled>Search</button>
+                        </div>
+                    </form>
+                    <p id="catalog-status" class="description" role="status"></p>
+                    <div id="results"></div>
+                    <nav id="pages" class="controls" aria-label="Search result pages" hidden>
+                        <button class="secondary-button" id="previous">Previous</button>
+                        <span id="page-number"></span>
+                        <button class="secondary-button" id="next">Next</button>
+                    </nav>
+                </div>
+            </section>
+        </main>
+        <dialog aria-labelledby="review-title" id="review">
+            <h2 id="review-title"></h2>
+            <div id="review-body" tabindex="0" role="region" aria-label="Review details"></div>
+            <div class="controls" id="review-actions">
+                <button class="secondary-button" id="cancel" autofocus>Cancel</button>
+                <button class="primary-button" id="confirm"></button>
+            </div>
+        </dialog>
+    </body>
+</html>

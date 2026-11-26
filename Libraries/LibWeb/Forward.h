@@ -117,6 +117,7 @@ enum class StateAndProperties;
 
 namespace Web::Bindings {
 
+class ExtensionRealmContext;
 class Intrinsics;
 enum class NamedPropertyDeletionResult : u8;
 class Wrappable;
@@ -1270,6 +1271,13 @@ class TrustedScript;
 class TrustedScriptURL;
 class TrustedTypePolicy;
 class TrustedTypePolicyFactory;
+
+}
+
+namespace Web::Extensions {
+
+class ExtensionContentScriptHost;
+class WebRequestClient;
 
 }
 

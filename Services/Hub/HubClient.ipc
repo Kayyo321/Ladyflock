@@ -241,8 +241,28 @@ struct Hub::ViewState {
 }
 
 // What the Hub tells the UI.
+struct Hub::ExtensionItem {
+    String id;
+    String name;
+    String title;
+    String badge;
+    String badge_color;
+    Optional<Gfx::ShareableBitmap> icon;
+    bool has_action;
+    bool enabled;
+    bool pinned;
+    bool has_options;
+    bool has_sidebar;
+    String sidebar_title;
+    Optional<Gfx::ShareableBitmap> sidebar_icon;
+    Optional<URL::URL> sidebar_url;
+}
+
 endpoint HubClient
 {
+    view_extension_state(u64 view_id, bool available, Vector<Hub::ExtensionItem> items, u32 sidebar_width) =|
+    view_open_extension_popup(u64 view_id, String extension_id, URL::URL url) =|
+    view_pick_extension_package(u64 view_id, u64 request_id) =|
     crash_reports_changed() =|
     request_finished(u64 request_id, bool had_network_error, Optional<u32> response_code, Vector<HTTP::Header> response_headers, ByteString body) =|
     app_open_new_tab(Vector<URL::URL> urls) =|

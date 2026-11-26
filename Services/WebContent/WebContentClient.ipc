@@ -21,6 +21,7 @@
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
 #include <LibWebCommon/ContentSecurityPolicy/Directives/NavigationType.h>
 #include <LibWebCommon/ContentSecurityPolicy/RemoteViolationDirective.h>
+#include <LibWebCommon/Extensions/ExtensionTypes.h>
 #include <LibWebCommon/Fetch/Infrastructure/HTTP/RequestPriority.h>
 #include <LibWebCommon/FileAPI/SerializedBlobURLEntry.h>
 #include <LibWebCommon/Fullscreen/FullscreenRequestType.h>
@@ -337,4 +338,10 @@ endpoint WebContentClient routed by Web::PageId page_id
     [NotRouted] start_worker_agent(Web::PageId page_id, Web::HTML::WorkerAgentStartRequest request) => (Web::HTML::WorkerAgentId agent_id, Optional<IPC::TransportHandle> thread_transport, bool is_hosted_in_caller_process)
     [NotRouted] close_worker_agent(Web::PageId page_id, Web::HTML::WorkerAgentId agent_id, Web::HTML::WorkerAgentOwnerToken owner_token) =|
     [NotRouted] register_dedicated_worker(Web::PageId page_id, Web::HTML::WorkerAgentStartRequest request, IPC::TransportHandle worker_transport) =|
+
+    [NotRouted] did_request_extension_resource(Web::PageId page_id, URL::URL url, Web::HTML::CrossProcessId document_id) => (Web::Extensions::ExtensionResourceResponse response)
+    [NotRouted] did_call_extension_api(Web::PageId page_id, u64 call_id, String extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json) =|
+    [NotRouted] did_reply_extension_event(Web::PageId page_id, u64 reply_id, bool has_value, String result_json) =|
+    [NotRouted] did_finish_extension_script_execution(Web::PageId page_id, u64 call_id, bool success, String result_or_error_json) =|
+    [NotRouted] did_check_web_request_before_request(Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails details) =|
 }

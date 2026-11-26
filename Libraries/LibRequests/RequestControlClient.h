@@ -44,6 +44,7 @@ public:
     Function<void(int client_id, URL::URL const&, Optional<HTTP::Cookie::PartitionContext> const&, HTTP::Cookie::SameSiteContext, Vector<HTTP::Cookie::ParsedCookie> const&, Optional<HTTP::HSTS::ParsedHSTSPolicy> const&)> on_store_response_cookies_and_hsts_policy;
     Function<void()> on_request_server_died;
     Function<void(u64 size)> on_disk_cache_size_changed;
+    Function<void(u64 check_id, int client_id, URL::URL const&, ByteString const& method)> on_check_web_request_before_request;
 
 private:
     virtual void die() override;
@@ -59,6 +60,7 @@ private:
     virtual void retrieved_cache_access_profile(u64 access_profile_request_id, Vector<CacheAccessBucket> buckets) override;
     virtual void request_adopter_designated(u64 designation_id) override;
     virtual void resolve_host_with_system_resolver(u64 resolution_id, ByteString host, bool ipv6) override;
+    virtual void check_web_request_before_request(u64 check_id, int client_id, URL::URL url, ByteString method) override;
 
     HashMap<u64, NonnullRefPtr<Core::Promise<CacheSizes>>> m_pending_cache_size_estimations;
     u64 m_next_cache_size_estimation_id { 0 };

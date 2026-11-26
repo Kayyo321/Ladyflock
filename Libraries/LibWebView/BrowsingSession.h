@@ -45,6 +45,8 @@ public:
     OwnPtr<BlobURLStore> blob_url_store;
     OwnPtr<HSTSStore> hsts_store;
     OwnPtr<PermissionManager> permission_manager;
+    // Non-null only for the ordinary browsing session; private sessions never host extensions.
+    OwnPtr<Extensions::ExtensionManager> extension_manager;
 
     struct CertificateException {
         ByteString host;

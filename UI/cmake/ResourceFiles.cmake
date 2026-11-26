@@ -27,6 +27,9 @@ list(TRANSFORM INTERNAL_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladyb
 
 set(ABOUT_PAGES
     about.html
+    addons.css
+    addons.html
+    addons.js
     bookmarks.html
     certificate.html
     crashes.html

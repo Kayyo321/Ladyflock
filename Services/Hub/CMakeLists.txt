@@ -25,7 +25,7 @@ add_dependencies(hubservice hubipc)
 target_include_directories(hubservice PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/../..)
 target_include_directories(hubservice PRIVATE ${LADYBIRD_SOURCE_DIR}/Services/)
 
-target_link_libraries(hubservice PRIVATE LibCore LibGfx LibHTTP LibIPC LibRequests LibURL LibWebView hubipc)
+target_link_libraries(hubservice PRIVATE LibCore LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibURL LibWebView hubipc)
 
 add_executable(Hub main.cpp)
 target_include_directories(Hub PRIVATE ${LADYBIRD_SOURCE_DIR}/Services/)

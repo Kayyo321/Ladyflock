@@ -345,6 +345,10 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
     , m_tabs_container(new TabWidget(is_private, this))
     , m_is_popup_window(is_popup_window)
 {
+    // Runtime window IDs are independent of restored sessions and private windows.
+    static u64 next_extension_window_id = 1;
+    if (is_private == WebView::IsPrivate::No)
+        m_extension_window_id = next_extension_window_id++;
     // NB: The toolbar is made before the rest of the window, so it learns of the session's downloads once it is all here.
     toolbar().update_downloads_button();
 
@@ -2183,6 +2187,8 @@ void BrowserWindow::closeEvent(QCloseEvent* event)
         return;
     }
 
+    if (m_is_private == WebView::IsPrivate::No)
+        HubConnection::the().async_extension_window_closed(extension_window_id());
     Vector<Function<void()>> close_requests;
     for_each_tab([&](auto& tab) {
         close_requests.append(tab.prepare_for_window_close());

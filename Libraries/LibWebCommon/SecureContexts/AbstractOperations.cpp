@@ -40,7 +40,8 @@ Trustworthiness is_origin_potentially_trustworthy(URL::Origin const& origin)
 
     // 6. If origin’s scheme is "file", return "Potentially Trustworthy".
     // AD-HOC: Our resource:// is basically an alias to file://
-    if (origin.scheme() == "file"sv || origin.scheme() == "resource"sv)
+    // WebExtensions moz-extension:// origins are packaged browser-verified extension origins.
+    if (origin.scheme() == "file"sv || origin.scheme() == "resource"sv || origin.scheme() == "moz-extension"sv)
         return Trustworthiness::PotentiallyTrustworthy;
 
     // 7. If origin’s scheme component is one which the user agent considers to be authenticated, return "Potentially Trustworthy".

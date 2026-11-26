@@ -183,7 +183,7 @@ def wait_for_page(client, url, path):
     wait_until(f"the tab shows {url}", tab_shows_page)
 
 
-def launch(ladybird_binary, profile, url):
+def launch(ladybird_binary, profile, url, *browser_arguments):
     # Launches the browser with DevTools on a free port and connects the first client, whose connection doubles as the
     # check that the server is up: a throwaway probe would hold the server's one connection slot until it noticed the
     # probe had gone, and turn the client away meanwhile.
@@ -201,6 +201,7 @@ def launch(ladybird_binary, profile, url):
                 f"--profile-path={profile}",
                 f"--devtools={devtools_port}",
                 "--expose-internals-object",
+                *browser_arguments,
                 url,
             ],
             stderr=subprocess.PIPE,

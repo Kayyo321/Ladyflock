@@ -26,6 +26,7 @@
 #include <LibWeb/ContentSecurityPolicy/BlockingAlgorithms.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOMURL/DOMURL.h>
+#include <LibWeb/Extensions/WebRequestClient.h>
 #include <LibWeb/Fetch/BodyInit.h>
 #include <LibWeb/Fetch/Engine/FetchBodyDeliveryGate.h>
 #include <LibWeb/Fetch/Engine/FetchByteChannel.h>
@@ -805,7 +806,11 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
         }
 
         // -> request’s current URL’s scheme is not an HTTP(S) scheme
-        // AD-HOC: We allow CORS requests for resource:// URLs from opaque origins to enable requesting JS modules from internal pages.
+        // AD-HOC: We allow CORS requests for resource:// URLs from opaque origins to enable requesting JS modules from internal pages,
+        //         and moz-extension:// fetches whose access is governed by web_accessible_resources in the Hub.
+        if (request->current_url().scheme() == "moz-extension"sv)
+            return scheme_fetch(realm, *fetch_params);
+
         if (!Infrastructure::is_http_or_https_scheme(request->current_url().scheme())
             && !(origin && origin->is_opaque() && request->current_url().scheme() == "resource"sv)) {
             // NOTE: At this point all other request modes have been handled. Ensure we're not lying in the error message :^)
@@ -1807,6 +1812,44 @@ GC::Ref<PendingResponse> scheme_fetch(JS::Realm& realm, Infrastructure::FetchPar
 
         return nonstandard_resource_loader_file_or_http_network_fetch(realm, fetch_params);
     }
+    // -> "moz-extension"
+    else if (request->current_url().scheme() == "moz-extension"sv) {
+        if (!fetch_params.controller()->has_page())
+            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource unavailable without page"_string));
+
+        if (request->mode() == Infrastructure::Request::Mode::Navigate && request->reserved_client_snapshot()) {
+            auto response = Infrastructure::Response::create();
+            response->set_status(200);
+            response->set_status_message("OK"sv);
+            response->url_list().append(request->current_url());
+            return PendingResponse::create(fetch_params, response);
+        }
+
+        Optional<URL::Origin> initiator_origin;
+        if (auto const* origin_ptr = request->origin().get_pointer<URL::Origin>())
+            initiator_origin = *origin_ptr;
+
+        auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
+        auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr;
+        if (!window)
+            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error("Extension resource requires a document"_string));
+        auto res = fetch_params.controller()->page()->client().page_did_request_extension_resource(request->current_url(), window->associated_document().id());
+        if (!res.allowed) {
+            return PendingResponse::create(fetch_params, Infrastructure::Response::network_error(res.error.has_value() ? *res.error : "Extension resource not found or not web accessible"_string));
+        }
+
+        auto response = Infrastructure::Response::create();
+        response->set_status(200);
+        response->set_status_message("OK"sv);
+        response->url_list().append(request->current_url());
+        response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Type"sv, res.mime_type));
+        if (res.content_security_policy.has_value() && !res.content_security_policy->is_empty())
+            response->header_list()->append(HTTP::Header::isomorphic_encode("Content-Security-Policy"sv, *res.content_security_policy));
+        if (initiator_origin.has_value() && initiator_origin->scheme() != "moz-extension"sv)
+            response->header_list()->append(HTTP::Header::isomorphic_encode("Access-Control-Allow-Origin"sv, "*"sv));
+        response->set_body(Infrastructure::byte_sequence_as_response_body(res.data));
+        return PendingResponse::create(fetch_params, response);
+    }
     // -> HTTP(S) scheme
     else if (Infrastructure::is_http_or_https_scheme(request->current_url().scheme())) {
         // Return the result of running HTTP fetch given fetchParams.
@@ -2378,7 +2421,7 @@ static void process_http_network_or_cache_response(JS::Object& global_object, In
 }
 
 // https://fetch.spec.whatwg.org/#concept-http-network-or-cache-fetch
-static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch(JS::Object& global_object, Infrastructure::FetchParams const& fetch_params, NonnullRefPtr<Infrastructure::FetchParams const> http_fetch_params, RefPtr<Infrastructure::Response> response, RefPtr<Infrastructure::Response> stored_response, RefPtr<HTTP::MemoryCache> http_cache, IsAuthenticationFetch is_authentication_fetch, IsNewConnectionFetch is_new_connection_fetch, HTTP::Cookie::IncludeCredentials include_credentials)
+static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch(JS::Object& global_object, Infrastructure::FetchParams const& fetch_params, NonnullRefPtr<Infrastructure::FetchParams const> http_fetch_params, RefPtr<Infrastructure::Response> response, RefPtr<Infrastructure::Response> stored_response, RefPtr<HTTP::MemoryCache> http_cache, IsAuthenticationFetch is_authentication_fetch, IsNewConnectionFetch is_new_connection_fetch, HTTP::Cookie::IncludeCredentials include_credentials, bool extension_request_checked)
 {
     auto& realm = HTML::relevant_realm(global_object);
     auto request = fetch_params.request();
@@ -2394,7 +2437,7 @@ static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch(JS::Object&
 
         // 2. Let forwardResponse be the result of running HTTP-network fetch given httpFetchParams, includeCredentials,
         //    and isNewConnectionFetch.
-        pending_forward_response = nonstandard_resource_loader_file_or_http_network_fetch(realm, *http_fetch_params, include_credentials, is_new_connection_fetch, http_cache);
+        pending_forward_response = nonstandard_resource_loader_file_or_http_network_fetch(realm, *http_fetch_params, include_credentials, is_new_connection_fetch, http_cache, extension_request_checked);
     } else {
         pending_forward_response = PendingResponse::create(fetch_params, Infrastructure::Response::create());
     }
@@ -2468,6 +2511,31 @@ static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch(JS::Object&
     // 18. Return response.
     // NOTE: Typically response’s body’s stream is still being enqueued to after returning.
     return returned_pending_response;
+}
+
+static GC::Ref<PendingResponse> continue_http_network_or_cache_fetch_with_intercepts(JS::Object& global_object, Infrastructure::FetchParams const& fetch_params, NonnullRefPtr<Infrastructure::FetchParams const> http_fetch_params, RefPtr<Infrastructure::Response> response, RefPtr<Infrastructure::Response> stored_response, RefPtr<HTTP::MemoryCache> http_cache, IsAuthenticationFetch is_authentication_fetch, IsNewConnectionFetch is_new_connection_fetch, HTTP::Cookie::IncludeCredentials include_credentials, bool extension_request_checked)
+{
+    auto& realm = HTML::relevant_realm(global_object);
+    auto request = fetch_params.request();
+    if (WebDriver::BiDi::network_events_enabled()) {
+        auto intercepts = WebDriver::BiDi::get_network_intercepts(*http_fetch_params, "beforeRequestSent"sv);
+        if (!intercepts.is_empty()) {
+            auto returned_pending_response = PendingResponse::create(fetch_params);
+            WebDriver::BiDi::block_network_request(*http_fetch_params, nullptr, "beforeRequestSent"_string, move(intercepts), WebDriver::BiDi::NetworkContinuation::create(realm.heap(), GC::create_function(realm.heap(), GC::captures(realm, NonnullRefPtr { fetch_params }, http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, extension_request_checked, returned_pending_response), [](auto& realm, auto& fetch_params, auto& http_fetch_params, auto& response, auto& stored_response, auto& http_cache, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, auto& extension_request_checked, auto& returned_pending_response, WebDriver::BiDi::NetworkContinuationAction action, RefPtr<Infrastructure::Response> continued_response) {
+                // AD-HOC: The fetch can be canceled while its request is blocked.
+                if (fetch_params->is_canceled()) {
+                    returned_pending_response->resolve(Infrastructure::Response::appropriate_network_error(*fetch_params));
+                    return;
+                }
+                auto pending_response = continue_http_network_or_cache_fetch(realm.global_object(), *fetch_params, *http_fetch_params, action == WebDriver::BiDi::NetworkContinuationAction::Continue ? response : continued_response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, extension_request_checked);
+                pending_response->when_loaded(GC::create_function(GC::Heap::the(), GC::captures(returned_pending_response), [](GC::Ref<PendingResponse>& returned_pending_response, NonnullRefPtr<Infrastructure::Response> response) { returned_pending_response->resolve(response); }));
+            })),
+                request);
+            return returned_pending_response;
+        }
+        WebDriver::BiDi::network_before_request_sent(*http_fetch_params);
+    }
+    return continue_http_network_or_cache_fetch(realm.global_object(), fetch_params, *http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, extension_request_checked);
 }
 
 // https://fetch.spec.whatwg.org/#concept-http-network-or-cache-fetch
@@ -2780,25 +2848,39 @@ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm& realm, Infrastru
     if (aborted)
         return PendingResponse::create(fetch_params, Infrastructure::Response::appropriate_network_error(fetch_params));
 
-    if (WebDriver::BiDi::network_events_enabled()) {
-        auto intercepts = WebDriver::BiDi::get_network_intercepts(*http_fetch_params, "beforeRequestSent"sv);
-        if (!intercepts.is_empty()) {
-            auto returned_pending_response = PendingResponse::create(fetch_params);
-            WebDriver::BiDi::block_network_request(*http_fetch_params, nullptr, "beforeRequestSent"_string, move(intercepts), WebDriver::BiDi::NetworkContinuation::create(realm.heap(), GC::create_function(realm.heap(), GC::captures(realm, NonnullRefPtr { fetch_params }, http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, returned_pending_response), [](auto& realm, auto& fetch_params, auto& http_fetch_params, auto& response, auto& stored_response, auto& http_cache, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, auto& returned_pending_response, WebDriver::BiDi::NetworkContinuationAction action, RefPtr<Infrastructure::Response> continued_response) {
-                // AD-HOC: The fetch can be canceled while its request is blocked.
+    auto resource_type = Extensions::WebRequestClient::resource_type_from_request(*request);
+    if (fetch_params.controller()->has_page()
+        && Extensions::WebRequestClient::matches_watch_snapshot(request->current_url(), resource_type)) {
+        static Atomic<u64> s_next_web_request_id { 1 };
+        auto returned_pending_response = PendingResponse::create(fetch_params);
+        Extensions::WebRequestBeforeRequestDetails details;
+        details.request_id = s_next_web_request_id.fetch_add(1);
+        details.url = request->current_url();
+        details.method = String::from_utf8_without_validation(request->method().bytes());
+        details.type = resource_type;
+        auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(*request));
+        if (auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr)
+            details.source_document_id = window->associated_document().id();
+        details.is_navigation = request->mode() == Infrastructure::Request::Mode::Navigate;
+
+        fetch_params.controller()->page()->check_web_request_before_request(
+            move(details),
+            GC::create_function(realm.heap(), GC::captures(realm, NonnullRefPtr { fetch_params }, http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, returned_pending_response), [](auto& realm, auto& fetch_params, auto& http_fetch_params, auto& response, auto& stored_response, auto& http_cache, auto& is_authentication_fetch, auto& is_new_connection_fetch, auto& include_credentials, auto& returned_pending_response, Extensions::WebRequestDecision decision) {
                 if (fetch_params->is_canceled()) {
                     returned_pending_response->resolve(Infrastructure::Response::appropriate_network_error(*fetch_params));
                     return;
                 }
-                auto pending_response = continue_http_network_or_cache_fetch(realm.global_object(), *fetch_params, *http_fetch_params, action == WebDriver::BiDi::NetworkContinuationAction::Continue ? response : continued_response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials);
-                pending_response->when_loaded(GC::create_function(GC::Heap::the(), GC::captures(returned_pending_response), [](GC::Ref<PendingResponse>& returned_pending_response, NonnullRefPtr<Infrastructure::Response> response) { returned_pending_response->resolve(response); }));
-            })),
-                request);
-            return returned_pending_response;
-        }
-        WebDriver::BiDi::network_before_request_sent(*http_fetch_params);
+                if (decision.cancel) {
+                    returned_pending_response->resolve(Infrastructure::Response::network_error("Blocked by extension webRequest.onBeforeRequest"_string));
+                    return;
+                }
+                auto pending_response = continue_http_network_or_cache_fetch_with_intercepts(realm.global_object(), *fetch_params, *http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, true);
+                pending_response->when_loaded(GC::create_function(GC::Heap::the(), GC::captures(returned_pending_response), [](GC::Ref<PendingResponse>& returned_pending_response, NonnullRefPtr<Infrastructure::Response> loaded_response) { returned_pending_response->resolve(loaded_response); }));
+            }));
+        return returned_pending_response;
     }
-    return continue_http_network_or_cache_fetch(realm.global_object(), fetch_params, *http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials);
+
+    return continue_http_network_or_cache_fetch_with_intercepts(realm.global_object(), fetch_params, *http_fetch_params, response, stored_response, http_cache, is_authentication_fetch, is_new_connection_fetch, include_credentials, false);
 }
 
 #if defined(WEB_FETCH_DEBUG)
@@ -2973,7 +3055,7 @@ Utf16String network_request_failed_error_message(Optional<StringView> error_mess
 // https://fetch.spec.whatwg.org/#concept-http-network-fetch
 // Drop-in replacement for 'HTTP-network fetch', but obviously non-standard :^)
 // It also handles file:// URLs since those can also go through ResourceLoader.
-GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, HTTP::Cookie::IncludeCredentials include_credentials, IsNewConnectionFetch is_new_connection_fetch, RefPtr<HTTP::MemoryCache> http_cache)
+GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, HTTP::Cookie::IncludeCredentials include_credentials, IsNewConnectionFetch is_new_connection_fetch, RefPtr<HTTP::MemoryCache> http_cache, bool extension_request_checked)
 {
     dbgln_if(WEB_FETCH_DEBUG, "Fetch: Running 'non-standard HTTP-network fetch' with: fetch_params @ {}", &fetch_params);
 
@@ -3005,6 +3087,15 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
     load_request.set_request_mode(request->mode());
     load_request.set_referrer_policy(request->referrer_policy());
     load_request.set_is_navigation_request(request->is_navigation_request());
+    auto extension_request_check = Requests::ExtensionRequestCheck::NotApplicable;
+    if (extension_request_checked) {
+        extension_request_check = Requests::ExtensionRequestCheck::AlreadyChecked;
+    } else if (request->mode() == Infrastructure::Request::Mode::Navigate) {
+        auto type = Extensions::WebRequestClient::resource_type_from_request(*request);
+        if (type == Extensions::WebRequestResourceType::MainFrame)
+            extension_request_check = Requests::ExtensionRequestCheck::MainFrame;
+    }
+    load_request.set_extension_request_check(extension_request_check);
     load_request.set_priority(request->priority());
     load_request.set_source_url(content_blocker_source_url_for_request(*request));
     load_request.set_network_isolation_key(Infrastructure::determine_the_network_partition_key(*request));

@@ -73,6 +73,7 @@ target_link_libraries(TestLibWeb PRIVATE LibCompositing LibCrypto LibFileSystem 
 
 # NB: This one needs a process of its own: its agents must not share one with the persistent main-thread VM of the suite.
 ladybird_test(TestAgentThreads.cpp LibWeb LIBS LibCore LibGC LibGfx LibIPC LibJS LibThreading LibURL LibWeb LibWebCommon)
+ladybird_test(TestWebExtensions.cpp LibWeb LIBS LibCompress LibCore LibCrypto LibGC LibGfx LibIPC LibJS LibThreading LibURL LibWeb LibWebCommon ZLIB::ZLIB)
 
 # The check reads the symbols of the build's objects with nm, which can't see into an LTO build's bitcode objects and
 # isn't the toolchain's symbol reader on Windows.

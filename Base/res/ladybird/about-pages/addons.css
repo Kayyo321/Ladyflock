@@ -1,0 +1,163 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+body {
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+header,
+.controls,
+.entry-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+h3,
+#review-title {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.entry-header {
+    justify-content: space-between;
+}
+
+.entry-header h3 {
+    flex: 1 1 12em;
+    min-width: 0;
+}
+
+#catalog-search label,
+.permission-group h3 {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+#query {
+    flex: 1 1 12em;
+    min-width: 0;
+}
+
+.card-body > .description:first-child {
+    margin: 0;
+}
+
+#notice:not(:empty),
+#catalog-status:not(:empty) {
+    margin: 10px 0;
+}
+
+#notice.error,
+#catalog-status.error {
+    color: var(--error);
+}
+
+.entry + .entry,
+#results > .entry,
+#pages {
+    border-top: 1px solid var(--separator-color);
+    margin-top: 16px;
+    padding-top: 16px;
+}
+
+.entry > .controls,
+details,
+.permission-group {
+    margin-top: 12px;
+}
+
+.switch-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+details > * + * {
+    margin-top: 8px;
+}
+
+summary {
+    width: fit-content;
+    cursor: pointer;
+}
+
+ul {
+    padding-inline-start: 20px;
+}
+
+a {
+    color: var(--link);
+}
+
+button.secondary-button:disabled {
+    color: var(--muted);
+    background: var(--control);
+    cursor: default;
+}
+
+#pages {
+    justify-content: center;
+}
+
+dialog {
+    color: var(--text);
+    background-color: var(--surface);
+    border: none;
+    box-shadow:
+        0 0 0 1px var(--edge),
+        var(--dialog-shadow);
+    border-radius: var(--card-radius);
+    margin: auto;
+    padding: 20px;
+    width: min(30rem, calc(100% - 32px));
+    max-height: calc(100% - 32px);
+    overflow: auto;
+}
+
+dialog[open] {
+    display: flex;
+    flex-direction: column;
+}
+
+#review-body {
+    min-height: 0;
+    overflow-y: auto;
+}
+
+#review-body:focus-visible {
+    outline: 2px solid var(--focus-edge);
+    outline-offset: -2px;
+}
+
+#review-title,
+#review-actions {
+    flex: none;
+}
+
+dialog::backdrop {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+#review-title {
+    margin-bottom: 8px;
+}
+
+#review-actions {
+    justify-content: flex-end;
+    border-top: 1px solid var(--separator-color);
+    padding-top: 14px;
+    margin-top: 16px;
+}
+
+[hidden] {
+    display: none;
+}

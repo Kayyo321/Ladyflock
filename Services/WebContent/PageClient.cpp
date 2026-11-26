@@ -2977,4 +2977,32 @@ void PageClient::queue_screenshot_task(Optional<Web::UniqueNodeID> node_id)
     page().queue_screenshot_task(node_id);
 }
 
+Web::Extensions::ExtensionResourceResponse PageClient::page_did_request_extension_resource(URL::URL const& url, Web::HTML::CrossProcessId document_id)
+{
+    auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidRequestExtensionResource>(m_id, url, document_id);
+    if (!response)
+        return {};
+    return response->take_response();
+}
+
+void PageClient::page_did_call_extension_api(u64 call_id, String const& extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String const& namespace_name, String const& method_name, String const& args_json)
+{
+    client().async_did_call_extension_api(m_id, call_id, extension_id, context_type, document_id, grant_generation, namespace_name, method_name, args_json);
+}
+
+void PageClient::page_did_reply_extension_event(u64 reply_id, bool has_value, String const& result_json)
+{
+    client().async_did_reply_extension_event(m_id, reply_id, has_value, result_json);
+}
+
+void PageClient::page_did_finish_extension_script_execution(u64 call_id, bool success, String const& result_or_error_json)
+{
+    client().async_did_finish_extension_script_execution(m_id, call_id, success, result_or_error_json);
+}
+
+void PageClient::page_did_check_web_request_before_request(u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails const& details)
+{
+    client().async_did_check_web_request_before_request(m_id, check_id, details);
+}
+
 }

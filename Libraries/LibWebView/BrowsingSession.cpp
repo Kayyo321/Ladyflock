@@ -7,6 +7,7 @@
 #include <LibWebView/BlobURLStore.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CookieJar.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/HSTSStore.h>
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/StorageJar.h>

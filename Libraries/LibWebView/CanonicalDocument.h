@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/HashMap.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
@@ -108,6 +109,12 @@ public:
     // the UI process.
     Optional<String> const& web_ui_host() const { return m_web_ui_host; }
 
+    // The extension ID if this document displays a moz-extension:// page inside an ordinary browsing session.
+    Optional<String> const& extension_id() const { return m_extension_id; }
+
+    void authorize_content_script(String const& extension_id, u64 generation) { m_content_script_grants.set(extension_id, generation); }
+    bool has_content_script_grant(StringView extension_id, u64 generation) const { return m_content_script_grants.get(extension_id) == generation; }
+
     void make_active();
 
 private:
@@ -127,6 +134,8 @@ private:
     u32 m_unload_counter { 0 };
     bool m_is_local_file_content { false };
     Optional<String> m_web_ui_host;
+    Optional<String> m_extension_id;
+    HashMap<String, u64> m_content_script_grants;
     RefPtr<WebContentPage> m_host;
 };
 

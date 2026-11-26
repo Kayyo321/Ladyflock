@@ -149,6 +149,9 @@ public:
     // documents processes of their own, which host nothing else.
     Optional<String> const& hosted_web_ui() const { return m_hosted_web_ui; }
     void set_hosted_web_ui(String host) { m_hosted_web_ui = move(host); }
+
+    Optional<String> const& hosted_extension_id() const { return m_hosted_extension_id; }
+    void set_hosted_extension_id(String extension_id) { m_hosted_extension_id = move(extension_id); }
     // A process can take in a tab of an origin only if all it has ever hosted, and so may still hold, is tabs of that
     // origin with their same-site and data: URL iframes. An origin-keyed tab keeps apart from the other origins of
     // its site, so it only joins origin-keyed tabs of its origin, in a process that has not hosted iframes of those
@@ -266,6 +269,12 @@ private:
     virtual void gamepad_play_effect(Web::Gamepad::GamepadHandle handle, Web::Gamepad::GamepadEffect effect) override;
     virtual void gamepad_stop_effects(Web::Gamepad::GamepadHandle handle) override;
 
+    virtual Messages::WebContentClient::DidRequestExtensionResourceResponse did_request_extension_resource(Web::PageId, URL::URL, Web::HTML::CrossProcessId) override;
+    virtual void did_call_extension_api(Web::PageId, u64 call_id, String extension_id, Web::Extensions::ContextType, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json) override;
+    virtual void did_reply_extension_event(Web::PageId, u64 reply_id, bool has_value, String result_json) override;
+    virtual void did_finish_extension_script_execution(Web::PageId, u64 call_id, bool success, String result_or_error_json) override;
+    virtual void did_check_web_request_before_request(Web::PageId, u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails) override;
+
     void remember_compositor_context(Web::CompositorContextId, Optional<Web::PageId> page_id);
     void fail_renderer_owned_downloads();
 
@@ -283,6 +292,7 @@ private:
     bool m_has_hosted_documents_of_several_sites { false };
     bool m_has_hosted_local_file_content { false };
     Optional<String> m_hosted_web_ui;
+    Optional<String> m_hosted_extension_id;
     Optional<URL::Origin> m_origin_of_hosted_tabs;
     bool m_hosted_tabs_are_origin_keyed { false };
     bool m_has_hosted_more_than_tabs_of_one_origin { false };

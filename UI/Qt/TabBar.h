@@ -30,6 +30,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStaticText>
 #include <QTabBar>
@@ -337,6 +338,7 @@ public:
     Tab* tab(int index) const { return as<Tab>(m_stacked_widget->widget(index)); }
     void set_current_tab(Tab*);
 
+    QSplitter& page_splitter() const { return *m_page_splitter; }
     WindowToolbar& toolbar() const { return *m_toolbar; }
     BookmarksBar& bookmarks_bar() const { return m_bookmarks_bar->bar(); }
     void update_bookmarks_bar_visibility();
@@ -464,6 +466,7 @@ private:
     TabBar* m_tab_bar { nullptr };
     void size_hidden_pages_like_the_current_one();
 
+    QSplitter* m_page_splitter { nullptr };
     QStackedWidget* m_stacked_widget { nullptr };
     QToolButton* m_new_tab_button { nullptr };
     QToolButton* m_all_tabs_button { nullptr };

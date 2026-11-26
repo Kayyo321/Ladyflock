@@ -184,6 +184,11 @@ public:
     // Ends every location request and watch whose document the user has since taken the permission away from.
     void revoke_geolocation_without_permission();
 
+    u64 extension_window_id() const { return m_extension_window_id; }
+    void set_extension_window_id(u64 id) { m_extension_window_id = id; }
+    bool is_current_tab_of_window() const { return m_current_tab_of_window; }
+    virtual void pick_local_extension_package(Function<void(Optional<ByteString>)> callback) { callback({}); }
+
     u64 view_id() const { return m_view_id; }
     pid_t web_content_pid() const;
 
@@ -243,6 +248,7 @@ public:
     DiscardBlockers discard_blockers(DiscardReason, MonotonicTime now) const;
     // Whether discarding the view would let a process exit, which is how its memory comes back.
     bool discarding_ends_a_process() const;
+    bool is_pinned() const { return m_pinned; }
     void set_pinned(bool pinned);
     void set_current_tab_of_window(bool current_tab_of_window);
     // When the user last stopped seeing the view, if they don't see it now.
@@ -1382,6 +1388,8 @@ protected:
     bool m_pinned { false };
     // NB: The current tab of a minimized window is hidden, but the user sees it again as soon as they bring the window
     //     back.
+    // Headless applications present their tabs in a single logical window.
+    u64 m_extension_window_id { 1 };
     bool m_current_tab_of_window { false };
     // The UI was asked to discard the view, so it isn't asked again until the user has seen it.
     bool m_discard_requested { false };

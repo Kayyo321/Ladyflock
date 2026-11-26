@@ -2,6 +2,7 @@
 #include <LibHTTP/Cache/DiskCacheSettings.h>
 #include <LibHTTP/Proxy.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibURL/URL.h>
 #include <RequestServer/IsPrivate.h>
 #include <RequestServer/RequestType.h>
 #include <RequestServer/SiteBinding.h>
@@ -44,4 +45,8 @@ endpoint RequestServerControl
     stored_response_cookies_and_hsts_policy(int client_id, u64 request_id, u64 store_request_id) =|
     // The addresses that the system resolver found for a name, or nothing if the lookup failed.
     resolved_host_with_system_resolver(u64 resolution_id, Optional<Vector<ByteString>> addresses) =|
+
+    // Extension webRequest.onBeforeRequest filter and decision (independent of ContentBlocker).
+    set_web_request_watch_filter(bool enabled, bool match_all_urls, Vector<String> exact_hosts, Vector<String> suffix_hosts) =|
+    did_check_web_request_before_request(u64 check_id, bool cancel) =|
 }

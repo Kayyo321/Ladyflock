@@ -11,6 +11,7 @@
 #include <LibWebView/WebContentPage.h>
 #include <LibWebView/WebUI.h>
 #include <LibWebView/WebUI/AboutUI.h>
+#include <LibWebView/WebUI/AddonsUI.h>
 #include <LibWebView/WebUI/ApplicationWebUI.h>
 #include <LibWebView/WebUI/CertificateUI.h>
 #include <LibWebView/WebUI/CrashReportsUI.h>
@@ -21,6 +22,7 @@ namespace WebView {
 
 static constexpr auto s_pages = to_array<WebUI::Page>({
     { "about"sv, "About URLs"sv, WebUI::PageType::Dynamic },
+    { "addons"sv, "Add-ons"sv, WebUI::PageType::Dynamic },
     { "certificate"sv, "Certificate Warning"sv, WebUI::PageType::Dynamic },
     { "crashes"sv, "Crash Reports"sv, WebUI::PageType::Dynamic },
     { "licenses"sv, "Licenses"sv, WebUI::PageType::Static },
@@ -97,6 +99,8 @@ ErrorOr<RefPtr<WebUI>> WebUI::create(WebContentClient& client, Web::PageId page_
         web_ui = TRY(create_web_ui<ApplicationWebUI>(client, page_id, move(host)));
     else if (page->host == "about"sv)
         web_ui = TRY(create_web_ui<AboutUI>(client, page_id, move(host)));
+    else if (page->host == "addons"sv)
+        web_ui = TRY(create_web_ui<AddonsUI>(client, page_id, move(host)));
     else if (page->host == "certificate"sv)
         web_ui = TRY(create_web_ui<CertificateUI>(client, page_id, move(host)));
     else if (page->host == "crashes"sv)

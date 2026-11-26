@@ -15,6 +15,7 @@ from pathlib import Path
 HELPERS = (
     "AudioServer",
     "Compositor",
+    "ExtensionVerifier",
     "ImageDecoder",
     "MediaServer",
     "RequestServer",

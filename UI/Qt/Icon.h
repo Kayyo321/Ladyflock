@@ -53,6 +53,7 @@ enum class ChromeIcon {
     Document,
     Network,
     Compositor,
+    Extensions,
     Hub,
     Image,
     Warning,

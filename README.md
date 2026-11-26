@@ -4,13 +4,15 @@ Ladyflock is an independent browser project based on [Ladybird](https://github.c
 
 ## Project status
 
-This repository is a starting point, not a browser release. Firefox add-ons, XPI installation, and Mozilla Add-ons integration are not implemented. The browser executable, build commands, and artwork still use the upstream Ladybird name and assets.
+Ladyflock is a development browser. The executable, build commands, and artwork still use the upstream Ladybird name and assets.
 
-## First milestones
+## Firefox extensions
 
-1. Load a local WebExtension and run its content script on an explicitly permitted site.
-2. Add isolated extension pages, message passing, and local extension storage.
-3. Test request-blocking APIs for privacy extensions. Full uBlock Origin compatibility is a longer-term test, not a current feature.
+Choose **Extensions → Manage extensions** in the toolbar or visit `about:addons` to manage extensions, review permissions, and install a signed XPI from disk. The Extensions toolbar button also lets you run an extension action, pin it, or open its sidebar.
+
+Launch with `--enable-amo-catalog` to try search and installation from Mozilla Add-ons. Use `--load-extension /path/to/unpacked-extension` in a development profile to load a local unpacked extension.
+
+The Add-ons page lists supported manifest keys, permissions, and APIs. A manifest-compatible extension can still call an API outside that list. The **Tested in Ladyflock** label applies to a specific package version and hash that passed an end-to-end check. Private browsing and full uBlock Origin compatibility are outside this implementation's scope.
 
 ## Build from source
 

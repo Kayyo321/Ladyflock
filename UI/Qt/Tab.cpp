@@ -213,6 +213,31 @@ void Tab::initialize(Optional<u64> hub_view_id)
     };
 
     m_view = new WebContentView(this, hub_view_id, AK::move(view_initial_state));
+    HubConnection::the().async_view_set_extension_window(m_view->view_id(), m_window->extension_window_id());
+    view().on_extension_state = [this](bool available, Vector<Hub::ExtensionItem> items, u32 width) {
+        if (m_window->current_tab() == this)
+            m_window->toolbar().set_extension_state(*this, available, AK::move(items), width);
+    };
+    view().on_extension_popup = [this](String const& id, URL::URL const& url) {
+        if (m_window->current_tab() == this)
+            m_window->toolbar().show_extension_popup(*this, id, url);
+    };
+    view().on_pick_extension_package = [this](u64 request_id) {
+        if (m_window->current_tab() != this || m_window->is_private() == WebView::IsPrivate::Yes) {
+            HubConnection::the().async_view_extension_package_picked(view().view_id(), request_id, {});
+            return;
+        }
+        auto* dialog = new QFileDialog(this, "Choose an extension package", {}, "Firefox extensions (*.xpi)");
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setFileMode(QFileDialog::ExistingFile);
+        QObject::connect(dialog, &QDialog::finished, this, [this, dialog, request_id](int result) {
+            Optional<ByteString> path;
+            if (result == QDialog::Accepted && !dialog->selectedFiles().isEmpty())
+                path = ak_byte_string_from_qstring(dialog->selectedFiles().first());
+            HubConnection::the().async_view_extension_package_picked(view().view_id(), request_id, AK::move(path));
+        });
+        dialog->open();
+    };
     // The window reports its geometry to its tabs as it is moved and resized, so a tab opened later has to be told
     // where the window stands now.
     m_view->set_window_position({ m_window->x(), m_window->y() });
@@ -361,6 +386,7 @@ void Tab::initialize(Optional<u64> hub_view_id)
     };
 
     view().on_top_level_navigation_commit = [this] {
+        m_window->toolbar().close_extension_popup(*this);
         m_is_waiting_for_response = false;
         m_suppress_javascript_dialogs_until_navigation = false;
         m_javascript_dialogs_shown_by_document = 0;
@@ -1080,6 +1106,7 @@ void Tab::set_window(BrowserWindow& window)
     }
 
     m_window = &window;
+    HubConnection::the().async_view_set_extension_window(view().view_id(), window.extension_window_id());
     recreate_location_edit_icons();
 
     // The tab's pages hold the geometry of the window that hosted them until now.

@@ -3178,7 +3178,12 @@ TabWidget::TabWidget(WebView::IsPrivate is_private, QWidget* parent)
 
     m_toolbar = new WindowToolbar(is_private, this);
     m_toolbar->installEventFilter(this);
-    m_stacked_widget = new QStackedWidget(this);
+    m_page_splitter = new QSplitter(Qt::Horizontal, this);
+    m_page_splitter->setChildrenCollapsible(false);
+    m_page_splitter->setOpaqueResize(false);
+    m_stacked_widget = new QStackedWidget(m_page_splitter);
+    m_page_splitter->addWidget(m_stacked_widget);
+    m_page_splitter->setStretchFactor(0, 1);
     m_page_column = new QWidget(this);
     m_page_column->installEventFilter(this);
     m_toolbar_placeholder = new QWidget(m_page_column);
@@ -5138,7 +5143,7 @@ void TabWidget::add_page_to_page_column()
     m_page_column_layout->addWidget(m_notification_bar_column);
     if (!m_bookmarks_bar->shows_over_page())
         m_page_column_layout->addWidget(m_bookmarks_bar);
-    m_page_column_layout->addWidget(m_stacked_widget, 1);
+    m_page_column_layout->addWidget(m_page_splitter, 1);
     m_page_column_layout->addWidget(&m_toolbar->performance_monitor_row());
 }
 
@@ -5150,7 +5155,7 @@ void TabWidget::update_bookmarks_bar_visibility()
     if (m_bookmarks_bar->shows_over_page() && index != -1)
         m_page_column_layout->removeWidget(m_bookmarks_bar);
     else if (!m_bookmarks_bar->shows_over_page() && index == -1)
-        m_page_column_layout->insertWidget(m_page_column_layout->indexOf(m_stacked_widget), m_bookmarks_bar);
+        m_page_column_layout->insertWidget(m_page_column_layout->indexOf(m_page_splitter), m_bookmarks_bar);
 
     m_bookmarks_bar->update_geometry();
 }

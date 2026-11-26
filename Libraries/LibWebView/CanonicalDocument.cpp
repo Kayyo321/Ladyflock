@@ -5,11 +5,13 @@
  */
 
 #include <LibURL/Site.h>
+#include <LibWebView/Application.h>
 #include <LibWebView/BlobURLStore.h>
 #include <LibWebView/CanonicalBrowsingContext.h>
 #include <LibWebView/CanonicalBrowsingContextGroup.h>
 #include <LibWebView/CanonicalDocument.h>
 #include <LibWebView/CanonicalWindow.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebContentPage.h>
 #include <LibWebView/WebUI.h>
@@ -46,6 +48,11 @@ CanonicalDocument::CanonicalDocument(Web::HTML::CrossProcessId id, URL::URL crea
     if (m_creation_url.scheme() == "about"sv && m_creation_url.path_segment_count() == 1) {
         if (auto page = WebUI::page_for_host(m_creation_url.path_segments().first()); page.has_value() && page->type != WebUI::PageType::Static)
             m_web_ui_host = MUST(String::from_utf8(page->host));
+    } else if (m_creation_url.scheme() == "moz-extension"sv && Application::is_initialized()) {
+        if (auto const* ext_manager = Application::default_session().extension_manager.ptr()) {
+            if (auto ext = ext_manager->extension_by_uuid(m_creation_url.serialized_host()); ext.has_value() && ext->enabled)
+                m_extension_id = ext->extension_id;
+        }
     }
 }
 
@@ -75,7 +82,7 @@ bool CanonicalDocument::is_top_level() const
 
 bool CanonicalDocument::may_share_a_process_with_tabs_of_its_origin() const
 {
-    if (!is_top_level() || m_origin.is_opaque() || m_web_ui_host.has_value() || m_is_local_file_content)
+    if (!is_top_level() || m_origin.is_opaque() || m_web_ui_host.has_value() || m_extension_id.has_value() || m_is_local_file_content)
         return false;
 
     auto const& scheme = m_origin.scheme();
