@@ -180,6 +180,7 @@ if (NOT WIN32)
         TestPrivacyMilestone2.cpp
         TestPrivacyOffline.cpp
         TestPrivacyProxyRoute.cpp
+        TestPrivacySiteControls.cpp
         TestRendererAttentionClaims.cpp
         TestRendererClipboardFormats.cpp
         TestRendererCookieAccess.cpp

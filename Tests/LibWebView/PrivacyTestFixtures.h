@@ -11,6 +11,7 @@
 #include <AK/ByteBuffer.h>
 #include <AK/ByteString.h>
 #include <AK/Function.h>
+#include <AK/HashMap.h>
 #include <AK/Optional.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
@@ -796,6 +797,20 @@ public:
         return m_streams;
     }
 
+    // The request target of every HTTP request served, as the client sent it ("/path?query").
+    Vector<ByteString> request_targets()
+    {
+        Locker locker { *this };
+        return m_request_targets;
+    }
+
+    // Serves this body as text/html for the given path, instead of the plain-text default.
+    void set_html_for_path(ByteString path, ByteString html)
+    {
+        Locker locker { *this };
+        m_html_by_path.set(move(path), move(html));
+    }
+
     void reset_counts()
     {
         Locker locker { *this };
@@ -803,6 +818,7 @@ public:
         m_request_count.store(0);
         m_client_closed_count.store(0);
         m_streams.clear();
+        m_request_targets.clear();
     }
 
 private:
@@ -988,11 +1004,21 @@ private:
             auto request_line = head.view().find_first_split_view('\r');
             auto parts = request_line.split_view(' ');
             auto target = parts.size() >= 2 ? parts[1] : "/"sv;
+            Optional<ByteString> html;
+            {
+                Locker locker { *this };
+                m_request_targets.append(target);
+                auto path = target.find_first_split_view('?');
+                if (auto page = m_html_by_path.get(path); page.has_value())
+                    html = *page;
+            }
 
             ByteString response;
             if (auto redirect = target.find("/redirect?to="sv); redirect.has_value()) {
                 auto location = target.substring_view(*redirect + "/redirect?to="sv.length());
                 response = ByteString::formatted("HTTP/1.1 302 Found\r\nLocation: {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n", location);
+            } else if (html.has_value()) {
+                response = ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}", html->length(), *html);
             } else {
                 auto body = ByteString::formatted("via-{}:{}", m_mode == Mode::SOCKS5 ? "socks"sv : "direct"sv, destination_host);
                 response = ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}", body.length(), body);
@@ -1013,6 +1039,8 @@ private:
     Vector<int> m_client_fds;
     Vector<NonnullRefPtr<Threading::Thread>> m_client_threads;
     Vector<SOCKSStream> m_streams;
+    Vector<ByteString> m_request_targets;
+    HashMap<ByteString, ByteString> m_html_by_path;
     RefPtr<Threading::Thread> m_thread;
 };
 
