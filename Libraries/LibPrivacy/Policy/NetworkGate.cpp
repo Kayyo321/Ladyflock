@@ -69,6 +69,13 @@ void NetworkGate::mark_coordinator_lost()
     m_current_snapshot.clear();
 }
 
+Optional<ProxyRoute const&> NetworkGate::mandatory_route() const
+{
+    if (m_state != State::Active || !m_current_snapshot.has_value() || !m_current_snapshot->network.route.has_value())
+        return {};
+    return *m_current_snapshot->network.route;
+}
+
 bool NetworkGate::is_epoch_current(u64 captured_epoch) const
 {
     return m_state == State::Active
@@ -98,6 +105,8 @@ PolicyReason NetworkGate::denial_reason_for_current_policy() const
         return PolicyReason::UninitializedClosed;
     if (m_current_snapshot->network.mode == NetworkMode::Offline)
         return PolicyReason::OfflineMode;
+    if (m_current_snapshot->network.mode == NetworkMode::ProxyOnly)
+        return PolicyReason::MandatoryRouteUnavailable;
     return PolicyReason::NetworkDenied;
 }
 

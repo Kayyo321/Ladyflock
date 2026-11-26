@@ -16,6 +16,8 @@ Optional<NetworkMode> network_mode_from_string(StringView value)
         return NetworkMode::Allow;
     if (value.equals_ignoring_ascii_case("offline"sv))
         return NetworkMode::Offline;
+    if (value.equals_ignoring_ascii_case("proxy-only"sv))
+        return NetworkMode::ProxyOnly;
     return {};
 }
 
@@ -26,6 +28,8 @@ StringView network_mode_to_string(NetworkMode mode)
         return "allow"sv;
     case NetworkMode::Offline:
         return "offline"sv;
+    case NetworkMode::ProxyOnly:
+        return "proxy-only"sv;
     }
     return "unknown"sv;
 }
@@ -53,6 +57,10 @@ StringView policy_reason_to_string(PolicyReason reason)
         return "invalid-policy"sv;
     case PolicyReason::NetworkDenied:
         return "network-denied"sv;
+    case PolicyReason::MandatoryRouteUnavailable:
+        return "mandatory-route-unavailable"sv;
+    case PolicyReason::ConflictingRoutes:
+        return "conflicting-routes"sv;
     }
     return "unknown"sv;
 }
@@ -99,6 +107,23 @@ NetworkPolicy NetworkPolicy::deny_all()
     };
 }
 
+NetworkPolicy NetworkPolicy::proxy_only(ProxyRoute route)
+{
+    return {
+        .mode = NetworkMode::ProxyOnly,
+        .cache_policy = CachePolicy::Normal,
+        .dns_policy = DNSRoutePolicy::Denied,
+        .webrtc_policy = WebRTCPolicy::Disabled,
+        // Browser services, WebSockets and AIA fetches all go through RequestServer, which sends them over the route.
+        .allow_background_services = true,
+        // Speculative work resolves and connects ahead of a request, which would bypass the route.
+        .allow_speculative_connections = false,
+        .allow_websockets = true,
+        .allow_aia_fetches = true,
+        .route = move(route),
+    };
+}
+
 static CachePolicy intersect_cache_policy(CachePolicy a, CachePolicy b)
 {
     if (a == CachePolicy::Disabled || b == CachePolicy::Disabled)
@@ -110,7 +135,10 @@ static CachePolicy intersect_cache_policy(CachePolicy a, CachePolicy b)
 
 NetworkPolicy NetworkPolicy::intersect(NetworkPolicy const& a, NetworkPolicy const& b)
 {
-    auto mode = (a.mode == NetworkMode::Allow && b.mode == NetworkMode::Allow)
+    // Two different mandatory routes have no common route, so their intersection allows no egress at all.
+    bool conflicting_routes = a.route.has_value() && b.route.has_value() && *a.route != *b.route;
+
+    auto mode = (a.allows_network_egress() && b.allows_network_egress() && !conflicting_routes)
         ? NetworkMode::Allow
         : NetworkMode::Offline;
     auto cache_policy = intersect_cache_policy(a.cache_policy, b.cache_policy);
@@ -127,6 +155,21 @@ NetworkPolicy NetworkPolicy::intersect(NetworkPolicy const& a, NetworkPolicy con
             .allow_speculative_connections = false,
             .allow_websockets = false,
             .allow_aia_fetches = false,
+        };
+    }
+
+    auto route = a.route.has_value() ? a.route : b.route;
+    if (route.has_value()) {
+        return {
+            .mode = NetworkMode::ProxyOnly,
+            .cache_policy = cache_policy,
+            .dns_policy = DNSRoutePolicy::Denied,
+            .webrtc_policy = WebRTCPolicy::Disabled,
+            .allow_background_services = a.allow_background_services && b.allow_background_services,
+            .allow_speculative_connections = false,
+            .allow_websockets = a.allow_websockets && b.allow_websockets,
+            .allow_aia_fetches = a.allow_aia_fetches && b.allow_aia_fetches,
+            .route = move(route),
         };
     }
 
@@ -148,6 +191,15 @@ NetworkPolicy NetworkPolicy::intersect(NetworkPolicy const& a, NetworkPolicy con
 
 bool NetworkPolicy::is_consistent() const
 {
+    // A route exists exactly in ProxyOnly mode, and it must be one that needs no local name resolution to reach.
+    if (route.has_value() != (mode == NetworkMode::ProxyOnly))
+        return false;
+    if (mode == NetworkMode::ProxyOnly) {
+        if (!route->is_valid())
+            return false;
+        if (dns_policy != DNSRoutePolicy::Denied || webrtc_policy != WebRTCPolicy::Disabled || allow_speculative_connections)
+            return false;
+    }
     if (mode == NetworkMode::Offline) {
         if (cache_policy == CachePolicy::Normal)
             return false;
@@ -163,6 +215,10 @@ bool NetworkPolicy::is_consistent() const
 
 bool NetworkPolicy::is_tightening_relative_to(NetworkPolicy const& previous) const
 {
+    // Any route change retires the connections, lookups and streams of the previous route, including a change from
+    // direct egress to a mandatory route, a different endpoint, or a new isolation generation.
+    if (route.has_value() && route != previous.route)
+        return true;
     if (previous.allows_network_egress() && !allows_network_egress())
         return true;
     if (previous.allows_dns_resolution() && !allows_dns_resolution())
@@ -212,6 +268,7 @@ ErrorOr<void> encode(Encoder& encoder, Privacy::NetworkPolicy const& policy)
     TRY(encoder.encode(policy.allow_speculative_connections));
     TRY(encoder.encode(policy.allow_websockets));
     TRY(encoder.encode(policy.allow_aia_fetches));
+    TRY(encoder.encode(policy.route));
     return {};
 }
 
@@ -219,7 +276,7 @@ template<>
 ErrorOr<Privacy::NetworkPolicy> decode(Decoder& decoder)
 {
     auto raw_mode = TRY(decoder.decode<u8>());
-    if (raw_mode > to_underlying(Privacy::NetworkMode::Offline))
+    if (raw_mode > to_underlying(Privacy::NetworkMode::ProxyOnly))
         return Error::from_string_literal("IPC: Invalid Privacy::NetworkMode value");
 
     auto raw_cache_policy = TRY(decoder.decode<u8>());
@@ -238,6 +295,7 @@ ErrorOr<Privacy::NetworkPolicy> decode(Decoder& decoder)
     auto allow_speculative_connections = TRY(decoder.decode<bool>());
     auto allow_websockets = TRY(decoder.decode<bool>());
     auto allow_aia_fetches = TRY(decoder.decode<bool>());
+    auto route = TRY(decoder.decode<Optional<Privacy::ProxyRoute>>());
 
     return Privacy::NetworkPolicy {
         .mode = static_cast<Privacy::NetworkMode>(raw_mode),
@@ -248,6 +306,7 @@ ErrorOr<Privacy::NetworkPolicy> decode(Decoder& decoder)
         .allow_speculative_connections = allow_speculative_connections,
         .allow_websockets = allow_websockets,
         .allow_aia_fetches = allow_aia_fetches,
+        .route = move(route),
     };
 }
 
@@ -291,7 +350,7 @@ ErrorOr<Privacy::PolicyInstallAck> decode(Decoder& decoder)
     auto accepted = TRY(decoder.decode<bool>());
     auto committed_epoch = TRY(decoder.decode<u64>());
     auto raw_reason = TRY(decoder.decode<u8>());
-    if (raw_reason > to_underlying(Privacy::PolicyReason::NetworkDenied))
+    if (raw_reason > to_underlying(Privacy::PolicyReason::ConflictingRoutes))
         return Error::from_string_literal("IPC: Invalid Privacy::PolicyReason value");
 
     return Privacy::PolicyInstallAck {

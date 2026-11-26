@@ -27,6 +27,23 @@ ErrorOr<PolicyCompilationResult, PolicyReason> PolicyCompiler::compile(u64 sessi
 
     Vector<ByteString> diagnostics;
 
+    // Every mandatory route among the inputs must be the same route; otherwise no route satisfies all of them and the
+    // intersection below closes egress.
+    Optional<ProxyRoute> required_route;
+    bool has_conflicting_routes = false;
+    for (auto const* policy : { input.administrative_ceiling.has_value() ? &*input.administrative_ceiling : nullptr,
+             input.identity_requirement.has_value() ? &*input.identity_requirement : nullptr,
+             &input.user_preference }) {
+        if (!policy || !policy->route.has_value())
+            continue;
+        if (required_route.has_value() && *required_route != *policy->route)
+            has_conflicting_routes = true;
+        else
+            required_route = policy->route;
+    }
+    if (has_conflicting_routes)
+        diagnostics.append("Conflicting mandatory routes; network egress remains closed."sv);
+
     // Intersect mandatory administrative ceiling and identity requirements first; an empty
     // intersection always resolves to closed networking.
     auto effective = NetworkPolicy::allow_default();
@@ -38,6 +55,9 @@ ErrorOr<PolicyCompilationResult, PolicyReason> PolicyCompiler::compile(u64 sessi
 
     auto ceiling = effective;
     effective = NetworkPolicy::intersect(ceiling, input.user_preference);
+
+    if (effective.requires_mandatory_route() && input.has_configured_proxy)
+        diagnostics.append("The mandatory route replaces the configured proxy settings, including their bypass list."sv);
 
     if (!effective.allows_network_egress() && input.has_configured_proxy) {
         diagnostics.append("Offline policy overrides configured proxy settings; network egress remains closed."sv);

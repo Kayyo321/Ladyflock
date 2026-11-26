@@ -49,6 +49,10 @@ public:
     Optional<u64> bound_session_id() const { return m_bound_session_id; }
     Optional<PolicySnapshot> const& current_snapshot() const { return m_current_snapshot; }
 
+    // The route every request must take, or nothing when the policy allows direct egress. A closed gate has no route,
+    // so callers must still evaluate the request before using this.
+    Optional<ProxyRoute const&> mandatory_route() const;
+
     // Installs a new snapshot if it matches the schema version, bound session, and strictly increases epoch.
     InstallOutcome install(PolicySnapshot const&);
 
