@@ -496,11 +496,23 @@ void AddonsUI::stage_manual_update(JsonValue const& data)
     }
 }
 
+// Every request the page sends gets a reply, even one this can't act on, so that the page doesn't wait on it.
+void AddonsUI::send_update_error(String const& message_name, StringView error)
+{
+    JsonObject out;
+    out.set("error"sv, MUST(String::from_utf8(error)));
+    if (auto* ext_mgr = extension_manager())
+        out.set("summary"sv, ext_mgr->summary_json());
+    async_send_message(message_name, JsonValue(move(out)));
+}
+
 void AddonsUI::check_for_updates(JsonValue const&)
 {
     auto* ext_mgr = extension_manager();
-    if (!ext_mgr || m_checking_for_updates)
-        return;
+    if (!ext_mgr)
+        return send_update_error("updatesChecked"_string, "Extensions are not available in this window."sv);
+    if (m_checking_for_updates)
+        return send_update_error("updatesChecked"_string, "Already checking for updates."sv);
     m_checking_for_updates = true;
     ext_mgr->check_for_updates([weak = make_weak_ptr<AddonsUI>()](Extensions::ExtensionManager::UpdateCheckResult result) {
         auto self = weak.strong_ref();
@@ -509,7 +521,7 @@ void AddonsUI::check_for_updates(JsonValue const&)
         self->m_checking_for_updates = false;
         auto* ext_mgr = self->extension_manager();
         if (!ext_mgr)
-            return;
+            return self->send_update_error("updatesChecked"_string, "Extensions are not available in this window."sv);
         JsonObject out;
         out.set("checked"sv, result.checked);
         JsonArray failed;
@@ -542,11 +554,11 @@ static JsonObject update_error(String const& extension_id, Optional<Extensions::
 void AddonsUI::stage_updates(JsonValue const& data)
 {
     auto* ext_mgr = extension_manager();
-    if (!ext_mgr || !data.is_object())
-        return;
-    auto ids = data.as_object().get_array("extension_ids"sv);
+    if (!ext_mgr)
+        return send_update_error("updatesStaged"_string, "Extensions are not available in this window."sv);
+    auto ids = data.is_object() ? data.as_object().get_array("extension_ids"sv) : Optional<JsonArray const&> {};
     if (!ids.has_value())
-        return;
+        return send_update_error("updatesStaged"_string, "Choose the extensions to update."sv);
     auto staging = make_ref_counted<BulkUpdateStaging>();
     ids->for_each([&](JsonValue const& value) {
         // Stage only what the last check found, once each, and no more than a page of extensions.
@@ -564,7 +576,7 @@ void AddonsUI::stage_next_update(NonnullRefPtr<BulkUpdateStaging> staging)
 {
     auto* ext_mgr = extension_manager();
     if (!ext_mgr)
-        return;
+        return send_update_error("updatesStaged"_string, "Extensions are not available in this window."sv);
     if (staging->next == staging->extension_ids.size()) {
         JsonObject out;
         out.set("updates"sv, move(staging->staged));
@@ -577,7 +589,7 @@ void AddonsUI::stage_next_update(NonnullRefPtr<BulkUpdateStaging> staging)
     stage_catalog_package(id, true, [this, staging, id](auto staged, auto const& diagnostic, bool up_to_date) {
         auto* ext_mgr = extension_manager();
         if (!ext_mgr)
-            return;
+            return send_update_error("updatesStaged"_string, "Extensions are not available in this window."sv);
         auto extension = ext_mgr->extension_by_id(id);
         if (staged.is_error()) {
             if (!up_to_date) {

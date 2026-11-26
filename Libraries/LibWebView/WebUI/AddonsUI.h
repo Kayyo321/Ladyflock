@@ -56,6 +56,7 @@ private:
     void stage_updates(JsonValue const&);
     struct BulkUpdateStaging;
     void stage_next_update(NonnullRefPtr<BulkUpdateStaging>);
+    void send_update_error(String const& message_name, StringView error);
     void approve_updates(JsonValue const&);
     void cancel_updates(JsonValue const&);
     void open_extension_options(JsonValue const&);

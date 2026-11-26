@@ -146,6 +146,10 @@ byId("update-all").addEventListener("click", event => {
 
 function updatesChecked(data) {
     if (data.summary) renderInstalled(data.summary);
+    if (data.error) {
+        finishAction(data.error, true);
+        return;
+    }
     const available = updatableExtensions().length;
     const failed = Array.isArray(data.failed) ? data.failed : [];
     let message = available
@@ -166,6 +170,10 @@ function stagedUpdateIsComplete(update) {
 
 function updatesStaged(data) {
     if (data.summary) renderInstalled(data.summary);
+    if (data.error) {
+        finishAction(data.error, true);
+        return;
+    }
     const staged = Array.isArray(data.updates) ? data.updates : [];
     const errors = Array.isArray(data.errors) ? data.errors : [];
     const updates = staged.filter(stagedUpdateIsComplete);
@@ -232,6 +240,9 @@ function updatesCompleted(data) {
     if (updated.length) lines.push("Updated " + updated.join(", ") + ".");
     for (const error of errors) lines.push(error.name + ": " + error.error);
     finishAction(lines.join("\n"), errors.length > 0);
+    // The review returned focus to the button that opened it, which the update may have hidden or replaced.
+    const focused = document.activeElement;
+    if ((!focused || focused === document.body) && !byId("update-controls").hidden) byId("check-updates").focus();
 }
 
 function textList(values) {
