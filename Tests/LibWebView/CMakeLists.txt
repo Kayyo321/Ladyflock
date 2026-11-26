@@ -176,6 +176,7 @@ if (NOT WIN32)
         TestPictureInPictureUserActivation.cpp
         TestPictureInPictureWindowControls.cpp
         TestPictureInPictureWindowLifetime.cpp
+        TestPrivacyDashboard.cpp
         TestPrivacyMilestone0.cpp
         TestPrivacyMilestone2.cpp
         TestPrivacyOffline.cpp
