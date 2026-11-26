@@ -15,7 +15,7 @@ See [NetworkEnforcement.md](NetworkEnforcement.md), [IdentitiesAndStorage.md](Id
 | | |
 |---|---|
 | Turn on | `--privacy-strip-tracking-parameters` |
-| List | `utm_*`, `fbclid`, `gclid`, `dclid`, `gbraid`, `wbraid`, `srsltid`, `msclkid`, `_ga`, `_gl`, `igshid`, `mc_cid`, `mc_eid`, `yclid`, `zx`. Names compare case-insensitively after percent-decoding. One list (`Libraries/LibPrivacy/Navigation/TrackingParameters.cpp`) serves both this and address-bar autocomplete. |
+| List | `utm_*`, `fbclid`, `gclid`, `dclid`, `gbraid`, `wbraid`, `srsltid`, `msclkid`, `_ga`, `_gl`, `igshid`, `mc_cid`, `mc_eid`, `yclid`. Names compare case-insensitively after percent-decoding. One list (`Libraries/LibPrivacy/Navigation/TrackingParameters.cpp`) serves both this and address-bar autocomplete. Autocomplete also ignores the cache buster `zx`, which navigations keep because a page may depend on it. |
 | What changes | Only the matching `name[=value]` segments are removed from the serialized query. Every other byte, separator, order and encoding stays, so a signed URL keeps its signature. The fragment stays. A query left with nothing loses its `?`. Only `http` and `https` URLs are rewritten. |
 | Where | Every top-level navigation is covered at one of two points, before the identity handoff, DNS or any request: <br>• **UI process:** `CanonicalNavigable::begin_navigation`, for navigations the browser starts and cross-process ones.<br>• **WebContent:** `LocalNavigable::begin_navigation`, for navigations a page starts in its own process. WebContent reports the count it removed. |
 | Not covered | Reloads and history traversals, which do not pass through either point. Redirects that a server sends, which are followed as sent. Subresource URLs. |
@@ -33,7 +33,7 @@ Test evidence comes from `TestPrivacySiteControls` (request lines seen by an ind
 | | |
 |---|---|
 | Turn on | `Settings::set_scripting_enabled_for_site(host, false)`, persisted under `siteControls.scriptingDisabledSites` in the profile's settings. There is no settings-page control yet. |
-| Scope | A site is a host, canonicalized like content blocking's per-site exceptions. The **top-level** site decides, so a frame follows its top-level document, in or out of process. Browser (`about:`) pages are never affected. The list can only turn scripting off: it never turns it back on against `--disable-scripting`. |
+| Scope | A site is a host, canonicalized like content blocking's per-site exceptions. The **top-level** site decides, so a frame follows its top-level document, in or out of process, and a redirect into a listed site lands there without script. Browser (`about:`) pages and the user's extension (`moz-extension:`) pages are never affected, including an extension's own page framed inside a listed site. The list can only turn scripting off: it never turns it back on against `--disable-scripting`. |
 | Where | The UI process sends the list to every page (`set_scripting_disabled_sites`) and again on every change. In LibWeb, `is_scripting_enabled()` asks `EnvironmentSettingsObject::is_scripting_allowed_by_site_policy`, which looks up the environment's top-level creation URL. The answer is cached until the page's policy generation changes. Because the spec's own check is used, disabled `<script src>` is never fetched, inline scripts and event-handler attributes do not run, and `<noscript>` content renders. |
 | Live changes | A change reaches every page at once. Script that already ran is not undone, and the next document follows the new list. |
 | Extensions | Isolated content scripts run through their own realm and keep working on a site with JavaScript off, as in Firefox. Content scripts registered for the `MAIN` world run as page script and follow the page. |
@@ -48,7 +48,9 @@ Test evidence comes from `TestPrivacySiteControls` (requests seen by an independ
 - **Compatibility:**
   - another site still runs its scripts, including its frame from the listed site;
   - removing the site restores scripting for its next document;
-  - an extension's isolated content script still runs on a listed site, and the page's own script does not (`isolated_content_scripts_run_on_a_site_with_scripting_turned_off`).
+  - an extension's isolated content script still runs on a listed site, and the page's own script does not (`isolated_content_scripts_run_on_a_site_with_scripting_turned_off`);
+  - the extension's own page framed by a listed site still runs its script. Removing that exemption makes this check fail.
+- **Redirect:** a redirect from an unlisted site into a listed one fetches no script and runs no inline script.
 - **Cost:** a page with 200 inline scripts and 200 handlers loads in about 14.7 ms. With an unrelated site listed, which forces the lookup path, it took 0.25–0.4 ms longer per load over 40 loads. That difference is within the drift between the A/B/A phases, so treat it as an upper bound. With no sites listed, the check returns before any lookup.
 
 ## 3. `about:privacy`
@@ -72,14 +74,20 @@ Test evidence comes from `TestPrivacyDashboard` and `test-webdriver-privacy.py`.
 
 - **Redaction:** a proxy-only default identity with marker credentials in its route, and a Tor-routed identity with an isolation secret. Neither the markers nor the secret appear in either dashboard's messages or rendered text, and each dashboard shows its own redacted route.
 - **Identity binding:** each dashboard lists only its own tabs, and cannot capture the other identity's tab.
-- **Capture:** using an injected clock, nothing is recorded before a capture starts. During one, `localhost` and `(IPv4 address)` are recorded without the path, query, address or port. The capture is discarded once its time is up, goes away with its tab, and stops at 500 events.
+- **Redaction controls:** a positive check confirms the route really carries the marker credentials. A mutation check that adds them to the dashboard's route makes the test fail.
+- **Capture:** using an injected clock, nothing is recorded before a capture starts. During one, `localhost` and `(IPv4 address)` are recorded without the path, query, address or port. So are the requests of a cross-site frame in another WebContent page. The capture is discarded once its time is up, goes away with its tab, and stops at 500 events. Discarding a capture when its tab leaves its identity is implemented but has no test.
 - **Rendering:** `test-webdriver-privacy.py` renders the page in Ladyflock through WebDriver in light at 800 px and dark at 320 px. It checks the content, that there is no horizontal overflow with a long host, keyboard order and the shared focus ring, and starting and stopping a capture over the real WebUI channel. Screenshots of the status and capturing states were inspected at both sizes.
-- **Cost:** with no capture running, each request start costs the UI process one hash-map lookup. A capture holds at most 500 host strings.
+- **Cost (reasoned, not measured):** with no capture running, each request start costs the UI process one hash-map lookup. A capture holds at most 500 host strings.
+- **Not checked visually:** HiDPI rendering and the page inside the real Qt window.
 
 ## 4. Verification
 
 - **Revision:** branch `privacy-milestone-4`, based on `ladyflock` `a5ec801a265`. Host: macOS 26.3.1 on Apple Silicon. Build: `Build/ladyflock` (Release preset, `LADYBIRD_ENABLE_UPDATE_CHECK=OFF`).
 - **New suites:** `TestLibPrivacy` (17/17, including `TestPrivacyNavigation` 4/4), `TestLibWebView --suite TestPrivacySiteControls` (4/4), `--suite TestPrivacyDashboard` (2/2) and `--suite TestExtensionRuntime` (13/13). `test-webdriver-privacy.py` passed in both configurations.
+- **Real binary:** `test-privacy-flags-reach-the-browser.py` launches the `Ladybird` binary itself, not the in-process test application. It shows that each of these reaches the processes that enforce it:
+  - `--privacy-strip-tracking-parameters`, for UI-started and page-started navigations;
+  - a site's scripting turned off in the profile's `Settings.json`;
+  - the Milestone 3 `--privacy-network-mode=proxy-only --privacy-proxy=…` route, where the page's request reaches the route's listener and never the server directly.
 - **Regression runs (all passed):**
   - full `TestLibWebView`, run from `Tests/LibWebView`: exit 0;
   - full `TestLibWeb`, run from `Tests/LibWeb`, which needs its `test-inputs`: exit 0;
@@ -93,6 +101,7 @@ Test evidence comes from `TestPrivacyDashboard` and `test-webdriver-privacy.py`.
 - **Permissions.** Grant lifetimes (session, timed and expiring), unused-grant revocation and a single default-deny mode are not implemented. A per-capability Block default exists in Settings already.
 - **Native blocking extensions.** CNAME uncloaking, list authentication and the element picker are not implemented.
 - **Other gaps:**
+  - The "navigations without JavaScript" count only covers navigations the UI process sees, so same-process link clicks within a listed site are not counted.
   - No settings-page UI for the per-site JavaScript list or for tracking-parameter stripping.
   - Server-side redirects keep their tracking parameters.
   - `sendBeacon` restrictions are not implemented.
