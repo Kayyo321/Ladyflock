@@ -1498,3 +1498,42 @@ TEST_CASE(extension_dns_resolves_localhost_with_permission)
     }
     EXPECT(manager.storage().get(denied.extension_id, "hidden"_string).get_bool("hidden"sv) == true);
 }
+
+// Turning scripting off for a site stops the page's own script, not the isolated content scripts of an extension the
+// user installed for it, as in Firefox.
+TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
+{
+    Test::HeadlessTestEnvironment env { "TestExtSiteScriptingOff"sv, 90 };
+    MUST(Core::Environment::set("XDG_DATA_HOME"sv, env.directory(), Core::Environment::Overwrite::Yes));
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+
+    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+        return { .body = "<!DOCTYPE html><title>Plain</title><script>document.title = 'PAGE-RAN';</script>" };
+    });
+
+    auto ext_dir = LexicalPath::join(env.directory(), "noscript-ext"sv).string();
+    write_ext_file(ext_dir, "manifest.json"sv, R"({
+        "manifest_version": 2,
+        "name": "Content Script On Script-Free Site",
+        "version": "1.0",
+        "browser_specific_settings": { "gecko": { "id": "noscript-site@ladyflock.example" } },
+        "content_scripts": [{ "matches": ["http://127.0.0.1/*"], "run_at": "document_idle", "js": ["content.js"] }]
+    })"sv);
+    write_ext_file(ext_dir, "content.js"sv, "document.title = 'EXT:' + document.title;"sv);
+    TRY_OR_FAIL(app->default_session().extension_manager->load_unpacked(ext_dir, true));
+
+    TRY_OR_FAIL(WebView::Application::settings().set_scripting_enabled_for_site("127.0.0.1"sv, false));
+
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    view->load_from_browser_ui(URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/plain", server.port()))).release_value());
+
+    bool expired = false;
+    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(8), [&] { expired = true; });
+    timeout->start();
+    Core::EventLoop::current().spin_until([&] { return expired || view->title().starts_with("EXT:"sv); });
+    timeout->stop();
+
+    // The page's script never ran (its title would read PAGE-RAN); the extension's content script did.
+    EXPECT_EQ(view->title(), "EXT:Plain"_utf16);
+}
