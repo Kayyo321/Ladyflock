@@ -1,6 +1,6 @@
 # Privacy Network Enforcement (Milestones 0 and 1)
 
-This document describes Ladyflock's network privacy enforcement architecture for **Milestone 0 (First Request)** and **Milestone 1 (Offline)**, its platform boundaries, and the verified test results.
+This document describes Ladyflock's network privacy enforcement architecture for **Milestone 0 (First Request)** and **Milestone 1 (Offline)**, its platform boundaries, and the verified test results. See [IdentitiesAndStorage.md](IdentitiesAndStorage.md) for **Milestone 2 (Identities and Storage)**.
 
 ## 1. Architecture Overview
 
