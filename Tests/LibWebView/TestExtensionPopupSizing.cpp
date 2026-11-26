@@ -108,3 +108,56 @@ TEST_CASE(frames_in_a_popup_keep_the_width_their_embedder_gives_them)
     Core::EventLoop::current().spin_until([&]() { return !harness.reports.is_empty(); });
     EXPECT_EQ(harness.reports.last().width(), 300);
 }
+
+// A popup without a CSS width shrinks to its content's preferred width, and one taller than Firefox's 600px limit still
+// reports its full height, so that the browser knows it scrolls and leaves room for the scrollbar.
+TEST_CASE(popups_report_their_preferred_width_and_full_height)
+{
+    Test::HeadlessTestEnvironment environment { "TestExtensionPopupSizing"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto harness = TRY_OR_FAIL(PopupHarness::create());
+    harness.start();
+
+    harness.load(R"html(<!doctype html>
+<style>body { margin: 0; } p { margin: 0; width: 123px; height: 45px; }</style>
+<p></p>
+<script>document.title = "loaded";</script>)html"sv);
+    Core::EventLoop::current().spin_until([&]() { return !harness.reports.is_empty() && harness.reports.last() == Gfx::IntSize { 123, 45 }; });
+
+    harness.reports.clear();
+    harness.load(R"html(<!doctype html>
+<style>body { margin: 0; } div { width: 240px; height: 900px; }</style>
+<div></div>
+<script>document.title = "loaded";</script>)html"sv);
+    Core::EventLoop::current().spin_until([&]() { return !harness.reports.is_empty() && harness.reports.last().height() >= 900; });
+    EXPECT_EQ(harness.reports.last(), (Gfx::IntSize { 240, 900 }));
+}
+
+// uBlock Origin's popup lays its panes out right to left, and its "More" button shows a second pane. The popup grows to
+// fit it and shrinks back when it is hidden again.
+TEST_CASE(popup_follows_its_document_as_panes_open_and_close)
+{
+    Test::HeadlessTestEnvironment environment { "TestExtensionPopupSizing"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto harness = TRY_OR_FAIL(PopupHarness::create());
+    harness.start();
+
+    harness.load(R"html(<!doctype html>
+<style>
+body { margin: 0; }
+#panes { display: flex; flex-direction: row-reverse; }
+#main { width: 200px; height: 150px; }
+#side { display: none; width: 220px; }
+body.more #side { display: block; }
+</style>
+<div id="panes"><div id="main"></div><div id="side"></div></div>
+<script>document.title = "loaded";</script>)html"sv);
+    Core::EventLoop::current().spin_until([&]() { return !harness.reports.is_empty() && harness.reports.last().width() == 200; });
+    auto closed = harness.reports.last();
+    EXPECT_EQ(closed, (Gfx::IntSize { 200, 150 }));
+
+    harness.view->run_javascript("document.body.classList.add('more')"_string);
+    Core::EventLoop::current().spin_until([&]() { return harness.reports.last().width() == 420; });
+    harness.view->run_javascript("document.body.classList.remove('more')"_string);
+    Core::EventLoop::current().spin_until([&]() { return harness.reports.last() == closed; });
+}
