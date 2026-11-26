@@ -134,6 +134,7 @@ public:
     static RequestServerManager& request_server_manager() { return *the().m_request_server_manager; }
     static PrivacyPolicyCoordinator& privacy_policy_coordinator() { return *the().m_privacy_policy_coordinator; }
     static PrivacyActivity& privacy_activity() { return *the().m_privacy_activity; }
+    bool has_privacy_activity() const { return m_privacy_activity; }
     static IdentityManager& identity_manager() { return *the().m_identity_manager; }
     static ImageDecoderManager& image_decoder_manager() { return *the().m_image_decoder_manager; }
     // The UI process's own client of the session's RequestServer with no site.

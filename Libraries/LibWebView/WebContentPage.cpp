@@ -1420,6 +1420,7 @@ void WebContentPage::did_strip_tracking_parameters(u32 removed_parameter_count)
 void WebContentPage::did_start_network_request(u64 request_id, URL::URL url, ByteString method, Vector<HTTP::Header> request_headers, ByteBuffer request_body, Optional<String> initiator_type, String referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::RequestPriority priority)
 {
     if (displays_tab()) {
+        Application::privacy_activity().record_capture_event(view(), url, PrivacyActivity::CaptureEventKind::Request);
         if (view().on_network_request_started)
             view().on_network_request_started(request_id, url, method, request_headers, move(request_body), move(initiator_type), move(referrer_policy), is_navigation_request, priority);
     }

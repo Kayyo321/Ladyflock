@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="color-scheme" content="light dark" />
+        <title>Privacy</title>
+        <link rel="icon" type="image/png" href="resource://icons/48x48/app-browser.png" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/ladybird.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/webui.css" />
+        <style>
+            body {
+                max-width: 880px;
+                padding: 48px 24px;
+            }
+
+            dl {
+                display: grid;
+                grid-template-columns: minmax(140px, 32%) 1fr;
+                gap: 6px 16px;
+
+                margin: 0;
+                font-size: 13px;
+            }
+
+            dt {
+                color: var(--secondary-text-color);
+            }
+
+            dd {
+                margin: 0;
+                overflow-wrap: anywhere;
+            }
+
+            /* On a narrow page, each value goes under its label rather than into a sliver beside it. */
+            @media (max-width: 480px) {
+                dl {
+                    grid-template-columns: 1fr;
+                    gap: 2px;
+                }
+
+                dd + dt {
+                    margin-top: 8px;
+                }
+            }
+
+            .capture-controls {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 8px;
+
+                margin-bottom: 12px;
+                font-size: 13px;
+            }
+
+            .capture-controls select {
+                min-width: 0;
+                max-width: 100%;
+            }
+
+            #capture-entries {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 13px;
+            }
+
+            #capture-entries th {
+                padding: 0 8px 6px 0;
+                text-align: start;
+                color: var(--secondary-text-color);
+                font-weight: 500;
+            }
+
+            #capture-entries td {
+                padding: 6px 8px 6px 0;
+                border-top: 1px solid var(--border-color);
+                overflow-wrap: anywhere;
+            }
+
+            .note {
+                margin: 0 0 12px 0;
+                font-size: 13px;
+                color: var(--secondary-text-color);
+            }
+
+            .empty {
+                font-size: 13px;
+                color: var(--secondary-text-color);
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Privacy</h1>
+        </header>
+
+        <div class="card-title">This identity</div>
+        <div class="card">
+            <div class="card-body">
+                <dl id="identity"></dl>
+            </div>
+        </div>
+
+        <div class="card-title">Network</div>
+        <div class="card">
+            <div class="card-body">
+                <dl id="network"></dl>
+            </div>
+        </div>
+
+        <div class="card-title">Site controls</div>
+        <div class="card">
+            <div class="card-body">
+                <dl id="controls"></dl>
+            </div>
+        </div>
+
+        <div class="card-title">Tab capture</div>
+        <div class="card">
+            <div class="card-body">
+                <p class="note">
+                    A capture records the hosts that one tab of this identity contacts, and nothing else: no paths,
+                    queries, addresses, headers or bodies. It stays in memory, and ends by itself when its time is up,
+                    the tab closes, or the tab leaves this identity.
+                </p>
+                <div class="capture-controls">
+                    <label for="capture-tab">Tab</label>
+                    <select id="capture-tab"></select>
+                    <label for="capture-duration">for</label>
+                    <select id="capture-duration">
+                        <option value="60">1 minute</option>
+                        <option value="300">5 minutes</option>
+                        <option value="600">10 minutes</option>
+                    </select>
+                    <button id="capture-start" class="primary-button">Start capture</button>
+                    <button id="capture-stop" class="secondary-button" disabled>Stop</button>
+                    <span id="capture-state" class="description" role="status"></span>
+                </div>
+                <table id="capture-entries" hidden>
+                    <thead>
+                        <tr>
+                            <th scope="col">Host</th>
+                            <th scope="col">Event</th>
+                            <th scope="col">When</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <p id="capture-empty" class="empty" hidden>Nothing captured yet.</p>
+            </div>
+        </div>
+
+        <script>
+            const identityElement = document.querySelector("#identity");
+            const networkElement = document.querySelector("#network");
+            const controlsElement = document.querySelector("#controls");
+            const tabSelect = document.querySelector("#capture-tab");
+            const durationSelect = document.querySelector("#capture-duration");
+            const startButton = document.querySelector("#capture-start");
+            const stopButton = document.querySelector("#capture-stop");
+            const captureState = document.querySelector("#capture-state");
+            const captureTable = document.querySelector("#capture-entries");
+            const captureBody = captureTable.querySelector("tbody");
+            const captureEmpty = document.querySelector("#capture-empty");
+
+            let captureTimer = null;
+
+            // Everything shown comes from the browser, but hosts and titles come from websites, so every value goes in
+            // as text.
+            function fillList(list, rows) {
+                list.replaceChildren();
+                for (const [term, description] of rows) {
+                    const termElement = document.createElement("dt");
+                    termElement.textContent = term;
+                    const descriptionElement = document.createElement("dd");
+                    descriptionElement.textContent = description;
+                    list.append(termElement, descriptionElement);
+                }
+            }
+
+            const modeNames = { allow: "Direct", offline: "Offline", "proxy-only": "Proxy only" };
+
+            function renderStatus(status) {
+                fillList(identityElement, [
+                    ["Name", status.identity.name || status.identity.id],
+                    ["Kind", status.identity.kind],
+                ]);
+                fillList(networkElement, [
+                    ["Mode", modeNames[status.network.mode] ?? status.network.mode],
+                    ["Route", status.network.route ?? "None"],
+                    ["Local DNS", status.network.localDNS ? "Allowed" : "Not used"],
+                    ["WebRTC", status.network.webRTC ? "Allowed" : "Off"],
+                    ["Policy epoch", String(status.network.epoch)],
+                ]);
+                const sites = status.controls.scriptingDisabledSites;
+                fillList(controlsElement, [
+                    ["Tracking parameters", status.controls.stripTrackingParameters ? "Removed from navigations" : "Kept"],
+                    ["Navigations cleaned", String(status.counters.navigationsSanitized)],
+                    ["Parameters removed", String(status.counters.trackingParametersRemoved)],
+                    ["JavaScript off for", sites.length ? sites.join(", ") : "No sites"],
+                    ["Navigations without JavaScript", String(status.counters.navigationsWithScriptingBlocked)],
+                ]);
+
+                const selected = tabSelect.value;
+                tabSelect.replaceChildren();
+                for (const tab of status.tabs) {
+                    const option = document.createElement("option");
+                    option.value = String(tab.id);
+                    // A browser page has no host to name; a website's tab is named by its title and host.
+                    const hasHost = !tab.host.startsWith("(");
+                    if (!tab.title) option.textContent = tab.host;
+                    else option.textContent = hasHost ? `${tab.title} — ${tab.host}` : tab.title;
+                    tabSelect.append(option);
+                }
+                if ([...tabSelect.options].some(option => option.value === selected)) tabSelect.value = selected;
+                startButton.disabled = status.tabs.length === 0;
+            }
+
+            function renderCapture(capture) {
+                captureBody.replaceChildren();
+                if (!capture.active) {
+                    captureState.textContent = "Not capturing";
+                    stopButton.disabled = true;
+                    captureTable.hidden = true;
+                    captureEmpty.hidden = true;
+                    stopPolling();
+                    return;
+                }
+
+                // A capture that was already running when the page opened keeps the page up to date as well.
+                if (captureTimer === null) startPolling();
+                captureState.textContent = `Capturing, ${capture.secondsLeft} s left`;
+                stopButton.disabled = false;
+                for (const entry of capture.entries) {
+                    const row = document.createElement("tr");
+                    for (const value of [entry.host, entry.kind === "blocked" ? "Blocked" : "Request", `${entry.secondsAgo} s ago`]) {
+                        const cell = document.createElement("td");
+                        cell.textContent = value;
+                        row.append(cell);
+                    }
+                    captureBody.append(row);
+                }
+                captureTable.hidden = capture.entries.length === 0;
+                captureEmpty.hidden = capture.entries.length !== 0;
+            }
+
+            function selectedTab() {
+                return { tabId: Number(tabSelect.value) };
+            }
+
+            function startPolling() {
+                stopPolling();
+                captureTimer = setInterval(() => ladybird.sendMessage("loadCapture", selectedTab()), 2000);
+            }
+
+            function stopPolling() {
+                if (captureTimer !== null) clearInterval(captureTimer);
+                captureTimer = null;
+            }
+
+            startButton.addEventListener("click", () => {
+                ladybird.sendMessage("startCapture", { ...selectedTab(), seconds: Number(durationSelect.value) });
+                startPolling();
+            });
+            stopButton.addEventListener("click", () => ladybird.sendMessage("stopCapture", selectedTab()));
+            tabSelect.addEventListener("change", () => ladybird.sendMessage("loadCapture", selectedTab()));
+
+            document.addEventListener("WebUIMessage", event => {
+                if (event.detail.name === "loadStatus") {
+                    renderStatus(event.detail.data);
+                    if (tabSelect.value) ladybird.sendMessage("loadCapture", selectedTab());
+                } else if (event.detail.name === "loadCapture") {
+                    renderCapture(event.detail.data);
+                }
+            });
+
+            document.addEventListener("WebUILoaded", () => ladybird.sendMessage("loadStatus"));
+        </script>
+    </body>
+</html>

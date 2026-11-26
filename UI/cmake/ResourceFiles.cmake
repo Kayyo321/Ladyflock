@@ -37,6 +37,7 @@ set(ABOUT_PAGES
     history.html
     licenses.html
     newtab.html
+    privacy.html
     settings.html
     support.html
     version.html

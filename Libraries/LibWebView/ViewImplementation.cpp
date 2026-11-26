@@ -37,6 +37,7 @@
 #include <LibWebView/HistoryDebug.h>
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/PermissionManager.h>
+#include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/RequestServerSiteBindings.h>
 #include <LibWebView/SessionHistory.h>
@@ -158,6 +159,9 @@ ViewImplementation::~ViewImplementation()
 {
     stop_counting_as_owned_view();
     Application::the().media_session_coordinator().remove_view(view_id());
+    // A tab's capture goes away with the tab.
+    if (Application::the().has_privacy_activity())
+        Application::privacy_activity().view_closed(view_id());
     // The frontend may be torn down already, so clearing the ongoing navigation must not report a URL change to it, nor
     // cancelling the view's location requests or closing the view's page (which revokes its audio playback and capture)
     // a change in what the tab shows.
@@ -3268,6 +3272,7 @@ static StringView known_blocked_resource_kind(StringView kind)
 
 void ViewImplementation::did_block_resource(Badge<WebContentPage>, URL::URL const& url, StringView kind)
 {
+    Application::privacy_activity().record_capture_event(*this, url, PrivacyActivity::CaptureEventKind::Blocked);
     if (m_blocked_resources.size() >= MAX_BLOCKED_RESOURCES)
         return;
 

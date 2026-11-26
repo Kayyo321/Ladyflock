@@ -12,6 +12,7 @@
 #include <LibWebView/HSTSStore.h>
 #include <LibWebView/IdentityManager.h>
 #include <LibWebView/PermissionManager.h>
+#include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/StorageJar.h>
@@ -116,6 +117,7 @@ bool IdentityManager::destroy_identity(StringView identity_id)
     WorkerAgentManager::the().remove_workers_for_session(session->id());
     RequestServerManager::the().retire_instances_for_session(*session);
     Application::privacy_policy_coordinator().remove_session(session->id());
+    Application::privacy_activity().remove_session(session->id());
     remove_domain_rules_for_identity(identity_id);
     return true;
 }
