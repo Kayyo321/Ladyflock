@@ -10,6 +10,7 @@
 #include <LibDNS/Resolver.h>
 #include <LibMain/Main.h>
 #include <RequestServer/DNSStreamCurl.h>
+#include <RequestServer/PrivacyPolicy.h>
 
 #if defined(AK_OS_WINDOWS)
 #    include <AK/Windows.h> // Needed because curl.h includes winsock2.h
@@ -81,6 +82,12 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
     if (curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK)
         return Error::from_string_literal("Failed to initialize libcurl");
+
+    // The stream connector shares RequestServer's privacy gate, which starts closed until a Hub installs a policy. This
+    // tool runs on its own, at the user's request, with no Hub, so it opens the gate itself.
+    auto installed = RequestServer::privacy_network_gate().install({ .session_id = 1, .epoch = 1, .network = Privacy::NetworkPolicy::allow_default() });
+    if (!installed.ack.accepted)
+        return Error::from_string_literal("Failed to open the network gate");
 
     DNS::Resolver resolver;
     resolver.set_stream_connector([&](Core::SocketAddress const& address, ByteString const& server_name, DNS::StreamSecurity security) {

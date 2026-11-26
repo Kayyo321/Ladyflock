@@ -5,7 +5,7 @@ endif()
 ladybird_utility(wasm SOURCES wasm.cpp LIBS LibFileSystem LibWasm LibMain LibJSStandalone LibGC)
 
 ladybird_utility(xml SOURCES xml.cpp LIBS LibFileSystem LibMain LibXML LibURL)
-ladybird_utility(dns SOURCES dns.cpp ../Services/RequestServer/DNSStreamCurl.cpp LIBS LibCore LibDNS LibMain CURL::libcurl)
+ladybird_utility(dns SOURCES dns.cpp ../Services/RequestServer/DNSStreamCurl.cpp ../Services/RequestServer/PrivacyPolicy.cpp LIBS LibCore LibDNS LibMain LibPrivacy CURL::libcurl)
 
 # FIXME: Increase support for building targets on Windows
 if (WIN32)
