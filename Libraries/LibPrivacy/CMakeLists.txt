@@ -1,7 +1,10 @@
 set(SOURCES
+    Identity/NavigationHandoff.cpp
+    Identity/Types.cpp
     Policy/Compiler.cpp
     Policy/NetworkGate.cpp
     Policy/Types.cpp
+    Storage/PartitionKey.cpp
 )
 
 ladybird_lib(LibPrivacy privacy EXPLICIT_SYMBOL_EXPORT)

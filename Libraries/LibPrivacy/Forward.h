@@ -14,6 +14,8 @@ enum class DNSRoutePolicy : u8;
 enum class WebRTCPolicy : u8;
 enum class PolicyDecision : u8;
 enum class PolicyReason : u8;
+enum class IdentityKind : u8;
+enum class HandoffAction : u8;
 
 struct NetworkPolicy;
 struct PolicySnapshot;
@@ -22,6 +24,11 @@ struct PolicyInput;
 struct PolicyCompilationResult;
 struct EvaluationResult;
 struct InstallOutcome;
+struct IdentityDescriptor;
+struct DomainAssignmentRule;
+struct NavigationHandoffRequest;
+struct NavigationHandoffDecision;
+struct StoragePartitionKey;
 
 class NetworkGate;
 

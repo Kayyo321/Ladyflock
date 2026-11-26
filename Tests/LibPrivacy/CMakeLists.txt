@@ -1,6 +1,7 @@
 ladybird_test_suite(LibPrivacy)
 
 set(TEST_SOURCES
+    TestPrivacyIdentityAndStorage.cpp
     TestPrivacyPolicy.cpp
 )
 
