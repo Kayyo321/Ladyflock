@@ -268,6 +268,13 @@ pub extern "C" fn rust_selector_contains_named_namespace(selector: &RustSelector
     contains_named_namespace(selector.compiled())
 }
 
+/// How the selector's subject can be an element outside the tree its rule is in: 0 when it cannot, 1 as
+/// the tree's host, 2 as an element slotted into it, 3 as a part of a shadow tree inside it.
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_selector_shadow_reach(selector: &RustSelector) -> u8 {
+    crate::css::style::selector_analysis::shadow_reach(selector.compiled())
+}
+
 pub(crate) fn absolutize_selector_list(
     selectors: &SelectorList,
     parent: StyleNestingParent,

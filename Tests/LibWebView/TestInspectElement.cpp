@@ -169,17 +169,28 @@ TEST_CASE(inspector_attachment_styles_history_and_detach)
     VERIFY(children.has_value() && !children->is_empty());
     EXPECT_EQ(children->at(0).as_object().get_string("type"sv), "doctype"sv);
 
+    // The page and the shadow root have the same sheet, which they share compiled. Only the shadow root's copy can
+    // style the host, through :host, so that is the copy the rule names, and editing it restyles the host.
     auto host_id = search(*frontend, "#shadow-host"sv);
     auto host_styles = node_properties(*frontend, host_id, "appliedStyleRules"sv);
-    bool saw_ambiguous_rule = false;
+    Optional<JsonObject> host_rule;
     for (auto const& item : host_styles.get_array("properties"sv)->values()) {
         auto rule = item.as_object().get_object("rule"sv);
-        if (rule.has_value() && rule->get_string("cssText"sv).value_or(String {}).starts_with_bytes(":host"sv)) {
-            EXPECT(!rule->has("sheetId"sv));
-            saw_ambiguous_rule = true;
-        }
+        if (rule.has_value() && rule->get_string("cssText"sv).value_or(String {}).starts_with_bytes(":host"sv))
+            host_rule = *rule;
     }
-    EXPECT(saw_ambiguous_rule);
+    VERIFY(host_rule.has_value());
+    VERIFY(host_rule->has("sheetId"sv));
+    JsonObject host_edit;
+    host_edit.set("nodeId"sv, host_id);
+    host_edit.set("sheetId"sv, host_rule->get_string("sheetId"sv).value());
+    host_edit.set("ruleIdentity"sv, host_rule->get_string("ruleIdentity"sv).value());
+    host_edit.set("baseRevision"sv, host_rule->get_u64("sheetRevision"sv).value());
+    host_edit.set("property"sv, "color"sv);
+    host_edit.set("value"sv, "rgb(21, 22, 23)"sv);
+    EXPECT(!result(*frontend, "editStyleDeclaration"sv, host_edit).get_bool("conflict"sv).value());
+    auto host_computed = node_properties(*frontend, host_id, "computedStyle"sv).get_object("properties"sv).value();
+    EXPECT_EQ(host_computed.get_string("color"sv), "rgb(21, 22, 23)"sv);
 
     auto node_id = search(*frontend, "#subject"sv);
     EXPECT_EQ(search(*frontend, "//*[@id='subject']"sv), node_id);
@@ -225,7 +236,7 @@ TEST_CASE(inspector_attachment_styles_history_and_detach)
     EXPECT(!result(*frontend, "editStyleDeclaration"sv, edit).get_bool("conflict"sv).value());
     computed = node_properties(*frontend, node_id, "computedStyle"sv).get_object("properties"sv).value();
     EXPECT_EQ(computed.get_string("margin-left"sv), "3px"sv);
-    EXPECT_EQ(session->edit_journal().size(), 1u);
+    EXPECT_EQ(session->edit_journal().size(), 2u);
     auto entry_id = session->edit_journal().last().id;
     JsonObject undo;
     undo.set("id"sv, entry_id);
@@ -245,7 +256,7 @@ TEST_CASE(inspector_attachment_styles_history_and_detach)
     auto revision_after_page_edit = margin_rule(*frontend, node_id).get_u64("sheetRevision"sv).value();
     EXPECT_NE(revision_after_page_edit, revision_after_undo);
     EXPECT_EQ(conflict.get_u64("currentRevision"sv), revision_after_page_edit);
-    EXPECT_EQ(session->edit_journal().size(), 1u);
+    EXPECT_EQ(session->edit_journal().size(), 2u);
 
     JsonObject force;
     force.set("nodeId"sv, node_id);

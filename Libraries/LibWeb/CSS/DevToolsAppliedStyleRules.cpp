@@ -648,36 +648,50 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
     });
 
     // Two scopes with the same sheet, such as two instances of a component, share its compiled form, so the
-    // document-wide map cannot tell which one a rule came from. A rule matching an element comes from a scope that
-    // can style it: the element's own tree, its shadow root (:host), the trees of the slots it is assigned to
-    // (::slotted), or the trees of its shadow hosts (::part). The first of these with the sheet names the occurrence,
-    // unless it has the sheet twice.
-    auto occurrence_styling = [&](DOM::Element const& element, StyleSheetState const& snapshot) -> Optional<StyleSheetState const*> {
-        auto occurrence_in = [&](StyleScope const& scope) -> Optional<StyleSheetState const*> {
-            Optional<StyleSheetState const*> found;
-            scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
+    // document-wide map cannot tell which one a rule came from. How a rule's selectors can reach the element names
+    // the scopes it can have come from: a selector reaches the host of its tree only through :host, an element
+    // slotted into its tree only through ::slotted(), and a part of a shadow tree inside its tree only through
+    // ::part(); any other only an element of its own tree. A sheet found once in those scopes is the copy.
+    auto occurrence_styling = [&](DOM::Element const& element, StyleSheetState const& snapshot, CSSRule const& rule) -> Optional<StyleSheetState const*> {
+        SelectorList selectors;
+        if (auto const* style_rule = as_if<CSSStyleRule>(rule))
+            selectors = style_rule->absolutized_selectors();
+        else if (auto const* nested = as_if<CSSNestedDeclarations>(rule))
+            selectors = nested->absolutized_selectors();
+        Vector<StyleScope const*, 4> scopes;
+        auto add_scope = [&](StyleScope const& scope) {
+            if (!scopes.contains_slow(&scope))
+                scopes.append(&scope);
+        };
+        for (auto const& selector : selectors) {
+            switch (selector->shadow_reach()) {
+            case Selector::ShadowReach::OwnTree:
+                add_scope(element.style_scope());
+                break;
+            case Selector::ShadowReach::Host:
+                if (auto shadow_root = element.shadow_root())
+                    add_scope(shadow_root->style_scope());
+                break;
+            case Selector::ShadowReach::SlottedElement:
+                for (auto slot = element.assigned_slot_internal(); slot; slot = slot->assigned_slot_internal())
+                    add_scope(slot->style_scope());
+                break;
+            case Selector::ShadowReach::Part:
+                for (auto root = element.containing_shadow_root(); root && root->host(); root = root->host()->containing_shadow_root())
+                    add_scope(root->host()->style_scope());
+                break;
+            }
+        }
+        Optional<StyleSheetState const*> found;
+        for (auto const* scope : scopes) {
+            scope->for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
                 auto* compiled = sheet.shared_compiled_style_sheet();
                 if (!compiled || &compiled->contents() != &snapshot)
                     return;
                 found = found.has_value() && *found != &sheet ? nullptr : &sheet;
             });
-            return found;
-        };
-        if (auto found = occurrence_in(element.style_scope()); found.has_value())
-            return found;
-        if (auto shadow_root = element.shadow_root()) {
-            if (auto found = occurrence_in(shadow_root->style_scope()); found.has_value())
-                return found;
         }
-        for (auto slot = element.assigned_slot_internal(); slot; slot = slot->assigned_slot_internal()) {
-            if (auto found = occurrence_in(slot->style_scope()); found.has_value())
-                return found;
-        }
-        for (auto root = element.containing_shadow_root(); root && root->host(); root = root->host()->containing_shadow_root()) {
-            if (auto found = occurrence_in(root->host()->style_scope()); found.has_value())
-                return found;
-        }
-        return {};
+        return found;
     };
 
     HashTable<size_t> hidden_entry_indexes;
@@ -726,7 +740,9 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             }
             auto const& source_sheet = *target->source_style_sheet;
             CSSRule* rule = nullptr;
-            auto occurrence = occurrence_styling(current_element.element(), source_sheet);
+            Optional<StyleSheetState const*> occurrence;
+            if (auto const* snapshot_rule = source_sheet.rules().rule_for_identity(target->rule_identity))
+                occurrence = occurrence_styling(current_element.element(), source_sheet, *snapshot_rule);
             if (!occurrence.has_value())
                 occurrence = live_sheet_by_snapshot.get(&source_sheet);
             if (occurrence.has_value() && *occurrence) {

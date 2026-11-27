@@ -80,6 +80,15 @@ public:
     ~Selector();
 
     bool contains_named_namespace() const;
+
+    // How the selector's subject can be an element outside the tree its rule is in.
+    enum class ShadowReach : u8 {
+        OwnTree,
+        Host,
+        SlottedElement,
+        Part,
+    };
+    ShadowReach shadow_reach() const;
     u32 specificity() const;
     Utf16String serialize() const;
     void serialize_to(Utf16StringBuilder&, StyleSheetState const* = nullptr) const;

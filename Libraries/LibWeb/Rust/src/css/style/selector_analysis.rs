@@ -51,6 +51,25 @@ impl EntryFacts {
     }
 }
 
+/// How the subject of `selector` can be an element outside the tree its rule is in, as the rule index
+/// reads it of an entry: 0 when it cannot, 1 when it can be the tree's host (`:host`), 2 when it is
+/// an element slotted into the tree (`::slotted()`), and 3 when it is a part of a shadow tree inside
+/// it (`::part()`). A sheet that several trees share is compiled once, so this is what tells which
+/// tree's copy a rule that matched an element came from.
+pub(crate) fn shadow_reach(selector: Selector<'_>) -> u8 {
+    let first = subject_compound(selector).first_compound();
+    let pseudo_element = match first.simple_selectors.first() {
+        Some(SimpleSelector::PseudoElement(pseudo_element)) => Some(pseudo_element.pseudo_element),
+        _ => None,
+    };
+    match pseudo_element {
+        Some(PseudoElementType::Slotted) => 2,
+        Some(PseudoElementType::Part) => 3,
+        _ if names_the_host(&first) => 1,
+        _ => 0,
+    }
+}
+
 /// The compound of `selector` an element matching it is the subject of: its first, or the one
 /// left of a pseudo-element no element stands for.
 pub(super) fn subject_compound(selector: Selector<'_>) -> Selector<'_> {
