@@ -239,6 +239,7 @@ static constexpr Array s_supported_api_methods {
     "tabs.removeCSS"sv,
     "tabs.onUpdated"sv,
     "tabs.onActivated"sv,
+    "tabs.onHighlighted"sv,
     "tabs.onCreated"sv,
     "tabs.onRemoved"sv,
     "windows.getCurrent"sv,

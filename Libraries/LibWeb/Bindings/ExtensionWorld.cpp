@@ -1284,6 +1284,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         tabs_js_obj.define_direct_property("TAB_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::Attribute::Enumerable);
         tabs_js_obj.define_direct_property("onUpdated"_utf16_fly_string, create_event_object("tabs"sv, "onUpdated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onActivated"_utf16_fly_string, create_event_object("tabs"sv, "onActivated"sv), JS::default_attributes);
+        tabs_js_obj.define_direct_property("onHighlighted"_utf16_fly_string, create_event_object("tabs"sv, "onHighlighted"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onCreated"_utf16_fly_string, create_event_object("tabs"sv, "onCreated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onRemoved"_utf16_fly_string, create_event_object("tabs"sv, "onRemoved"sv), JS::default_attributes);
         // Ladyflock never swaps one tab's page for another's, as prerendering does, so onReplaced has nothing to report.

@@ -583,13 +583,15 @@ TEST_CASE(action_icons_firefox_accepts_but_ladyflock_cannot_draw_keep_the_curren
     write_file(directory, "manifest.json"sv, R"({
         "manifest_version": 2, "name": "Icons", "version": "1",
         "browser_specific_settings": {"gecko": {"id": "icons@example.test"}},
-        "permissions": ["storage"], "background": {"scripts": ["background.js"]},
+        "permissions": ["storage"], "background": {"page": "background/index.html"},
         "browser_action": {"default_icon": "plain.png"}
     })"sv);
-    write_file(directory, "background.js"sv, R"(
+    write_file(directory, "background/index.html"sv, "<!DOCTYPE html><script src=\"background.js\"></script>"sv);
+    write_file(directory, "background/background.js"sv, R"(
         const outcome = promise => promise.then(() => "ok", error => error.message);
         (async () => {
-            const png = await outcome(browser.browserAction.setIcon({ path: "/icons/lit.png" }));
+            // As in Firefox, a relative path is relative to the calling page.
+            const png = await outcome(browser.browserAction.setIcon({ path: { 19: "../icons/lit.png" } }));
             const svg = await outcome(browser.browserAction.setIcon({ path: "/icons/toolbar.svg" }));
             const svgSizes = await outcome(browser.browserAction.setIcon({ path: { 16: "a.svg", 32: "b.svg" } }));
             const imageData = await outcome(browser.browserAction.setIcon({ imageData: new ImageData(16, 16) }));
@@ -811,4 +813,37 @@ TEST_CASE(all_frames_injection_reaches_each_frame_the_extension_may_access)
     EXPECT_EQ(results.get_string("colors"sv).value_or({}), "rgb(1, 2, 3),rgb(1, 2, 3)"sv);
     EXPECT_EQ(results.get_u32("top"sv).value_or(0), 1u);
     EXPECT_EQ(results.get_string("both"sv).value_or({}), "Unsupported script injection target or world"sv);
+}
+
+TEST_CASE(activating_a_tab_also_reports_it_highlighted)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatHighlight"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "highlight"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Highlight", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "highlight@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        let activated;
+        browser.tabs.onActivated.addListener(info => { activated = info.tabId; });
+        browser.tabs.onHighlighted.addListener(info => {
+            browser.storage.local.set({ highlighted: info.tabIds.join(','), window: info.windowId, activated, done: true });
+        });
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+
+    app->open_url_in_new_window(URL::about_blank(), WebView::IsPrivate::No);
+    auto tab_id = app->windows.last()->view_id();
+    manager.notify_tab_activated(tab_id, 77);
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("highlighted"sv).value_or({}), String::number(tab_id));
+    EXPECT_EQ(results.get_u32("window"sv).value_or(0), 77u);
+    EXPECT_EQ(results.get_u64("activated"sv).value_or(0), tab_id);
 }

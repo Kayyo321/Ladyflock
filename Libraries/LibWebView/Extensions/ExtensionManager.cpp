@@ -4463,7 +4463,23 @@ void ExtensionManager::handle_api_call(
                 return Error::from_string_literal("setIcon requires a package path or size-to-path object");
             return IconUpdate {};
         }
-        auto icons = TRY(Web::Extensions::ExtensionManifest::parse_icon_map(*path));
+        // As in Firefox, a relative path is relative to the page that calls, so "../icons/a.png" from
+        // "background/index.html" names "icons/a.png".
+        auto resolve = [&](JsonValue const& value) -> JsonValue {
+            if (!value.is_string() || value.as_string().starts_with('/'))
+                return value;
+            auto resolved = URL::Parser::basic_parse(value.as_string(), document->creation_url());
+            if (!resolved.has_value() || resolved->scheme() != "moz-extension"sv || resolved->serialized_host() != ext->uuid)
+                return value;
+            return JsonValue { MUST(String::from_byte_string(URL::percent_decode(resolved->serialize_path()))) };
+        };
+        JsonValue resolved_path = resolve(*path);
+        if (path->is_object()) {
+            JsonObject sizes;
+            path->as_object().for_each_member([&](auto const& size, auto const& value) { sizes.set(size, resolve(value)); });
+            resolved_path = move(sizes);
+        }
+        auto icons = TRY(Web::Extensions::ExtensionManifest::parse_icon_map(resolved_path));
         auto selected = Web::Extensions::ExtensionManifest::preferred_icon(icons);
         if (!selected.has_value()) {
             // The isolated image decoder can't draw SVG. Firefox accepts SVG icons, so keep the current icon
@@ -5071,9 +5087,21 @@ void ExtensionManager::notify_tab_activated(u64 tab_id, u64 window_id)
     args.must_append(move(active_info));
     auto serialized = args.serialized();
 
+    // Ladyflock highlights only the active tab, so the highlighted tabs change exactly when it does.
+    JsonObject highlight_info;
+    highlight_info.set("windowId"sv, static_cast<i64>(window_id));
+    JsonArray tab_ids;
+    tab_ids.must_append(static_cast<i64>(tab_id));
+    highlight_info.set("tabIds"sv, move(tab_ids));
+    JsonArray highlight_args;
+    highlight_args.must_append(move(highlight_info));
+    auto serialized_highlight = highlight_args.serialized();
+
     for (auto const& [ext_id, ext] : m_extensions_by_id) {
-        if (ext.enabled)
-            dispatch_event_to_extension(ext_id, "tabs"sv, "onActivated"sv, serialized);
+        if (!ext.enabled)
+            continue;
+        dispatch_event_to_extension(ext_id, "tabs"sv, "onActivated"sv, serialized);
+        dispatch_event_to_extension(ext_id, "tabs"sv, "onHighlighted"sv, serialized_highlight);
     }
 }
 
