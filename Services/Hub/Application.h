@@ -33,6 +33,7 @@ public:
     virtual bool supports_clipboard_type(WebView::Application::ClipboardType type) const = 0;
     virtual bool supports_system_menu_bar() const = 0;
     virtual bool supports_vertical_tabs() const = 0;
+    virtual bool supports_new_tab_dashboard() const = 0;
     virtual bool supports_private_browsing_windows() const = 0;
     virtual bool supports_client_side_window_decorations() const = 0;
     virtual bool platform_reports_scroll_momentum() const = 0;
@@ -128,6 +129,7 @@ private:
     virtual bool supports_clipboard_type(WebView::Application::ClipboardType type) const override;
     virtual bool supports_system_menu_bar() const override;
     virtual bool supports_vertical_tabs() const override;
+    virtual bool supports_new_tab_dashboard() const override;
     virtual bool supports_private_browsing_windows() const override;
     virtual bool supports_client_side_window_decorations() const override;
     virtual bool platform_reports_scroll_momentum() const override;

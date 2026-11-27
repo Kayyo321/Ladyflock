@@ -333,6 +333,7 @@ public:
 
     SearchEngineSettings const& search_engine_settings() const { return m_search_engine_settings; }
     void set_search_engine_settings(SearchEngineSettings);
+    ReadonlySpan<SearchEngine> custom_search_engines() const { return m_custom_search_engines.span(); }
     Optional<SearchEngine> find_search_engine_by_name(StringView name) const;
 
     static Optional<SearchEngine> parse_custom_search_engine(JsonValue const&);

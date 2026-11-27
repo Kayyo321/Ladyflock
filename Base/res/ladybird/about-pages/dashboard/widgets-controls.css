@@ -1,0 +1,864 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+/* --- Privacy Summary ------------------------------------------------------------------- */
+
+.dash-card-body.priv {
+    gap: 10px;
+    overflow: hidden;
+}
+
+.priv-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--tint-ink);
+}
+
+.priv-mode {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--text);
+}
+
+.priv-mode-name {
+    font-size: 22px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+
+.dash-card[data-tier="compact"] .priv-head {
+    flex: 1;
+}
+
+.priv-mode .dash-muted {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.dash-card[data-tier="compact"] .priv-mode {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.dash-card[data-tier="compact"] .priv-mode-name {
+    font-size: 20px;
+    font-weight: 400;
+}
+
+.priv-figures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 0;
+}
+
+.priv-figure {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.priv-figure-value {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+
+.priv-figure dt,
+.priv-figure .dash-muted {
+    font-size: 11.5px;
+}
+
+.dash-card[data-tier="expanded"] .priv-figure-value {
+    font-size: 34px;
+}
+
+.priv-details {
+    margin: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--separator-soft);
+}
+
+.priv-detail {
+    min-height: 24px;
+    font-size: 12.5px;
+}
+
+.priv-open {
+    align-self: flex-start;
+    margin-inline-start: -8px;
+}
+
+/* --- Extensions Dock ------------------------------------------------------------------- */
+
+.dash-card-body.xdock {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.xdock-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+    align-content: start;
+    gap: 4px 8px;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    scrollbar-width: thin;
+}
+
+.xdock-grid.is-empty {
+    display: flex;
+}
+
+.xdock-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.xdock-toggle {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 4px 6px;
+    border: none;
+    border-radius: 12px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.xdock-toggle:hover {
+    background-color: var(--control);
+}
+
+.xdock-toggle:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.xdock-item.is-on .xdock-toggle {
+    color: var(--text);
+}
+
+.xdock-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background-color: var(--control);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.xdock-item.is-on .xdock-mark {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.xdock-name {
+    flex: 1;
+}
+
+.xdock-state {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+}
+
+.xdock-item.is-on .xdock-state {
+    color: var(--tint-ink);
+}
+
+/* Compact: bare marks; an enabled one carries a check pip, not just a tint. */
+.dash-card[data-tier="compact"] .xdock-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
+}
+
+.dash-card[data-tier="compact"] .xdock-mark {
+    width: 30px;
+    height: 30px;
+}
+
+.xdock-pip {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: var(--tint);
+    box-shadow: 0 0 0 2px var(--tile-bg);
+}
+
+.xdock-item:not(.is-on) .xdock-mark {
+    opacity: 0.6;
+}
+
+.xdock-foot {
+    display: flex;
+    flex-shrink: 0;
+}
+
+.xdock-foot .dash-btn {
+    margin-inline-start: -8px;
+}
+
+.dash-card[data-tier="expanded"] .xdock-grid {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+/* --- Site Permissions ------------------------------------------------------------------ */
+
+.dash-card-body.perm {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.perm-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.perm-summary {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    flex-shrink: 0;
+}
+
+.perm-counts {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.perm-total {
+    font-size: 26px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+
+.perm-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.perm-empty {
+    padding: 2px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.perm-row {
+    gap: 10px;
+    font-size: 12.5px;
+}
+
+.perm-origin {
+    flex: 1 1 0;
+}
+
+.perm-kind {
+    flex-shrink: 0;
+}
+
+.dash-card[data-tier="compact"] .perm-kind {
+    display: none;
+}
+
+.perm-decision {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.perm-decision.is-allow {
+    color: var(--tint-ink);
+}
+
+.perm-decision.is-block {
+    color: var(--muted);
+}
+
+.perm-row .dash-row-actions {
+    margin-inline-end: -4px;
+}
+
+/* --- Profile and Identity -------------------------------------------------------------- */
+
+.dash-card-body.prof {
+    gap: 10px;
+    overflow: hidden;
+}
+
+.prof-line,
+.prof-compact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.prof-compact {
+    flex: 1;
+}
+
+.prof-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.prof-name {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.prof-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.prof-avatar.is-identity {
+    background-color: var(--control);
+    color: var(--body);
+}
+
+.prof-private {
+    align-self: flex-start;
+    margin-top: auto;
+}
+
+.prof-identities {
+    margin: 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--separator-soft);
+    overflow-y: auto;
+}
+
+.prof-identity {
+    min-height: 24px;
+    font-size: 12.5px;
+}
+
+.prof-lines {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+}
+
+.dash-card[data-tier="expanded"] .prof-lines {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dash-card[data-tier="expanded"] .prof-private {
+    margin-top: 0;
+}
+
+/* On a two-column board the tile is wide but short, so the two lines sit side by side. */
+.dash-card[data-narrow="true"][data-tier="default"] .prof-lines {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* --- Browser Health -------------------------------------------------------------------- */
+
+.dash-card-body.health {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.health-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.health-figures {
+    display: flex;
+    gap: 22px;
+    margin: 0;
+}
+
+.health-figure {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.health-figure-value {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+
+.dash-card[data-tier="compact"] .health-figures {
+    align-items: baseline;
+    gap: 16px;
+}
+
+.dash-card[data-tier="compact"] .health-figure {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.dash-card[data-tier="compact"] .health-refresh {
+    display: none;
+}
+
+.health-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.health-note {
+    padding: 2px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.health-row {
+    gap: 12px;
+    font-size: 12.5px;
+}
+
+.health-title {
+    flex: 1 1 0;
+}
+
+.health-meta {
+    flex: 0 1 auto;
+    font-size: 12px;
+    text-align: end;
+}
+
+.health-row .dash-row-actions {
+    margin-inline-end: -4px;
+}
+
+/* --- Calendar and Countdowns ----------------------------------------------------------- */
+
+.dash-card-body.cal {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 16px;
+    overflow: hidden;
+}
+
+.dash-card[data-tier="compact"] .dash-card-body.cal {
+    display: flex;
+    flex-direction: column;
+}
+
+.cal-today {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.cal-today-day {
+    font-size: 44px;
+    font-weight: 300;
+    line-height: 1;
+    color: var(--tint-ink);
+}
+
+.cal-today-date {
+    color: var(--body);
+    font-size: 13px;
+}
+
+.cal-next {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-top: auto;
+    padding-top: 8px;
+    border-top: 1px solid var(--separator-soft);
+    color: var(--tint-ink);
+    font-size: 12.5px;
+}
+
+.cal-next-title {
+    flex: 1;
+    color: var(--text);
+}
+
+.cal-next-when {
+    flex-shrink: 0;
+}
+
+.cal-month {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.cal-nav {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-shrink: 0;
+}
+
+.cal-month-label {
+    flex: 1;
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.cal-nav .dash-btn {
+    color: var(--muted);
+}
+
+.cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-rows: 26px;
+    align-content: start;
+    min-height: 0;
+    justify-items: center;
+    align-items: center;
+}
+
+.cal-dow {
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.cal-cell {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--body);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.cal-cell:hover {
+    background-color: var(--control);
+}
+
+.cal-cell:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.cal-cell.is-today {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-weight: 700;
+}
+
+.cal-dot {
+    position: absolute;
+    bottom: 2px;
+    left: 50%;
+    width: 4px;
+    height: 4px;
+    margin-left: -2px;
+    border-radius: 50%;
+    background-color: var(--tint);
+}
+
+.dash-card[data-tier="expanded"] .cal-grid {
+    grid-auto-rows: 34px;
+}
+
+.cal-nav .dash-btn {
+    font-size: 17px;
+    line-height: 1;
+}
+
+.dash-card[data-tier="expanded"] .cal-cell {
+    width: 32px;
+    height: 32px;
+    font-size: 13px;
+}
+
+.dash-card[data-tier="expanded"] .cal-dot {
+    bottom: 3px;
+}
+
+.cal-side {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.cal-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.cal-empty {
+    padding: 4px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.cal-item {
+    gap: 8px;
+}
+
+.cal-item-title {
+    flex: 1 1 0;
+}
+
+.cal-item-when {
+    flex-shrink: 0;
+    color: var(--tint-ink);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.cal-item.is-past .cal-item-title,
+.cal-item.is-past .cal-item-when {
+    color: var(--muted);
+    font-weight: 400;
+}
+
+.cal-item .dash-row-actions {
+    margin-inline-end: -4px;
+}
+
+.cal-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.dashboard-page .cal-add-title {
+    grid-column: 1 / -1;
+}
+
+.dashboard-page .cal-add-date {
+    min-width: 0;
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+/* --- Habit Tracker --------------------------------------------------------------------- */
+
+.dash-card-body.habits {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.habits-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.dashboard-page .habits-add-input {
+    flex: 1;
+}
+
+.habits-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.habits-empty {
+    padding: 4px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.habit {
+    gap: 10px;
+    min-height: 36px;
+}
+
+.habit-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--control);
+    color: transparent;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.habit-toggle:hover {
+    background-color: var(--control-hover);
+    color: var(--muted);
+}
+
+.habit-toggle[aria-pressed="true"],
+.habit-toggle[aria-pressed="true"]:hover {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.habit-toggle:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.habit-name {
+    flex: 1 1 0;
+}
+
+.habit-streak {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.habit-streak b {
+    color: var(--tint-ink);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.habit-streak.is-zero b {
+    color: var(--muted);
+    font-weight: 500;
+}
+
+.habit-dots {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.habit-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.25px var(--muted);
+    opacity: 0.55;
+}
+
+.habit-dot.done {
+    background-color: var(--tint);
+    box-shadow: none;
+    opacity: 1;
+}
+
+.habit-dot.is-today {
+    opacity: 1;
+    outline: 1.5px solid var(--tint);
+    outline-offset: 1.5px;
+}
+
+/* Expanded: the row wraps and the 28 days sit under it as two rows of 14. */
+.dash-card[data-tier="expanded"] .habit {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-bottom: 8px;
+}
+
+.dash-card[data-tier="expanded"] .habit .habit-dots {
+    flex-basis: 100%;
+    padding-inline-start: 38px;
+}
+
+.habit-dots.is-grid {
+    display: grid;
+    grid-template-columns: repeat(14, 7px);
+    gap: 5px;
+}
+
+.habit .dash-row-actions {
+    margin-inline-end: -4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .habit-toggle {
+        transition: none;
+    }
+}

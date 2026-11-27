@@ -1,0 +1,732 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+/* --- Top Sites ------------------------------------------------------------------------- */
+
+.dash-card-body.sites {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.sites-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+    grid-auto-rows: max-content;
+    gap: 6px 4px;
+    align-content: start;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.sites-grid > .dash-empty-card {
+    grid-column: 1 / -1;
+}
+
+.dash-card[data-tier="compact"] .sites-grid {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
+}
+
+.dash-card[data-tier="compact"] .sites-grid > .dash-empty-card {
+    flex: 1;
+}
+
+.sites-tile {
+    position: relative;
+    min-width: 0;
+}
+
+.sites-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    min-width: 0;
+    padding: 2px 0;
+    border: none;
+    border-radius: 12px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.sites-link:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.sites-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.dash-card[data-tier="compact"] .sites-icon {
+    width: 40px;
+    height: 40px;
+}
+
+.sites-icon img {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    object-fit: contain;
+}
+
+.sites-link:hover .sites-icon {
+    background-color: var(--control-hover);
+}
+
+.sites-pin-mark {
+    position: absolute;
+    inset-block-end: -3px;
+    inset-inline-end: -3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background-color: var(--tint);
+    box-shadow: 0 0 0 2px var(--tile-bg);
+    color: #ffffff;
+}
+
+.sites-name {
+    max-width: 100%;
+    font-size: 12px;
+}
+
+.sites-domain {
+    max-width: 100%;
+    margin-top: -4px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.sites-actions {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    opacity: 0;
+}
+
+.sites-tile:hover .sites-actions,
+.sites-tile:focus-within .sites-actions {
+    opacity: 1;
+}
+
+.sites-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--float);
+    color: var(--body);
+    cursor: pointer;
+}
+
+.sites-action:hover {
+    background-color: var(--control-hover);
+    color: var(--text);
+}
+
+.sites-action:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.sites-add {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-shrink: 0;
+    min-height: 28px;
+    border-top: 1px solid var(--separator-soft);
+    padding-top: 4px;
+}
+
+.sites-add:focus-within {
+    border-top-color: var(--focus-edge);
+}
+
+.sites-add-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    cursor: pointer;
+}
+
+.sites-add-btn:hover {
+    background-color: var(--tint);
+    color: #ffffff;
+}
+
+.sites-add-btn:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.dashboard-page .sites-add-input,
+.dashboard-page .sites-add-input:hover,
+.dashboard-page .sites-add-input:focus {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.dash-card[data-tier="default"] .dash-card-body.sites {
+    gap: 3px;
+}
+
+.dash-card[data-tier="default"] .sites-grid {
+    gap: 2px 4px;
+}
+
+.dash-card[data-tier="default"] .sites-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    font-size: 14px;
+}
+
+.dash-card[data-tier="default"] .sites-link {
+    gap: 3px;
+    padding: 1px 0;
+}
+
+.dash-card[data-tier="default"] .sites-name {
+    font-size: 11.5px;
+}
+
+.dash-card[data-tier="default"] .sites-add {
+    min-height: 24px;
+    padding-top: 2px;
+}
+
+/* --- Search Box ------------------------------------------------------------------------ */
+
+.dash-card-body.search {
+    justify-content: center;
+    gap: 10px;
+    overflow: hidden;
+}
+
+.search-pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    height: 38px;
+    padding: 0 6px 0 14px;
+    border-radius: 999px;
+    background-color: var(--well);
+    box-shadow: inset 0 0 0 1px var(--well-edge);
+}
+
+.search-pill:focus-within {
+    box-shadow:
+        inset 0 0 0 1px var(--tint),
+        0 0 0 3px var(--tint-soft);
+}
+
+.search-lens {
+    color: var(--muted);
+}
+
+.dashboard-page .search-input,
+.dashboard-page .search-input:hover,
+.dashboard-page .search-input:focus {
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+}
+
+.dashboard-page .search-input::placeholder {
+    color: var(--muted);
+}
+
+.search-go {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--tint);
+    color: #ffffff;
+    cursor: pointer;
+}
+
+.search-go:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.search-engines {
+    padding-inline: 4px;
+}
+
+.dashboard-page .search-engine-select {
+    height: 24px;
+    padding: 0 22px 0 10px;
+    border: none;
+    border-radius: 999px;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--body);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.dashboard-page .search-engine-select:hover {
+    background-color: var(--control);
+}
+
+.dashboard-page .search-engine-select:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
+    display: none;
+    appearance: none;
+}
+
+/* --- Entry line shared by Open Tabs, Saved Workspaces and Bookmark Shelf ---------------- */
+
+.list-entry {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-shrink: 0;
+    min-height: 30px;
+    border-bottom: 1px solid var(--separator-soft);
+}
+
+.list-entry:focus-within {
+    border-bottom-color: var(--focus-edge);
+}
+
+.list-entry-glyph {
+    flex-shrink: 0;
+    margin-inline-start: 3px;
+    color: var(--muted);
+}
+
+.list-entry-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    cursor: pointer;
+}
+
+.list-entry-add:hover {
+    background-color: var(--tint);
+    color: #ffffff;
+}
+
+.list-entry-add:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.dashboard-page .list-entry-input,
+.dashboard-page .list-entry-input:hover,
+.dashboard-page .list-entry-input:focus {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.list-entry-input::-webkit-search-cancel-button,
+.list-entry-input::-webkit-search-decoration {
+    display: none;
+    appearance: none;
+}
+
+.list-entry > .dash-btn.ghost {
+    margin-inline-end: -6px;
+}
+
+/* --- Open Tabs ------------------------------------------------------------------------- */
+
+.dash-card-body.tabs,
+.dash-card-body.closed,
+.dash-card-body.spaces,
+.dash-card-body.shelf {
+    gap: 4px;
+    overflow: hidden;
+}
+
+.tabs-list {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.tabs-list .dash-list {
+    margin: 0 -6px;
+}
+
+.tabs-heading {
+    padding: 4px 0 0;
+}
+
+.tabs-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    background-color: var(--control);
+    color: var(--body);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.tabs-title {
+    flex: 1;
+}
+
+.tabs-here {
+    flex-shrink: 0;
+    color: var(--tint-ink);
+}
+
+.tabs-pinned {
+    flex-shrink: 0;
+    color: var(--muted);
+}
+
+.dash-list-item.is-current {
+    background-color: var(--tint-soft);
+}
+
+.dash-list-item.is-current .tabs-title {
+    font-weight: 600;
+}
+
+.dash-list-item.is-current .tabs-mark {
+    background-color: var(--tint);
+    color: #ffffff;
+}
+
+.tabs-close {
+    opacity: 0;
+}
+
+.dash-list-item:hover .tabs-close,
+.dash-list-item:focus-within .tabs-close {
+    opacity: 1;
+}
+
+/* --- Recently Closed ------------------------------------------------------------------- */
+
+.closed-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.closed-list > .dash-empty-card {
+    margin: 0 6px;
+}
+
+.closed-item {
+    min-height: 40px;
+}
+
+.dash-card[data-tier="compact"] .closed-item {
+    min-height: 34px;
+}
+
+.closed-btn {
+    gap: 8px;
+}
+
+.closed-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.closed-title {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.closed-sub {
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.closed-reopen {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.closed-btn:hover .closed-reopen {
+    background-image: var(--hover-overlay);
+}
+
+.closed-btn:disabled {
+    opacity: 0.5;
+}
+
+/* --- Saved Workspaces ------------------------------------------------------------------ */
+
+.spaces-note {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.dash-card[data-tier="compact"] .spaces-note:not(.is-error) {
+    display: none;
+}
+
+.spaces-note.is-error {
+    color: var(--error);
+}
+
+.spaces-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.spaces-list > .dash-empty-card {
+    margin: 0 6px;
+}
+
+.spaces-item {
+    min-height: 36px;
+}
+
+.spaces-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.spaces-name {
+    flex: 1;
+    font-weight: 500;
+}
+
+.spaces-count {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* --- Bookmark Shelf -------------------------------------------------------------------- */
+
+.shelf-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    grid-auto-rows: max-content;
+    gap: 2px 6px;
+    align-content: start;
+    min-height: 0;
+    margin: 0 -6px;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    scrollbar-width: thin;
+}
+
+.shelf-grid > .dash-empty-card {
+    grid-column: 1 / -1;
+    margin: 0 6px;
+}
+
+.shelf-item {
+    min-width: 0;
+}
+
+.shelf-link {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    padding: 3px 6px;
+    border: none;
+    border-radius: 9px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.shelf-link:hover {
+    background-color: var(--control);
+}
+
+.shelf-link:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.shelf-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.shelf-icon img {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    object-fit: contain;
+}
+
+.dash-card[data-tier="compact"] .shelf-grid {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    overflow: hidden;
+}
+
+.dash-card[data-tier="compact"] .shelf-link {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+}
+
+.dash-card[data-tier="compact"] .shelf-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    font-size: 16px;
+}
+
+.dash-card[data-tier="compact"] .shelf-icon img {
+    width: 22px;
+    height: 22px;
+}
+
+.closed-list > .dash-empty-card,
+.spaces-list > .dash-empty-card {
+    flex: none;
+    padding: 6px 0;
+}

@@ -156,6 +156,13 @@ public:
     // the downloads and quits; if a page refuses or the downloads are kept, the quit is canceled and no window closes.
     void quit();
     bool is_quit_in_progress() const { return m_quit_in_progress; }
+    ByteString const& data_directory() const { return m_data_directory; }
+    bool uses_sql_database() const { return m_uses_sql_database; }
+    bool profile_is_temporary() const { return m_profile_is_temporary; }
+    Privacy::NetworkMode privacy_network_mode() const { return m_privacy_network_mode; }
+    URL::URL effective_new_tab_page_url() const;
+    static bool is_configured_new_tab_url(URL::URL const&);
+    BrowserWindow* window_of_view_id(u64 view_id) const { return window_of_view(view_id); }
     struct RestartCommand {
         ByteString executable;
         Vector<ByteString> arguments;
@@ -303,6 +310,7 @@ private:
 
     virtual bool supports_system_menu_bar() const override;
     virtual bool supports_vertical_tabs() const override { return true; }
+    virtual bool supports_new_tab_dashboard() const override { return true; }
     virtual bool supports_client_side_window_decorations() const override
     {
 #if defined(AK_OS_MACOS)
@@ -425,6 +433,8 @@ private:
     Restart m_restart { Restart::None };
     bool m_installation_replaced { false };
     bool m_profile_is_temporary { false };
+    ByteString m_data_directory;
+    bool m_uses_sql_database { false };
     RestartCommand m_restart_command;
 
     struct OpenSSLMismatch {

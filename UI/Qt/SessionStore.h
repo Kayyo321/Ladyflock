@@ -102,6 +102,8 @@ class SessionStore {
 public:
     AK_ALLOC_WITH_KMALLOC;
 
+    static bool is_tab_worth_keeping(URL::URL const&);
+
     enum class IsActive {
         No,
         Yes,
@@ -561,7 +563,6 @@ private:
     void append_closed_tab_unit(PendingTabClose const&);
     void append_closed_window_unit(PendingWindowClose const&);
     ErrorOr<SessionWindowId> default_window();
-    static bool is_tab_worth_keeping(URL::URL const&);
     static u32 max_closed_units(UnitKind);
 
     Optional<PersistedStorage> m_persisted_storage;

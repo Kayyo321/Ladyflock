@@ -928,7 +928,7 @@ void Tab::create_tab_context_menu()
 
     auto* new_tab_action = new QAction(this);
     QObject::connect(new_tab_action, &QAction::triggered, this, [this]() {
-        m_window->new_tab_from_url(Application::settings().new_tab_page_url(), Web::HTML::ActivateTab::Yes, BrowserWindow::TabLocation::after_tab(*this));
+        m_window->new_tab_from_url(Application::the().effective_new_tab_page_url(), Web::HTML::ActivateTab::Yes, BrowserWindow::TabLocation::after_tab(*this));
     });
 
     auto* mute_tab_action = new QAction("&Mute Tab", this);

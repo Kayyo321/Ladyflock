@@ -11,6 +11,7 @@
 #include <LibCore/EventLoop.h>
 #include <LibCore/GeolocationProvider.h>
 #include <LibCore/Promise.h>
+#include <LibURL/InternalURLs.h>
 #include <LibURL/Parser.h>
 #include <LibWebCommon/HTML/AutoplayPolicy.h>
 #include <LibWebView/Application.h>
@@ -234,6 +235,7 @@ void SettingsUI::load_features()
     features.set("menuBar"_string, application.supports_system_menu_bar());
     features.set("primaryPaste"_string, application.supports_clipboard_type(Application::ClipboardType::Selection));
     features.set("verticalTabs"_string, application.supports_vertical_tabs());
+    features.set("newTabDashboard"_string, application.supports_new_tab_dashboard());
     features.set("geolocation"_string, Core::GeolocationProvider::is_available());
 
     async_send_message("loadFeatures"sv, move(features));
@@ -245,6 +247,7 @@ JsonObject SettingsUI::serialize_settings() const
     auto settings = move(settings_json.as_object());
 
     settings.set("defaultNewTabPageURL"sv, Settings::default_new_tab_page_url().serialize());
+    settings.set("dashboardNewTabPageURL"sv, URL::about_dashboard().serialize());
 
     switch (Application::the().default_browser().status()) {
     case DefaultBrowserStatus::Unknown:
@@ -378,7 +381,7 @@ void SettingsUI::complete_first_run(JsonValue const&)
         return;
     }
 
-    async_send_message("firstRunCompleted"sv, settings.new_tab_page_url().serialize());
+    async_send_message("firstRunCompleted"sv, Application::the().effective_new_tab_page_url().serialize());
 }
 
 void SettingsUI::make_default_browser(JsonValue const&)

@@ -11,6 +11,7 @@
 #include <AK/JsonValue.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/String.h>
+#include <Hub/HubClientEndpoint.h>
 #include <LibWebView/Forward.h>
 
 namespace Ladybird {
@@ -47,16 +48,18 @@ public:
     AK_ALLOC_WITH_KMALLOC;
 
     using Factory = Function<NonnullOwnPtr<WebUIPage>(u64 web_ui_id, WebView::IsPrivate)>;
+    using ContextFactory = Function<NonnullOwnPtr<WebUIPage>(Hub::WebUIPageContext const&)>;
 
     // Makes about:<host> a page of the UI, which opens with a page made by the factory.
     void register_page(String host, String title, Factory);
+    void register_page(String host, String title, ContextFactory);
 
-    void page_opened(u64 web_ui_id, String const& host, WebView::IsPrivate);
+    void page_opened(Hub::WebUIPageContext const&);
     void page_received_message(u64 web_ui_id, String const& name, JsonValue const& data);
     void page_closed(u64 web_ui_id);
 
 private:
-    HashMap<String, Factory> m_factories;
+    HashMap<String, ContextFactory> m_factories;
     HashMap<u64, NonnullOwnPtr<WebUIPage>> m_pages;
 };
 

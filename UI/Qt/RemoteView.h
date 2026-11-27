@@ -198,6 +198,7 @@ public:
     void commit_text_from_input_method(Utf16String const& text, i32 replacement_start = 0, i32 replacement_length = 0) { HubConnection::the().async_view_commit_text_from_input_method(view_id(), text, replacement_start, replacement_length); }
     InputMethodState const& input_method_state() const { return m_state.input_method_state; }
     Web::HTML::MuteState page_mute_state() const { return m_state.page_mute_state; }
+    String const& identity_id() const { return m_state.identity_id; }
     void toggle_page_mute_state() { HubConnection::the().async_view_toggle_page_mute_state(view_id()); }
     bool tab_indicator_visible(WebView::TabIndicator indicator) const
     {

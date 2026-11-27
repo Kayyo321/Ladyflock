@@ -59,6 +59,7 @@
 #include <UI/Qt/Bookmarks.h>
 #include <UI/Qt/ChromeLayout.h>
 #include <UI/Qt/CompositorLayersWindow.h>
+#include <UI/Qt/DashboardPage.h>
 #include <UI/Qt/DownloadsPage.h>
 #include <UI/Qt/EventLoopImplementationQt.h>
 #include <UI/Qt/ExternalURLHandler.h>
@@ -797,6 +798,7 @@ Hub::UIInfo Application::current_ui_info() const
     info.supports_selection_clipboard = supports_clipboard_type(ClipboardType::Selection);
     info.supports_system_menu_bar = supports_system_menu_bar();
     info.supports_vertical_tabs = supports_vertical_tabs();
+    info.supports_new_tab_dashboard = supports_new_tab_dashboard();
     info.supports_private_browsing_windows = supports_private_browsing_windows();
     info.supports_client_side_window_decorations = supports_client_side_window_decorations();
     info.reports_scroll_momentum = platform_reports_scroll_momentum();
@@ -963,6 +965,8 @@ ErrorOr<void> Application::connect_to_hub(Main::Arguments const& arguments)
     m_hub_connection->did_initialize();
 
     m_settings = make<WebView::Settings>(WebView::Settings::create_from_json(TRY(JsonValue::from_string(state.settings_json))));
+    m_data_directory = state.data_directory;
+    m_uses_sql_database = state.uses_sql_database;
     create_session_store(state.data_directory, state.persists_sessions);
     create_history_store(state.data_directory, state.uses_sql_database);
     m_bookmark_store = make<BookmarkStore>(BookmarkStore::create(LexicalPath::join(state.config_directory, "Bookmarks.json"sv).string(), *m_favicon_store));
@@ -1297,8 +1301,10 @@ void Application::create_platform_actions()
 
     m_settings = make<WebView::Settings>(WebView::Settings::create_from_json(WebView::Application::settings().serialize_json()));
     m_profile_is_temporary = WebView::Application::profile().is_temporary();
-    create_session_store(WebView::Application::profile().paths().data, hub.persists_sessions());
-    create_history_store(WebView::Application::profile().paths().data, WebView::Application::browser_options().disable_sql_database == WebView::DisableSQLDatabase::No);
+    m_data_directory = WebView::Application::profile().paths().data;
+    m_uses_sql_database = WebView::Application::browser_options().disable_sql_database == WebView::DisableSQLDatabase::No;
+    create_session_store(m_data_directory, hub.persists_sessions());
+    create_history_store(m_data_directory, m_uses_sql_database);
     m_bookmark_store = make<BookmarkStore>(BookmarkStore::create(LexicalPath::join(WebView::Application::profile().paths().config, "Bookmarks.json"sv).string(), *m_favicon_store));
 
     m_application_actions = make<ApplicationActions>(ApplicationActions::PageOptions {
@@ -1341,6 +1347,9 @@ void Application::create_platform_actions()
     });
     m_web_ui_pages->register_page("version"_string, "Version"_string, [](u64 web_ui_id, WebView::IsPrivate) -> NonnullOwnPtr<WebUIPage> {
         return make<VersionPage>(web_ui_id);
+    });
+    m_web_ui_pages->register_page("dashboard"_string, "New Tab"_string, [](Hub::WebUIPageContext const& context) -> NonnullOwnPtr<WebUIPage> {
+        return make<DashboardPage>(context);
     });
 
     m_open_task_manager_action = Action::create("Open Task Manager"sv, ActionID::OpenTaskManager, [this]() {
@@ -1495,11 +1504,25 @@ Optional<String> Application::system_font_family() const
 #endif
 }
 
+URL::URL Application::effective_new_tab_page_url() const
+{
+    auto const& configured = m_settings->new_tab_page_url();
+    if (configured == URL::about_dashboard() && !supports_new_tab_dashboard())
+        return URL::about_newtab();
+    return configured;
+}
+
+bool Application::is_configured_new_tab_url(URL::URL const& url)
+{
+    auto effective = Application::the().effective_new_tab_page_url();
+    return url == effective || url == URL::about_newtab() || url == URL::about_dashboard();
+}
+
 BrowserWindow& Application::new_window(Vector<URL::URL> const& initial_urls, WindowConfiguration const& configuration, BrowserWindow::IsPopupWindow is_popup_window, WebView::IsPrivate is_private, Optional<u64> hub_view_id, ShowWindow show_window, Optional<Web::HTML::PreparedNavigationDescriptor> initial_navigation)
 {
     auto* window = new BrowserWindow(initial_urls, is_popup_window, is_private, hub_view_id);
 
-    auto should_focus_location_editor = initial_urls.size() == 1 && initial_urls.first() == Application::settings().new_tab_page_url();
+    auto should_focus_location_editor = initial_urls.size() == 1 && is_configured_new_tab_url(initial_urls.first());
     if (should_focus_location_editor) {
         if (auto* tab = window->current_tab())
             tab->set_url_is_hidden(true);
@@ -1731,6 +1754,7 @@ void Application::did_clear_history_since(UnixDateTime since)
             dbgln("Unable to remove closed session entries: {}", result.error());
     }
     on_recently_closed_entries_changed();
+    DashboardPage::notify_history_cleared();
 }
 
 void Application::quit_for_signal()
@@ -1809,7 +1833,7 @@ void Application::offer_to_restore_unexpectedly_closed_tabs(BrowserWindow& windo
         QPointer<Tab> new_tab_page;
         if (window && window->tab_count() == 1) {
             auto* tab = window->tab_at(0);
-            if (tab->view().url() == Application::settings().new_tab_page_url() && !tab->view().navigate_back_action().enabled())
+            if (is_configured_new_tab_url(tab->view().url()) && !tab->view().navigate_back_action().enabled())
                 new_tab_page = tab;
         }
 
@@ -1831,10 +1855,9 @@ void Application::offer_to_restore_unexpectedly_closed_tabs(BrowserWindow& windo
 
 void Application::open_startup_tabs(BrowserWindow& window, Vector<URL::URL> const& urls)
 {
-    auto const& new_tab_page_url = Application::settings().new_tab_page_url();
     for (size_t i = 0; i < urls.size(); ++i) {
         auto& tab = window.new_tab_from_url(urls[i], i == 0 ? Web::HTML::ActivateTab::Yes : Web::HTML::ActivateTab::No, BrowserWindow::TabLocation::end());
-        if (urls.size() == 1 && urls[i] == new_tab_page_url) {
+        if (urls.size() == 1 && is_configured_new_tab_url(urls[i])) {
             tab.set_url_is_hidden(true);
             QTimer::singleShot(0, &window, [tab = QPointer<Tab>(&tab)] {
                 if (tab)
@@ -1885,7 +1908,7 @@ WindowConfiguration Application::configuration_for_new_window() const
 void Application::open_new_tab()
 {
     if (!m_active_window) {
-        new_window({ Application::settings().new_tab_page_url() });
+        new_window({ effective_new_tab_page_url() });
         return;
     }
 
@@ -1894,8 +1917,7 @@ void Application::open_new_tab()
 
 void Application::open_new_window(WebView::IsPrivate is_private)
 {
-    // FIXME: Create a new tab page specific to private windows.
-    new_window({ Application::settings().new_tab_page_url() }, configuration_for_new_window(), BrowserWindow::IsPopupWindow::No, is_private);
+    new_window({ effective_new_tab_page_url() }, configuration_for_new_window(), BrowserWindow::IsPopupWindow::No, is_private);
 }
 
 void Application::restart_private_browsing_session()
@@ -1990,7 +2012,7 @@ void Application::cancel_private_session_restart()
 void Application::focus_location_editor()
 {
     if (!m_active_window) {
-        new_window({ Application::settings().new_tab_page_url() });
+        new_window({ effective_new_tab_page_url() });
         return;
     }
 
@@ -2627,7 +2649,7 @@ void Application::display_update_check_result(WebView::UpdateCheckResult::Kind k
     if (!window && trigger == WebView::UpdateCheckTrigger::Automatic)
         return;
     if (!window)
-        window = &new_window({ Application::settings().new_tab_page_url() }, configuration_for_new_window());
+        window = &new_window({ effective_new_tab_page_url() }, configuration_for_new_window());
 
     Vector<PageCard::Button> buttons;
     // A version skipped for the debug action would also be skipped when it is offered for real.
@@ -3145,6 +3167,7 @@ void Application::did_change_gpu_painting(bool enabled)
 void Application::did_change_privacy_network_mode(Privacy::NetworkMode mode)
 {
     m_privacy_network_mode = mode;
+    DashboardPage::notify_privacy_network_mode_changed();
 #if defined(LADYBIRD_HAS_SPARKLE)
     if (privacy_denies_direct_egress()) {
         if (m_software_updater) {

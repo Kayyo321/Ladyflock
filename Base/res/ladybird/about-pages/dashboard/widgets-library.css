@@ -1,0 +1,1135 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+/* --- Recent History -------------------------------------------------------------------- */
+
+.dash-card-body.hist {
+    gap: 4px;
+    overflow: hidden;
+}
+
+/* A quiet filter line, like the entry row of Quick Tasks. */
+.hist-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    min-height: 30px;
+    margin: 0;
+    border-bottom: 1px solid var(--separator-soft);
+    color: var(--muted);
+    cursor: text;
+}
+
+.hist-filter:focus-within {
+    border-bottom-color: var(--focus-edge);
+}
+
+.dashboard-page .hist-filter-input,
+.dashboard-page .hist-filter-input:hover,
+.dashboard-page .hist-filter-input:focus {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    outline: none;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.dashboard-page .hist-filter-input::placeholder {
+    color: var(--muted);
+}
+
+.hist-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.hist-day {
+    padding: 8px 6px 2px;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+.hist-day:first-child {
+    padding-top: 2px;
+}
+
+.hist-item {
+    min-height: 28px;
+    padding-block: 3px;
+}
+
+.hist-favicon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    overflow: hidden;
+    border-radius: 5px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.hist-favicon img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+}
+
+.hist-title {
+    flex: 0 1 auto;
+}
+
+.hist-host {
+    flex: 1 1 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.hist-time {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+/* The time gives way to the remove action when the row is pointed at or focused. */
+.hist-item .dash-row-actions {
+    display: none;
+}
+
+.hist-item:hover .dash-row-actions,
+.hist-item:focus-within .dash-row-actions {
+    display: flex;
+}
+
+.hist-item:hover .hist-time,
+.hist-item:focus-within .hist-time {
+    display: none;
+}
+
+.hist-empty {
+    padding: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.hist-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+    margin-inline: -6px;
+}
+
+.hist-footer > :last-child {
+    margin-inline-start: auto;
+}
+
+/* --- Downloads ------------------------------------------------------------------------- */
+
+.dash-card-body.dl {
+    gap: 6px;
+    overflow: hidden;
+}
+
+.dl-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.dl-bar > .dash-btn {
+    margin-inline-end: -6px;
+}
+
+/* The transfer that matters most right now: a tinted ring, its name, and what can be done. */
+.dl-hero {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    min-width: 0;
+}
+
+.dl-dial {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.dl-dial-inner {
+    position: absolute;
+    display: flex;
+    color: var(--tint-ink);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.dl-dial.is-done {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.dl-hero[data-status="failed"] .dl-dial.is-done,
+.dl-hero[data-status="canceled"] .dl-dial.is-done {
+    background-color: var(--control);
+    color: var(--muted);
+}
+
+.dl-hero[data-status="paused"] .dash-ring {
+    opacity: 0.55;
+}
+
+.dl-hero-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.dl-hero-name {
+    display: flex;
+    min-width: 0;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.dl-hero-name-tail {
+    flex-shrink: 0;
+    white-space: pre;
+}
+
+.dl-hero-sub {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.dl-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+    margin-inline-end: -4px;
+}
+
+.dash-card[data-tier="compact"] .dl-hero {
+    gap: 10px;
+}
+
+/* Same sizes as the ring drawn for an active download at each tier. */
+.dash-card[data-tier="compact"] .dl-dial.is-done {
+    width: 34px;
+    height: 34px;
+}
+
+.dash-card[data-tier="expanded"] .dl-dial.is-done {
+    width: 64px;
+    height: 64px;
+}
+
+.dash-card[data-tier="compact"] .dl-hero-name {
+    font-size: 13px;
+}
+
+.dash-card[data-tier="expanded"] .dl-hero {
+    gap: 16px;
+    padding-block: 4px;
+}
+
+.dash-card[data-tier="expanded"] .dl-hero-name {
+    font-size: 15px;
+}
+
+.dash-card[data-tier="expanded"] .dl-dial-inner {
+    font-size: 15px;
+}
+
+.dl-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.dl-hero:not(.hidden) + .dl-list:not(:empty) {
+    padding-top: 4px;
+    border-top: 1px solid var(--separator-soft);
+}
+
+.dl-item {
+    min-height: 28px;
+    padding-block: 2px;
+}
+
+.dl-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: var(--control);
+    color: var(--muted);
+}
+
+.dl-item[data-status="completed"] .dl-mark {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.dl-item-sub {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+/* Row actions sit over the size and stay focusable; the size steps aside when they show. */
+.dl-item {
+    position: relative;
+}
+
+.dl-item .dash-row-actions {
+    position: absolute;
+    inset-inline-end: 4px;
+    top: 50%;
+    translate: 0 -50%;
+}
+
+.dl-item:hover .dl-item-sub,
+.dl-item:focus-within .dl-item-sub {
+    visibility: hidden;
+}
+
+.dl-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+/* --- Reading Queue --------------------------------------------------------------------- */
+
+.dash-card-body.rq {
+    gap: 4px;
+    overflow: hidden;
+}
+
+.rq-entry {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-shrink: 0;
+    min-height: 30px;
+    border-bottom: 1px solid var(--separator-soft);
+}
+
+.rq-entry:focus-within {
+    border-bottom-color: var(--focus-edge);
+}
+
+.rq-entry-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    cursor: pointer;
+}
+
+.rq-entry-add:hover {
+    background-color: var(--tint);
+    color: #ffffff;
+}
+
+.rq-entry-add:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.dashboard-page .rq-entry-input,
+.dashboard-page .rq-entry-input:hover,
+.dashboard-page .rq-entry-input:focus {
+    min-width: 0;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    outline: none;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.dashboard-page .rq-entry-input::placeholder {
+    color: var(--muted);
+}
+
+.dashboard-page .rq-entry-url {
+    flex: 1 1 0;
+}
+
+/* The optional title sits after a hairline, smaller than the link it names. */
+.dashboard-page .rq-entry-title {
+    flex: 0 1 34%;
+    padding-inline-start: 10px;
+    border-inline-start: 1px solid var(--separator-soft);
+    font-size: 12.5px;
+}
+
+.rq-notice {
+    flex-shrink: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0 0 2px 27px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.rq-notice:empty {
+    display: none;
+}
+
+.rq-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.rq-title {
+    flex: 0 1 auto;
+}
+
+.rq-host {
+    flex: 1 1 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.rq-item.is-read .rq-title {
+    color: var(--muted);
+    text-decoration: line-through;
+}
+
+.rq-empty {
+    padding: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.rq-footer {
+    display: flex;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    margin-inline-end: -6px;
+}
+
+/* --- Now Playing ----------------------------------------------------------------------- */
+
+.dash-card-body.np {
+    overflow: hidden;
+}
+
+.np-face {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    min-height: 0;
+}
+
+/* Nothing playing: a quiet glyph and one line, centred where the controls would be. */
+.np-face.is-idle {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+}
+
+.np-art {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.np-face.is-idle .np-art {
+    background-color: var(--control);
+    color: var(--muted);
+}
+
+.dash-card[data-tier="expanded"] .np-art {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+}
+
+.np-idle-text {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12.5px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.np-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.np-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.np-title {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.dash-card[data-tier="expanded"] .np-title {
+    font-size: 15px;
+}
+
+.np-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.np-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--body);
+    cursor: pointer;
+}
+
+.np-btn:hover {
+    background-color: var(--control);
+    color: var(--text);
+}
+
+.np-btn.np-btn-main {
+    width: 38px;
+    height: 38px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.np-btn.np-btn-main:hover {
+    background-color: var(--tint-soft);
+    background-image: var(--hover-overlay);
+}
+
+.dash-card[data-tier="expanded"] .np-btn.np-btn-main {
+    width: 44px;
+    height: 44px;
+}
+
+.np-btn:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.np-seek-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.np-time {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+/* The box is only as tall as the track so the times line up with it; the thumb overhangs. */
+.dashboard-page .np-seek {
+    flex: 1;
+    min-width: 0;
+    height: 4px;
+    margin: 0;
+}
+
+.dashboard-page .np-seek::slider-track {
+    height: 4px;
+    border-radius: 999px;
+    background-color: var(--control);
+}
+
+.dashboard-page .np-seek::slider-fill {
+    background-color: var(--tint);
+}
+
+.dashboard-page .np-seek::slider-thumb {
+    background-color: var(--tint);
+    box-shadow: 0 0 0 3px var(--tile-bg);
+}
+
+.dashboard-page .np-seek:focus-visible {
+    outline: none;
+}
+
+.dashboard-page .np-seek:focus-visible::slider-thumb {
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.dashboard-page .np-source-select {
+    align-self: flex-start;
+    max-width: 100%;
+    height: 26px;
+    font-size: 12px;
+}
+
+/* --- Network consent (Feed Reader and Weather; also drawn in their Settings dialogs) ---- */
+
+.net-consent {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.net-consent > * {
+    flex-shrink: 0;
+}
+
+/* The disclosure is read before anything is sent, so it is body text, not a caption. */
+.net-consent-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 0;
+    padding: 9px 11px;
+    border-radius: 12px;
+    background-color: var(--tint-softer, var(--control));
+    color: var(--body);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+.net-consent-glyph {
+    display: inline-flex;
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--tint-ink, var(--muted));
+}
+
+.net-consent-text strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.dashboard-page .net-consent-field {
+    width: 100%;
+}
+
+.net-consent-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 0;
+    color: var(--body);
+    font-size: 12.5px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.net-consent-check input {
+    flex-shrink: 0;
+    margin: 0;
+}
+
+.net-consent-error {
+    font-size: 12px;
+}
+
+.net-consent-confirm {
+    align-self: flex-start;
+}
+
+.net-grants {
+    gap: 2px;
+}
+
+/* --- Feed Reader ----------------------------------------------------------------------- */
+
+.dash-card-body.feed {
+    gap: 4px;
+    overflow: hidden;
+}
+
+/* In the tile, the consent form scrolls on its own so the disclosure is never clipped. */
+.feed .feed-setup {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.feed-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.dashboard-page .feed-source {
+    min-width: 0;
+    max-width: 70%;
+    height: 26px;
+    margin-inline-start: -8px;
+    padding-inline-start: 8px;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--body);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.dashboard-page .feed-source:hover {
+    background-color: var(--control);
+}
+
+.feed-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    margin-inline-end: -5px;
+}
+
+.feed-unread-toggle[aria-pressed="true"] {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.feed-status {
+    flex-shrink: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.feed-setup:not(.hidden) ~ .feed-list {
+    display: none;
+}
+
+.feed-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.feed-item {
+    align-items: flex-start;
+    padding-block: 5px;
+}
+
+.feed-link {
+    align-items: flex-start;
+}
+
+.feed-mark {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    margin-top: 6px;
+    border-radius: 50%;
+    background-color: var(--tint);
+}
+
+.feed-item.is-read .feed-mark {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--muted);
+    opacity: 0.6;
+}
+
+.feed-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+/* Up to two lines of headline. */
+.feed-title {
+    max-height: 2.8em;
+    overflow: hidden;
+    color: var(--text);
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.feed-item.is-read .feed-title {
+    color: var(--body);
+    font-weight: 400;
+}
+
+.dash-card[data-tier="compact"] .feed-title {
+    max-height: 1.4em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.feed-meta {
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.feed-excerpt {
+    max-height: 2.9em;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.feed-empty {
+    padding: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.net-consent-words {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.net-consent-words p {
+    margin: 0;
+}
+
+.net-consent-sends strong {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.net-consent-coords {
+    gap: 8px;
+}
+
+.dashboard-page .net-consent-coords .dash-input {
+    width: 100%;
+}
+
+/* --- Weather --------------------------------------------------------------------------- */
+
+.dash-card-body.wx {
+    overflow: hidden;
+}
+
+.wx-face {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.wx-setup {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.wx-face.is-unset {
+    flex-direction: row;
+    align-items: center;
+    gap: 9px;
+}
+
+.wx-unset-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+.wx-unset-text {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.3;
+}
+
+.wx-main {
+    flex: 1;
+    display: flex;
+    gap: 18px;
+    min-height: 0;
+}
+
+.wx-left {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.dash-card[data-tier="default"] .wx-left {
+    flex: 1;
+}
+
+.dash-card[data-tier="expanded"] .wx-left {
+    flex: 0 1 34%;
+}
+
+.wx-now {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* Thinner than the shared figure: the temperature is the whole point of the tile. */
+.dash-card .wx-temp {
+    font-size: 46px;
+    font-weight: 200;
+    line-height: 1;
+}
+
+.dash-card[data-tier="expanded"] .wx-temp {
+    font-size: 54px;
+}
+
+.dash-card[data-tier="compact"] .wx-temp {
+    font-size: 30px;
+    font-weight: 300;
+}
+
+.wx-cond {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.wx-cond-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.wx-cond-glyph {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--tint-ink);
+}
+
+.wx-detail,
+.wx-status {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.wx-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-inline-end: -5px;
+}
+
+/* The attribution is required by the data licence, so it wraps rather than being cut. */
+.wx-attr {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.3;
+}
+
+.wx-temp-unit {
+    margin-inline-start: 1px;
+    vertical-align: 0.85em;
+}
+
+.wx-tools {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+}
+
+.wx-unit {
+    padding: 0 7px;
+}
+
+/* Compact: figure and condition on one line, Refresh at the end. */
+.wx-face.is-compact {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+}
+
+.wx-face.is-compact .wx-now {
+    flex: 1;
+    align-items: center;
+}
+
+.wx-face.is-compact .wx-cond-line {
+    font-size: 12px;
+}
+
+.wx-face.is-compact > .dash-btn {
+    margin-inline-end: -5px;
+}
+
+/* Expanded: the next hours and days as two quiet strips beside the figure. */
+.wx-strips {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    padding-inline-start: 16px;
+    border-inline-start: 1px solid var(--separator-soft);
+}
+
+.wx-strip {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+}
+
+.wx-cell {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    min-width: 0;
+}
+
+.wx-cell-label {
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.wx-cell-glyph {
+    display: inline-flex;
+    color: var(--tint-ink);
+}
+
+.wx-cell-value {
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.wx-lo {
+    color: var(--muted);
+    font-weight: 400;
+}
+
+/* A wide, short tile: the disclosure on the left, the fields beside it. */
+.dash-card[data-tier="expanded"] .wx-setup.net-consent {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-content: start;
+    column-gap: 14px;
+}
+
+.dash-card[data-tier="expanded"] .wx-setup.net-consent > .net-consent-text {
+    grid-row: 1 / span 6;
+    align-self: start;
+}
+
+.dash-card[data-tier="expanded"] .wx-setup.net-consent > .net-consent-confirm {
+    justify-self: start;
+}
+
+.dash-card[data-tier="expanded"] .wx-setup.net-consent > :not(.net-consent-text) {
+    grid-column: 2;
+}

@@ -1678,7 +1678,7 @@ static bool is_new_tab_page(URL::URL const& url, WebView::Settings const& settin
 {
     if (url.scheme() != "about"sv)
         return false;
-    if (url == URL::about_newtab())
+    if (url == URL::about_newtab() || url == URL::about_dashboard())
         return true;
     // NB: Web content can write into about:blank and about:srcdoc, so an empty field there would let a page pass itself
     //     off as a new tab, even when one of them is chosen as the new tab page.

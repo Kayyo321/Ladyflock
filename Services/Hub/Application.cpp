@@ -564,6 +564,15 @@ bool Application::supports_vertical_tabs() const
     return WebView::Application::supports_vertical_tabs();
 }
 
+bool Application::supports_new_tab_dashboard() const
+{
+    if (m_host)
+        return m_host->supports_new_tab_dashboard();
+    if (auto const* info = ui_info())
+        return info->supports_new_tab_dashboard;
+    return WebView::Application::supports_new_tab_dashboard();
+}
+
 bool Application::supports_private_browsing_windows() const
 {
     if (m_host)

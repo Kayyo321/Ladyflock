@@ -31,6 +31,8 @@ add_library(ladybird_impl STATIC
     CompositorLayersWindow.cpp
     ContextMenus.cpp
     CrashReportReviewWidget.cpp
+    DashboardPage.cpp
+    DashboardStore.cpp
     DevToolsBanner.cpp
     ExtensionButtons.cpp
     ElidedLabel.cpp

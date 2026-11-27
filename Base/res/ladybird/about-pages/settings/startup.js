@@ -1,10 +1,39 @@
 const restorePreviousSession = document.querySelector("#restore-previous-session");
+const newTabPageMode = document.querySelector("#new-tab-page-mode");
+const newTabPageModeDashboardOption = document.querySelector("#new-tab-page-mode-dashboard");
+const newTabPagePreviewDashboard = document.querySelector("#new-tab-page-preview-dashboard");
 const newTabPageURL = document.querySelector("#new-tab-page-url");
 const newTabPageURLReset = document.querySelector("#new-tab-page-url-reset");
 const defaultBrowserGroup = document.querySelector("#default-browser-group");
 const defaultBrowserLabel = document.querySelector("#default-browser-label");
 const defaultBrowserStatus = document.querySelector("#default-browser-status");
 const makeDefaultBrowser = document.querySelector("#make-default-browser");
+
+let defaultNewTabURL = "about:newtab";
+let dashboardNewTabURL = "about:dashboard";
+let supportsNewTabDashboard = false;
+let lastCustomNewTabURL = "";
+
+const syncNewTabModeControls = url => {
+    if (!newTabPageMode)
+        return;
+
+    const isBlank = !url || url === defaultNewTabURL;
+    const isDashboard = url === dashboardNewTabURL;
+
+    if (supportsNewTabDashboard && isDashboard) {
+        newTabPageMode.value = "dashboard";
+    } else if (isBlank) {
+        newTabPageMode.value = "blank";
+    } else {
+        newTabPageMode.value = "custom";
+        if (url && !isDashboard)
+            lastCustomNewTabURL = url;
+    }
+
+    if (newTabPagePreviewDashboard)
+        newTabPagePreviewDashboard.classList.toggle("hidden", !supportsNewTabDashboard);
+};
 
 const DEFAULT_BROWSER_STATUS = {
     default: "Links from other apps open in Ladybird.",
@@ -45,14 +74,57 @@ const loadSettings = settings => {
     }
 
     if (Object.hasOwn(settings, "defaultNewTabPageURL")) {
+        defaultNewTabURL = settings.defaultNewTabPageURL;
         newTabPageURLReset.classList.remove("hidden");
         newTabPageURL.placeholder = settings.defaultNewTabPageURL;
+    }
+    if (Object.hasOwn(settings, "dashboardNewTabPageURL")) {
+        dashboardNewTabURL = settings.dashboardNewTabPageURL;
     }
     if (Object.hasOwn(settings, "newTabPageURL")) {
         newTabPageURL.classList.remove("error");
         newTabPageURL.value = settings.newTabPageURL;
+        syncNewTabModeControls(settings.newTabPageURL);
     }
 };
+
+const loadStartupFeatures = features => {
+    supportsNewTabDashboard = features?.newTabDashboard === true;
+    if (newTabPageModeDashboardOption) {
+        newTabPageModeDashboardOption.classList.toggle("hidden", !supportsNewTabDashboard);
+        newTabPageModeDashboardOption.hidden = !supportsNewTabDashboard;
+        newTabPageModeDashboardOption.disabled = !supportsNewTabDashboard;
+    }
+    syncNewTabModeControls(newTabPageURL.value);
+};
+
+if (newTabPageMode) {
+    newTabPageMode.addEventListener("change", () => {
+        const mode = newTabPageMode.value;
+        if (mode === "blank") {
+            newTabPageURL.value = defaultNewTabURL;
+            newTabPageURL.dispatchEvent(new Event("change"));
+        } else if (mode === "dashboard" && supportsNewTabDashboard) {
+            newTabPageURL.value = dashboardNewTabURL;
+            newTabPageURL.dispatchEvent(new Event("change"));
+        } else if (mode === "custom") {
+            if (lastCustomNewTabURL) {
+                newTabPageURL.value = lastCustomNewTabURL;
+                newTabPageURL.dispatchEvent(new Event("change"));
+            }
+            newTabPageURL.focus();
+            newTabPageURL.select();
+        }
+    });
+}
+
+if (newTabPagePreviewDashboard) {
+    newTabPagePreviewDashboard.addEventListener("click", () => {
+        if (!supportsNewTabDashboard)
+            return;
+        window.open(dashboardNewTabURL, "_blank", "noopener");
+    });
+}
 
 // The system may ask before it changes the default browser, so the button waits for its answer.
 makeDefaultBrowser.addEventListener("click", () => {
@@ -79,6 +151,7 @@ newTabPageURL.addEventListener("change", () => {
     }
 
     ladybird.sendMessage("setNewTabPageURL", newTabPageURL.value);
+    syncNewTabModeControls(newTabPageURL.value);
     newTabPageURL.classList.add("success");
 
     setTimeout(() => {
@@ -92,7 +165,9 @@ newTabPageURLReset.addEventListener("click", () => {
 });
 
 document.addEventListener("WebUIMessage", event => {
-    if (event.detail.name === "loadSettings") {
+    if (event.detail.name === "loadFeatures") {
+        loadStartupFeatures(event.detail.data);
+    } else if (event.detail.name === "loadSettings") {
         loadSettings(event.detail.data);
     } else if (event.detail.name === "defaultBrowserResult") {
         makeDefaultBrowser.disabled = false;

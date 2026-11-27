@@ -30,6 +30,13 @@ bool WebUIPage::consume_user_activation() const
 
 void WebUIPages::register_page(String host, String title, Factory factory)
 {
+    register_page(move(host), move(title), [factory = move(factory)](Hub::WebUIPageContext const& context) {
+        return factory(context.web_ui_id, context.is_private);
+    });
+}
+
+void WebUIPages::register_page(String host, String title, ContextFactory factory)
+{
     // NB: The omnibox of this process suggests the pages too.
     WebView::WebUI::add_application_page(host, title);
     if (auto* hub = HubConnection::the_if_connected())
@@ -37,10 +44,10 @@ void WebUIPages::register_page(String host, String title, Factory factory)
     m_factories.set(move(host), move(factory));
 }
 
-void WebUIPages::page_opened(u64 web_ui_id, String const& host, WebView::IsPrivate is_private)
+void WebUIPages::page_opened(Hub::WebUIPageContext const& context)
 {
-    if (auto factory = m_factories.get(host); factory.has_value())
-        m_pages.set(web_ui_id, (*factory)(web_ui_id, is_private));
+    if (auto factory = m_factories.get(context.host); factory.has_value())
+        m_pages.set(context.web_ui_id, (*factory)(context));
 }
 
 void WebUIPages::page_received_message(u64 web_ui_id, String const& name, JsonValue const& data)

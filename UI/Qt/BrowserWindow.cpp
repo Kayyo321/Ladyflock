@@ -706,7 +706,7 @@ void BrowserWindow::open_new_tab()
     // NB: With the focus already in the selected tab's address field, its focus ring moves to the new tab's field as it
     //     is, rather than fading in again.
     auto focus_ring_transition = focus_is_in_location_edit_of(*this) ? Tab::FocusRingTransition::Immediate : Tab::FocusRingTransition::FadeIn;
-    auto& tab = new_tab_from_url(Application::settings().new_tab_page_url(), Web::HTML::ActivateTab::Yes, TabLocation::end());
+    auto& tab = new_tab_from_url(Application::the().effective_new_tab_page_url(), Web::HTML::ActivateTab::Yes, TabLocation::end());
     tab.set_url_is_hidden(true);
     tab.focus_location_editor(focus_ring_transition);
 }

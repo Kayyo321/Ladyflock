@@ -480,6 +480,52 @@ ErrorOr<NonnullOwnPtr<HistoryStore>> HistoryStore::create(Database::Database& da
         LEFT JOIN Favicons AS f ON f.hash = h.favicon_hash
         ORDER BY h.last_visited_time DESC, h.url ASC;
     )#"sv));
+    statements.top_entries = TRY(database.prepare_statement(R"#(
+        SELECT
+            h.url,
+            h.title,
+            h.visit_count,
+            h.last_visited_time,
+            f.png_data,
+            h.direct_visit_count,
+            h.last_qualifying_visit_time,
+            h.last_direct_visit_time,
+            h.decayed_visit_score,
+            h.decayed_direct_score,
+            h.score_updated_at
+        FROM (
+            SELECT
+                url,
+                title,
+                visit_count,
+                last_visited_time,
+                favicon_hash,
+                direct_visit_count,
+                last_qualifying_visit_time,
+                last_direct_visit_time,
+                decayed_visit_score,
+                decayed_direct_score,
+                score_updated_at
+            FROM History
+            WHERE identity_id = ?1 AND (url LIKE 'http://%' OR url LIKE 'https://%')
+            ORDER BY
+                decayed_direct_score DESC,
+                decayed_visit_score DESC,
+                direct_visit_count DESC,
+                visit_count DESC,
+                last_visited_time DESC,
+                url ASC
+            LIMIT ?2
+        ) AS h
+        LEFT JOIN Favicons AS f ON f.hash = h.favicon_hash
+        ORDER BY
+            h.decayed_direct_score DESC,
+            h.decayed_visit_score DESC,
+            h.direct_visit_count DESC,
+            h.visit_count DESC,
+            h.last_visited_time DESC,
+            h.url ASC;
+    )#"sv));
     statements.referenced_favicon_hashes = TRY(database.prepare_statement(R"#(
         SELECT DISTINCT favicon_hash
         FROM History
@@ -751,6 +797,25 @@ Vector<HistoryEntry> HistoryStore::list_entries(StringView query, size_t offset,
     return entries;
 }
 
+static Optional<String> top_site_key_for_url(StringView url)
+{
+    auto parsed = URL::Parser::basic_parse(url);
+    if (!parsed.has_value() || !parsed->scheme().is_one_of("http"sv, "https"sv))
+        return {};
+    if (!parsed->host().has_value() || parsed->host()->is_empty_host())
+        return {};
+    if (auto domain = parsed->host()->registrable_domain(); domain.has_value())
+        return domain.release_value();
+    return MUST(String::from_utf8(parsed->serialized_host()));
+}
+
+Vector<HistoryEntry> HistoryStore::top_sites(size_t limit)
+{
+    if (m_is_disabled || limit == 0)
+        return {};
+    return m_storage->top_sites(min(limit, 24uz));
+}
+
 Vector<String> HistoryStore::referenced_favicon_hashes()
 {
     return m_storage->referenced_favicon_hashes();
@@ -945,6 +1010,43 @@ Vector<HistoryEntry> HistoryStore::TransientStorage::list_entries(StringView tit
         entries.unchecked_append(*matches[i]);
 
     return entries;
+}
+
+Vector<HistoryEntry> HistoryStore::TransientStorage::top_sites(size_t limit)
+{
+    Vector<HistoryEntry const*> candidates;
+    candidates.ensure_capacity(m_entries.size());
+    for (auto const& entry : m_entries) {
+        if (top_site_key_for_url(entry.value.url).has_value())
+            candidates.unchecked_append(&entry.value);
+    }
+
+    quick_sort(candidates, [](auto const* left, auto const* right) {
+        if (left->decayed_direct_score != right->decayed_direct_score)
+            return left->decayed_direct_score > right->decayed_direct_score;
+        if (left->decayed_visit_score != right->decayed_visit_score)
+            return left->decayed_visit_score > right->decayed_visit_score;
+        if (left->direct_visit_count != right->direct_visit_count)
+            return left->direct_visit_count > right->direct_visit_count;
+        if (left->visit_count != right->visit_count)
+            return left->visit_count > right->visit_count;
+        if (left->last_visited_time != right->last_visited_time)
+            return left->last_visited_time > right->last_visited_time;
+        return left->url < right->url;
+    });
+
+    Vector<HistoryEntry> results;
+    HashTable<String> seen_sites;
+    for (auto const* candidate : candidates) {
+        if (results.size() >= limit)
+            break;
+        auto site_key = top_site_key_for_url(candidate->url);
+        if (!site_key.has_value() || seen_sites.contains(*site_key))
+            continue;
+        seen_sites.set(site_key.release_value());
+        results.append(*candidate);
+    }
+    return results;
 }
 
 void HistoryStore::TransientStorage::record_omnibox_engagement(OmniboxEngagement const& engagement, UnixDateTime used_at)
@@ -1211,6 +1313,50 @@ Vector<HistoryEntry> HistoryStore::PersistedStorage::list_entries(StringView tit
         static_cast<i64>(offset));
 
     return entries;
+}
+
+Vector<HistoryEntry> HistoryStore::PersistedStorage::top_sites(size_t limit)
+{
+    Vector<HistoryEntry> results;
+    results.ensure_capacity(limit);
+    HashTable<String> seen_sites;
+    auto candidate_limit = min(max(limit * 8uz, 96uz), 256uz);
+
+    m_database->execute_statement(
+        m_statements.top_entries,
+        [&](auto statement_id) -> ErrorOr<void> {
+            if (results.size() >= limit)
+                return {};
+            auto url = m_database->result_column<String>(statement_id, 0);
+            auto site_key = top_site_key_for_url(url);
+            if (!site_key.has_value() || seen_sites.contains(*site_key))
+                return {};
+            auto visit_count = m_database->result_column<i64>(statement_id, 2);
+            auto direct_visit_count = m_database->result_column<i64>(statement_id, 5);
+            if (visit_count < 0 || direct_visit_count < 0)
+                return {};
+            seen_sites.set(site_key.release_value());
+            auto title = m_database->result_column<String>(statement_id, 1);
+            auto favicon_png = m_database->result_column<ByteBuffer>(statement_id, 4);
+            results.append(HistoryEntry {
+                .url = move(url),
+                .title = title.is_empty() ? Optional<String> {} : Optional<String> { move(title) },
+                .favicon_png = favicon_png.is_empty() ? OptionalNone {} : Optional<ByteBuffer> { move(favicon_png) },
+                .visit_count = visit_count,
+                .direct_visit_count = direct_visit_count,
+                .last_visited_time = m_database->result_column<UnixDateTime>(statement_id, 3),
+                .last_qualifying_visit_time = m_database->result_column<UnixDateTime>(statement_id, 6),
+                .last_direct_visit_time = m_database->result_column<UnixDateTime>(statement_id, 7),
+                .decayed_visit_score = m_database->result_column<double>(statement_id, 8),
+                .decayed_direct_score = m_database->result_column<double>(statement_id, 9),
+                .score_updated_at = m_database->result_column<UnixDateTime>(statement_id, 10),
+            });
+            return {};
+        },
+        m_identity_id,
+        static_cast<i64>(candidate_limit));
+
+    return results;
 }
 
 Vector<String> HistoryStore::PersistedStorage::referenced_favicon_hashes()

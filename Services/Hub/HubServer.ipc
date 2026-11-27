@@ -143,6 +143,16 @@ endpoint HubServer
     add_web_ui_page(String host, String title) =|
     send_web_ui_message(u64 web_ui_id, String name, JsonValue data) =|
     web_ui_consume_user_activation(u64 web_ui_id) => (bool consumed)
+    web_ui_privacy_summary(u64 web_ui_id) => (JsonValue summary)
+    web_ui_extensions_snapshot(u64 web_ui_id) => (JsonValue snapshot)
+    web_ui_set_extension_enabled(u64 web_ui_id, String extension_id, bool enabled) => (JsonValue result)
+    web_ui_open_extension_options(u64 web_ui_id, String extension_id) => (bool opened)
+    web_ui_permissions_snapshot(u64 web_ui_id) => (JsonValue snapshot)
+    web_ui_revoke_site_permission(u64 web_ui_id, String origin, String permission_name, u64 expected_generation) => (JsonValue result)
+    web_ui_identities_snapshot(u64 web_ui_id) => (JsonValue snapshot)
+    web_ui_media_sessions_snapshot(u64 web_ui_id) => (JsonValue snapshot)
+    web_ui_media_session_action(u64 web_ui_id, u64 target_view_id, String action, Optional<double> seek_time) => (bool ok)
+    web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, String kind, String target, u64 expected_policy_epoch) =|
     fetch_search_suggestions(u64 request_id, String engine_name, String query, WebView::IsPrivate is_private) =|
     post_report(u64 request_id, URL::URL url, Vector<HTTP::Header> headers, ByteString body) =|
     stop_request(u64 request_id) =|

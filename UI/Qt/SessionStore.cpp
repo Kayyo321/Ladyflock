@@ -1572,7 +1572,7 @@ bool SessionStore::is_tab_worth_keeping(URL::URL const& url)
 {
     if (url.scheme().is_empty())
         return false;
-    return url != URL::about_blank() && url != URL::about_newtab();
+    return url != URL::about_blank() && url != URL::about_newtab() && url != URL::about_dashboard();
 }
 
 u32 SessionStore::max_closed_units(UnitKind kind)

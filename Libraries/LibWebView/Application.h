@@ -152,9 +152,12 @@ public:
 
     virtual bool supports_system_menu_bar() const { return false; }
     virtual bool supports_vertical_tabs() const { return false; }
+    virtual bool supports_new_tab_dashboard() const { return false; }
     virtual bool supports_private_browsing_windows() const { return false; }
     virtual bool supports_client_side_window_decorations() const { return false; }
     virtual bool supports_picture_in_picture() const;
+
+    URL::URL effective_new_tab_page_url() const;
 
     // Returns true if the platform sends momentum scroll events after a touchpad flick.
     // If it does not, the compositor makes the fling.

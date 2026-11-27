@@ -6,26 +6,39 @@
 
 #include <AK/AnyOf.h>
 #include <AK/Array.h>
+#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
+#include <AK/Math.h>
+#include <AK/QuickSort.h>
 #include <Hub/Application.h>
 #include <Hub/ConnectionFromUI.h>
 #include <Hub/Proxies.h>
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/Timer.h>
 #include <LibHTTP/HeaderList.h>
 #include <LibImageDecoderClient/Client.h>
+#include <LibPrivacy/Identity/Types.h>
 #include <LibRequests/RequestClient.h>
+#include <LibURL/Parser.h>
 #include <LibWebCommon/Loader/UserAgent.h>
+#include <LibWebCommon/Permissions/Permissions.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CrashReportStore.h>
 #include <LibWebView/DefaultBrowser.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
+#include <LibWebView/IdentityManager.h>
 #include <LibWebView/ImageDecoderManager.h>
+#include <LibWebView/MediaSessionCoordinator.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/PageTranslation.h>
+#include <LibWebView/PermissionManager.h>
+#include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/ProcessSnapshot.h>
 #include <LibWebView/ReportSubmission.h>
+#include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Settings.h>
 #include <LibWebView/TabPerformanceMonitor.h>
 #include <LibWebView/UpdateCheck.h>
@@ -47,7 +60,20 @@ ConnectionFromUI::ConnectionFromUI(NonnullOwnPtr<IPC::Transport> transport)
         async_settings_changed(settings.serialized().to_byte_string(), m_last_applied_settings_change_id);
     };
     WebView::ApplicationWebUI::set_callbacks({
-        .on_open = [this](u64 id, String const& host, WebView::IsPrivate is_private) { async_web_ui_opened(id, host, is_private); },
+        .on_open = [this](WebView::ApplicationWebUIContext const& ctx) {
+            async_web_ui_opened(Hub::WebUIPageContext {
+                .web_ui_id = ctx.web_ui_id,
+                .document_generation = ctx.document_generation,
+                .view_id = ctx.view_id,
+                .browsing_session_id = ctx.browsing_session_id,
+                .host = ctx.host,
+                .is_private = ctx.is_private,
+                .identity_id = ctx.identity_id,
+                .identity_name = ctx.identity_name,
+                .is_ephemeral = ctx.is_ephemeral,
+                .persists_history = ctx.persists_history,
+            });
+        },
         .on_message = [this](u64 id, String name, JsonValue data) { async_web_ui_message(id, move(name), move(data)); },
         .on_close = [this](u64 id) { async_web_ui_closed(id); },
     });
@@ -202,6 +228,7 @@ static DownloadState state_of_download(WebView::FileDownloader::Download const& 
     DownloadState state;
     state.id = download.id;
     state.is_private = download.is_private;
+    state.identity_id = download.identity_id;
     state.url = download.url;
     state.destination = download.destination.string();
     state.status = download.status;
@@ -610,6 +637,576 @@ Messages::HubServer::WebUiConsumeUserActivationResponse ConnectionFromUI::web_ui
     return web_ui && web_ui->consume_user_activation();
 }
 
+static bool is_public_https_dashboard_destination(URL::URL const& url)
+{
+    if (url.scheme() != "https"sv)
+        return false;
+    if (!url.username().is_empty() || !url.password().is_empty())
+        return false;
+    if (!url.host().has_value() || url.host()->is_empty_host())
+        return false;
+
+    auto const& host = *url.host();
+    if (host.is_loopback_or_localhost())
+        return false;
+
+    if (host.has<IPv4Address>()) {
+        auto ip = host.get<IPv4Address>();
+        u8 a = ip[0];
+        u8 b = ip[1];
+        // Reject 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+        // 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4 (multicast), 240.0.0.0/4 (reserved).
+        if (a == 0 || a == 10 || a == 127 || a >= 224)
+            return false;
+        if (a == 100 && (b >= 64 && b <= 127))
+            return false;
+        if (a == 169 && b == 254)
+            return false;
+        if (a == 172 && (b >= 16 && b <= 31))
+            return false;
+        if (a == 192 && b == 168)
+            return false;
+        return true;
+    }
+
+    if (host.has<IPv6Address>()) {
+        auto ip = host.get<IPv6Address>();
+        if (ip.is_zero() || ip == IPv6Address::loopback() || ip.is_ipv4_mapped())
+            return false;
+        u16 first = ip[0];
+        // fc00::/7 ULA, fe80::/10 link-local, ff00::/8 multicast
+        if ((first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 || (first & 0xff00) == 0xff00)
+            return false;
+        return true;
+    }
+
+    auto serialized = url.serialized_host();
+    if (serialized.is_empty() || !serialized.contains('.'))
+        return false;
+    if (serialized.ends_with(".local"sv, CaseSensitivity::CaseInsensitive)
+        || serialized.ends_with(".localhost"sv, CaseSensitivity::CaseInsensitive)
+        || serialized.ends_with(".internal"sv, CaseSensitivity::CaseInsensitive)
+        || serialized.ends_with(".home.arpa"sv, CaseSensitivity::CaseInsensitive))
+        return false;
+    return true;
+}
+
+Messages::HubServer::WebUiPrivacySummaryResponse ConnectionFromUI::web_ui_privacy_summary(u64 web_ui_id)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session) {
+        result.set("available"sv, false);
+        return JsonValue { move(result) };
+    }
+
+    auto& coordinator = Application::privacy_policy_coordinator();
+    auto const& snapshot = coordinator.snapshot_for_session(*session);
+    auto counters = Application::privacy_activity().counters_for(*session);
+
+    result.set("available"sv, true);
+    result.set("identityId"sv, session->identity().id);
+    result.set("identityName"sv, session->identity().display_name);
+    result.set("identityKind"sv, Privacy::identity_kind_to_string(session->identity().kind));
+    result.set("networkMode"sv, Privacy::network_mode_to_string(coordinator.network_mode(*session)));
+    result.set("epoch"sv, coordinator.committed_epoch(*session));
+    if (snapshot.network.route.has_value())
+        result.set("route"sv, MUST(String::from_byte_string(snapshot.network.route->redacted_description())));
+    else
+        result.set("route"sv, JsonValue {});
+    result.set("localDNS"sv, coordinator.allows_dns_resolution(*session));
+    result.set("webRTC"sv, coordinator.allows_webrtc_network(*session));
+    result.set("allowsEgress"sv, coordinator.allows_network_egress(*session));
+    result.set("allowsBackgroundServices"sv, coordinator.allows_background_services(*session));
+    result.set("managedPolicy"sv, Privacy::managed_policy_status_to_string(Application::managed_privacy_policy().status));
+
+    JsonObject counts;
+    counts.set("navigationsSanitized"sv, counters.navigations_sanitized);
+    counts.set("trackingParametersRemoved"sv, counters.tracking_parameters_removed);
+    counts.set("navigationsWithScriptingBlocked"sv, counters.navigations_with_scripting_blocked);
+    result.set("counters"sv, move(counts));
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiExtensionsSnapshotResponse ConnectionFromUI::web_ui_extensions_snapshot(u64 web_ui_id)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session || session->is_private() == WebView::IsPrivate::Yes || session != &Application::default_session() || !session->extension_manager) {
+        result.set("available"sv, false);
+        result.set("reason"sv, "Extensions are only available in the ordinary browsing session."_string);
+        return JsonValue { move(result) };
+    }
+    result.set("available"sv, true);
+    result.set("summary"sv, session->extension_manager->summary_json());
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiSetExtensionEnabledResponse ConnectionFromUI::web_ui_set_extension_enabled(u64 web_ui_id, String extension_id, bool enabled)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!web_ui || !session || session->is_private() == WebView::IsPrivate::Yes || session != &Application::default_session() || !session->extension_manager) {
+        result.set("ok"sv, false);
+        result.set("error"sv, "Extensions are unavailable in this context."_string);
+        return JsonValue { move(result) };
+    }
+    if (!web_ui->consume_user_activation()) {
+        result.set("ok"sv, false);
+        result.set("error"sv, "User interaction is required."_string);
+        return JsonValue { move(result) };
+    }
+    auto ext = session->extension_manager->extension_by_id(extension_id);
+    if (!ext.has_value()) {
+        result.set("ok"sv, false);
+        result.set("stale"sv, true);
+        result.set("error"sv, "Extension is no longer installed."_string);
+        result.set("summary"sv, session->extension_manager->summary_json());
+        return JsonValue { move(result) };
+    }
+    if (auto err = session->extension_manager->set_extension_enabled(extension_id, enabled); err.is_error()) {
+        result.set("ok"sv, false);
+        result.set("error"sv, MUST(String::formatted("{}", err.error())));
+    } else {
+        result.set("ok"sv, true);
+    }
+    result.set("summary"sv, session->extension_manager->summary_json());
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiOpenExtensionOptionsResponse ConnectionFromUI::web_ui_open_extension_options(u64 web_ui_id, String extension_id)
+{
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!web_ui || !session || session->is_private() == WebView::IsPrivate::Yes || session != &Application::default_session() || !session->extension_manager)
+        return false;
+    if (!web_ui->consume_user_activation())
+        return false;
+    auto ext = session->extension_manager->extension_by_id(extension_id);
+    if (!ext.has_value() || !ext->enabled || !ext->manifest.options_ui().has_value())
+        return false;
+    auto url = session->extension_manager->package_page_url(*ext, ext->manifest.options_ui()->page);
+    if (!url.has_value())
+        return false;
+    auto* source_view = web_ui->view_id().has_value() ? find_view(*web_ui->view_id()) : nullptr;
+    WebView::Application::the().open_url_in_new_tab(*url, Web::HTML::ActivateTab::Yes, source_view);
+    return true;
+}
+
+Messages::HubServer::WebUiPermissionsSnapshotResponse ConnectionFromUI::web_ui_permissions_snapshot(u64 web_ui_id)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session || !session->permission_manager) {
+        result.set("available"sv, false);
+        return JsonValue { move(result) };
+    }
+
+    auto& pm = *session->permission_manager;
+    result.set("available"sv, true);
+    result.set("inheritsOrdinary"sv, pm.inherits_ordinary_session());
+
+    JsonArray entries;
+    JsonObject defaults;
+    for (auto name : Web::Permissions::PERMISSION_NAMES) {
+        auto name_str = Web::Permissions::to_string(name);
+        auto def = pm.global_default(name);
+        defaults.set(name_str, def == Web::Permissions::EffectiveState::Denied ? "block"sv : "ask"sv);
+        for (auto const& site : pm.site_decisions(name)) {
+            JsonObject row;
+            row.set("origin"sv, site.origin.serialize());
+            row.set("permission"sv, name_str);
+            switch (site.decision) {
+            case WebView::PermissionDecision::Allow:
+                row.set("decision"sv, "allow"_string);
+                break;
+            case WebView::PermissionDecision::AllowOnce:
+                row.set("decision"sv, "allow-once"_string);
+                break;
+            case WebView::PermissionDecision::Block:
+                row.set("decision"sv, "block"_string);
+                break;
+            }
+            row.set("generation"sv, pm.decision_generation(name, site.origin));
+            entries.must_append(move(row));
+        }
+    }
+    result.set("defaults"sv, move(defaults));
+    result.set("entries"sv, move(entries));
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiRevokeSitePermissionResponse ConnectionFromUI::web_ui_revoke_site_permission(u64 web_ui_id, String origin_str, String permission_name, u64 expected_generation)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!web_ui || !session || !session->permission_manager) {
+        result.set("ok"sv, false);
+        return JsonValue { move(result) };
+    }
+    if (!web_ui->consume_user_activation()) {
+        result.set("ok"sv, false);
+        result.set("error"sv, "User interaction is required."_string);
+        return JsonValue { move(result) };
+    }
+    auto parsed_name = Web::Permissions::permission_name_from_string(permission_name);
+    auto parsed_url = URL::Parser::basic_parse(origin_str);
+    if (!parsed_name.has_value() || !parsed_url.has_value()) {
+        result.set("ok"sv, false);
+        result.set("error"sv, "Invalid permission target."_string);
+        return JsonValue { move(result) };
+    }
+    auto origin = parsed_url->origin();
+    auto& pm = *session->permission_manager;
+    auto current_gen = pm.decision_generation(*parsed_name, origin);
+    if (current_gen != expected_generation) {
+        result.set("ok"sv, false);
+        result.set("stale"sv, true);
+        result.set("error"sv, "Permission changed since display."_string);
+        return JsonValue { move(result) };
+    }
+    pm.set_decision(*parsed_name, origin, {});
+    result.set("ok"sv, true);
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiIdentitiesSnapshotResponse ConnectionFromUI::web_ui_identities_snapshot(u64 web_ui_id)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session) {
+        result.set("available"sv, false);
+        return JsonValue { move(result) };
+    }
+    result.set("available"sv, true);
+    result.set("isPrivate"sv, session->is_private() == WebView::IsPrivate::Yes);
+    result.set("isEphemeral"sv, session->is_ephemeral());
+    result.set("persistsHistory"sv, session->persists_history());
+    result.set("profileIdentifier"sv, Application::profile().identifier());
+    result.set("profileIsTemporary"sv, Application::profile().is_temporary());
+
+    JsonObject current;
+    current.set("id"sv, session->identity().id);
+    current.set("name"sv, session->identity().display_name);
+    current.set("kind"sv, Privacy::identity_kind_to_string(session->identity().kind));
+    result.set("currentIdentity"sv, move(current));
+
+    JsonArray identities;
+    if (session->is_private() == WebView::IsPrivate::No && !session->is_ephemeral()) {
+        for (auto const& id : Application::identity_manager().identities()) {
+            JsonObject item;
+            item.set("id"sv, id.id);
+            item.set("name"sv, id.display_name);
+            item.set("kind"sv, Privacy::identity_kind_to_string(id.kind));
+            item.set("ephemeral"sv, id.is_ephemeral());
+            identities.must_append(move(item));
+        }
+    }
+    result.set("identities"sv, move(identities));
+    return JsonValue { move(result) };
+}
+
+static StringView media_action_to_string(Web::Bindings::MediaSessionAction action)
+{
+    switch (action) {
+    case Web::Bindings::MediaSessionAction::Play:
+        return "play"sv;
+    case Web::Bindings::MediaSessionAction::Pause:
+        return "pause"sv;
+    case Web::Bindings::MediaSessionAction::Seekbackward:
+        return "seekbackward"sv;
+    case Web::Bindings::MediaSessionAction::Seekforward:
+        return "seekforward"sv;
+    case Web::Bindings::MediaSessionAction::Previoustrack:
+        return "previoustrack"sv;
+    case Web::Bindings::MediaSessionAction::Nexttrack:
+        return "nexttrack"sv;
+    case Web::Bindings::MediaSessionAction::Seekto:
+        return "seekto"sv;
+    case Web::Bindings::MediaSessionAction::Stop:
+        return "stop"sv;
+    default:
+        return ""sv;
+    }
+}
+
+static Optional<Web::Bindings::MediaSessionAction> media_action_from_string(StringView action)
+{
+    if (action == "play"sv)
+        return Web::Bindings::MediaSessionAction::Play;
+    if (action == "pause"sv)
+        return Web::Bindings::MediaSessionAction::Pause;
+    if (action == "previoustrack"sv)
+        return Web::Bindings::MediaSessionAction::Previoustrack;
+    if (action == "nexttrack"sv)
+        return Web::Bindings::MediaSessionAction::Nexttrack;
+    if (action == "seekbackward"sv)
+        return Web::Bindings::MediaSessionAction::Seekbackward;
+    if (action == "seekforward"sv)
+        return Web::Bindings::MediaSessionAction::Seekforward;
+    if (action == "seekto"sv)
+        return Web::Bindings::MediaSessionAction::Seekto;
+    if (action == "stop"sv)
+        return Web::Bindings::MediaSessionAction::Stop;
+    return {};
+}
+
+Messages::HubServer::WebUiMediaSessionsSnapshotResponse ConnectionFromUI::web_ui_media_sessions_snapshot(u64 web_ui_id)
+{
+    JsonObject result;
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session) {
+        result.set("sessions"sv, JsonArray {});
+        return JsonValue { move(result) };
+    }
+
+    auto& coordinator = Application::the().media_session_coordinator();
+    JsonArray sessions;
+    WebView::ViewImplementation::for_each_view([&](WebView::ViewImplementation& view) {
+        if (&view.session() != session)
+            return IterationDecision::Continue;
+        auto state = coordinator.state_for_view(view.view_id());
+        if (!state.has_value())
+            return IterationDecision::Continue;
+
+        JsonObject item;
+        item.set("viewId"sv, view.view_id());
+        item.set("tabTitle"sv, view.title().to_utf8());
+        item.set("title"sv, state->title);
+        item.set("artist"sv, state->artist);
+        item.set("album"sv, state->album);
+        item.set("playing"sv, state->playback_state == Web::Bindings::MediaSessionPlaybackState::Playing);
+        item.set("activationCounter"sv, state->activation_counter);
+
+        JsonArray actions;
+        for (auto action : state->supported_actions) {
+            auto s = media_action_to_string(action);
+            if (!s.is_empty())
+                actions.must_append(MUST(String::from_utf8(s)));
+        }
+        item.set("supportedActions"sv, move(actions));
+
+        if (state->position.has_value()) {
+            JsonObject pos;
+            pos.set("duration"sv, state->position->duration);
+            pos.set("position"sv, state->position->position);
+            pos.set("playbackRate"sv, state->position->playback_rate);
+            item.set("position"sv, move(pos));
+        }
+        sessions.must_append(move(item));
+        return IterationDecision::Continue;
+    });
+
+    result.set("sessions"sv, move(sessions));
+    return JsonValue { move(result) };
+}
+
+Messages::HubServer::WebUiMediaSessionActionResponse ConnectionFromUI::web_ui_media_session_action(u64 web_ui_id, u64 target_view_id, String action_name, Optional<double> seek_time)
+{
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!web_ui || !session)
+        return false;
+    auto action = media_action_from_string(action_name);
+    if (!action.has_value())
+        return false;
+
+    WebView::ViewImplementation* target_view = nullptr;
+    WebView::ViewImplementation::for_each_view([&](WebView::ViewImplementation& view) {
+        if (view.view_id() == target_view_id && &view.session() == session) {
+            target_view = &view;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    if (!target_view)
+        return false;
+
+    auto& coordinator = Application::the().media_session_coordinator();
+    if (!coordinator.state_for_view(target_view_id).has_value())
+        return false;
+    if (!web_ui->consume_user_activation())
+        return false;
+
+    coordinator.handle_action_for_view(target_view_id, *action, {}, seek_time, {});
+    return true;
+}
+
+void ConnectionFromUI::web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, String kind, String target, u64 expected_policy_epoch)
+{
+    auto fail = [&] {
+        async_request_finished(request_id, true, {}, {}, {});
+    };
+
+    auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
+    auto* session = web_ui ? web_ui->session() : nullptr;
+    if (!session || session->is_private() == WebView::IsPrivate::Yes || session->is_ephemeral()) {
+        fail();
+        return;
+    }
+
+    auto& coordinator = Application::privacy_policy_coordinator();
+    if (!coordinator.allows_network_egress(*session)) {
+        fail();
+        return;
+    }
+    auto current_epoch = coordinator.committed_epoch(*session);
+    if (expected_policy_epoch != 0 && current_epoch != expected_policy_epoch) {
+        fail();
+        return;
+    }
+
+    Optional<URL::URL> fetch_url;
+    if (kind == "feed"sv) {
+        auto parsed = URL::Parser::basic_parse(target);
+        if (!parsed.has_value() || !is_public_https_dashboard_destination(*parsed)) {
+            fail();
+            return;
+        }
+        fetch_url = parsed.release_value();
+    } else if (kind == "weather"sv) {
+        auto parts = target.bytes_as_string_view().split_view(',');
+        if (parts.size() != 2) {
+            fail();
+            return;
+        }
+        auto lat = parts[0].trim_whitespace().to_number<double>();
+        auto lon = parts[1].trim_whitespace().to_number<double>();
+        if (!lat.has_value() || !lon.has_value() || !isfinite(*lat) || !isfinite(*lon) || *lat < -90.0 || *lat > 90.0 || *lon < -180.0 || *lon > 180.0) {
+            fail();
+            return;
+        }
+        double rounded_lat = round(*lat * 100.0) / 100.0;
+        double rounded_lon = round(*lon * 100.0) / 100.0;
+        auto weather_url_str = ByteString::formatted(
+            "https://api.open-meteo.com/v1/forecast?latitude={:.2f}&longitude={:.2f}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m&hourly=temperature_2m,weather_code,precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&forecast_days=5&timezone=auto",
+            rounded_lat, rounded_lon);
+        fetch_url = URL::Parser::basic_parse(weather_url_str);
+        if (!fetch_url.has_value() || !is_public_https_dashboard_destination(*fetch_url)) {
+            fail();
+            return;
+        }
+    } else {
+        fail();
+        return;
+    }
+
+    auto instance_or_error = Application::request_server_manager().browser_instance(*session);
+    if (instance_or_error.is_error()) {
+        fail();
+        return;
+    }
+
+    auto request_headers = HTTP::HeaderList::create();
+    request_headers->set({ "User-Agent"sv, Web::default_user_agent });
+    request_headers->set({ "Accept"sv, kind == "weather"sv ? "application/json"sv : "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9"sv });
+
+    auto request = instance_or_error.value()->ui_client().start_request(
+        "GET"sv,
+        *fetch_url,
+        HTTP::Cookie::SameSiteContext::same_site(),
+        *request_headers,
+        {},
+        HTTP::CacheMode::NoStore,
+        HTTP::Cookie::IncludeCredentials::No);
+    if (!request) {
+        fail();
+        return;
+    }
+
+    static constexpr size_t MAX_DASHBOARD_RESPONSE_BYTES = 1024 * 1024;
+    struct FetchState : public RefCounted<FetchState> {
+        ByteBuffer body;
+        Vector<HTTP::Header> headers;
+        Optional<u32> status_code;
+        bool aborted { false };
+        bool finished { false };
+    };
+    auto state = adopt_ref(*new FetchState);
+
+    auto finish_fetch = [this, request_id, web_ui_id, current_epoch](NonnullRefPtr<FetchState> const& st, bool error_override) {
+        if (st->finished)
+            return;
+        st->finished = true;
+        if (auto timer = m_request_timers.take(request_id); timer.has_value() && *timer)
+            (*timer)->stop();
+
+        bool policy_ok = false;
+        if (auto* live_ui = WebView::ApplicationWebUI::find(web_ui_id); live_ui && live_ui->session()) {
+            auto& coord = Application::privacy_policy_coordinator();
+            policy_ok = coord.allows_network_egress(*live_ui->session()) && coord.committed_epoch(*live_ui->session()) == current_epoch;
+        }
+
+        if (error_override || st->aborted || !policy_ok || !st->status_code.has_value() || *st->status_code < 200 || *st->status_code >= 300) {
+            async_request_finished(request_id, true, st->status_code, {}, {});
+        } else {
+            async_request_finished(request_id, false, st->status_code, move(st->headers), ByteString::copy(st->body.bytes()));
+        }
+
+        Core::deferred_invoke([this, request_id] {
+            m_requests.remove(request_id);
+            m_request_timers.remove(request_id);
+        });
+    };
+
+    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [this, request_id, state, finish_fetch] {
+        state->aborted = true;
+        if (auto req = m_requests.get(request_id); req.has_value())
+            (*req)->stop();
+        finish_fetch(state, true);
+    });
+    timer->start();
+    m_request_timers.set(request_id, timer);
+
+    request->set_unbuffered_request_callbacks(
+        [this, request_id, state](NonnullRefPtr<HTTP::HeaderList> response_headers, Optional<u32> response_code, Optional<String> const&, Requests::CacheState) {
+            state->status_code = response_code;
+            // Reject redirects (3xx) and non-2xx responses immediately.
+            if (!response_code.has_value() || *response_code < 200 || *response_code >= 300) {
+                state->aborted = true;
+                if (auto req = m_requests.get(request_id); req.has_value())
+                    (*req)->stop();
+                return;
+            }
+            if (auto ct = response_headers->get("Content-Type"sv); ct.has_value())
+                state->headers.append({ "Content-Type"sv, ct.release_value() });
+        },
+        [this, request_id, state](Requests::ResponseData data) {
+            if (state->aborted)
+                return;
+            auto bytes = data.bytes();
+            if (state->body.size() + bytes.size() > MAX_DASHBOARD_RESPONSE_BYTES) {
+                state->aborted = true;
+                if (auto req = m_requests.get(request_id); req.has_value())
+                    (*req)->stop();
+                return;
+            }
+            if (state->body.try_append(bytes).is_error()) {
+                state->aborted = true;
+                if (auto req = m_requests.get(request_id); req.has_value())
+                    (*req)->stop();
+            }
+        },
+        [state](Core::ImmutableBytes data) {
+            if (state->aborted)
+                return;
+            if (data.size() > MAX_DASHBOARD_RESPONSE_BYTES || state->body.try_append(data.bytes()).is_error())
+                state->aborted = true;
+        },
+        [state, finish_fetch](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> network_error) {
+            finish_fetch(state, network_error.has_value() || state->aborted);
+        });
+
+    m_requests.set(request_id, request.release_nonnull());
+}
+
 Messages::HubServer::InitializeResponse ConnectionFromUI::initialize()
 {
     auto const& options = Application::browser_options();
@@ -998,6 +1595,8 @@ void ConnectionFromUI::start_request(u64 request_id, ByteString const& method, U
 
 void ConnectionFromUI::stop_request(u64 request_id)
 {
+    if (auto timer = m_request_timers.take(request_id); timer.has_value() && *timer)
+        (*timer)->stop();
     if (auto request = m_requests.take(request_id); request.has_value())
         (*request)->stop();
 }

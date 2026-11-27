@@ -3059,6 +3059,14 @@ bool Application::supports_picture_in_picture() const
     return browser_options().headless_mode.has_value();
 }
 
+URL::URL Application::effective_new_tab_page_url() const
+{
+    auto const& configured = settings().new_tab_page_url();
+    if (configured == URL::about_dashboard() && !supports_new_tab_dashboard())
+        return URL::about_newtab();
+    return configured;
+}
+
 NonnullOwnPtr<NotificationBackend> Application::create_notification_backend()
 {
     return make<NoOpNotificationBackend>();

@@ -915,3 +915,23 @@ TEST_CASE(history_ranking_signal_migration_preserves_existing_entries)
     EXPECT_EQ(entry->score_updated_at, UnixDateTime::from_seconds_since_epoch(123));
     EXPECT_APPROXIMATE(entry->decayed_visit_score, 8.0);
 }
+
+TEST_CASE(history_top_sites_ranks_by_visit_score_and_deduplicates_per_site)
+{
+    auto database = TRY_OR_FAIL(Database::Database::create_memory_backed());
+    auto store = create_persisted_store(*database);
+
+    auto t0 = UnixDateTime::from_seconds_since_epoch(1'700'000'000);
+    // Frequently visited site (older than one-off site) must still rank first!
+    for (int i = 0; i < 4; ++i)
+        store->record_visit(parse_url("https://docs.example.com/guide"sv), "Guide"_string, t0 + AK::Duration::from_seconds(i * 100), WebView::HistoryVisitTransition::Omnibox);
+    // Second page on same site should be deduplicated out of top_sites.
+    store->record_visit(parse_url("https://docs.example.com/other"sv), "Other"_string, t0 + AK::Duration::from_seconds(500), WebView::HistoryVisitTransition::Link);
+    // Brand new one-off visit should rank below the frequent site.
+    store->record_visit(parse_url("https://recent-once.org/"sv), "Recent"_string, t0 + AK::Duration::from_seconds(10'000), WebView::HistoryVisitTransition::Link);
+
+    auto top = store->top_sites(8);
+    VERIFY(top.size() == 2);
+    EXPECT_EQ(top[0].url, "https://docs.example.com/guide"_string);
+    EXPECT_EQ(top[1].url, "https://recent-once.org/"_string);
+}

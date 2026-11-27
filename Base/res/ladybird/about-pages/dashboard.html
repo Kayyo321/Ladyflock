@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'none'; script-src resource:; style-src resource:; img-src resource: data:; font-src resource:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none';"
+        />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>New Tab</title>
+        <link rel="icon" type="image/png" href="resource://icons/48x48/app-browser.png" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/ladybird.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/webui.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/dashboard.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-navigation.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-library.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-controls.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-developer.css" />
+    </head>
+    <body class="dashboard-page">
+        <div id="dashboard-root" class="dashboard-shell">
+            <div id="dashboard-banner" class="dashboard-banner hidden" role="status"></div>
+
+            <div id="dashboard-fallback" class="dashboard-fallback hidden" role="region" aria-label="Dashboard unavailable">
+                <h1 class="fallback-title">New Tab Dashboard</h1>
+                <p class="description">
+                    The customizable dashboard is not available in this browser frontend. You can continue using the
+                    address bar or switch back to the blank new tab page in Settings.
+                </p>
+            </div>
+
+            <main id="dashboard-grid-wrap" class="dashboard-grid-wrap" aria-label="New tab dashboard">
+                <div id="dashboard-board" class="dashboard-board">
+                    <canvas id="dashboard-dots" class="dashboard-dots" aria-hidden="true"></canvas>
+                    <div id="dashboard-landing" class="dash-landing hidden" aria-hidden="true"></div>
+                    <div id="dashboard-grid" class="dashboard-grid" role="list"></div>
+
+                    <section id="dashboard-empty" class="dashboard-empty hidden" aria-label="Empty dashboard">
+                        <p class="dashboard-empty-title">A blank board</p>
+                        <p class="dashboard-empty-text">Hang a few widgets on it, or start from a preset.</p>
+                        <div class="dashboard-empty-actions">
+                            <button id="empty-add-widget" type="button" class="dock-btn primary">Add widgets</button>
+                            <button id="empty-choose-preset" type="button" class="dock-btn">Presets</button>
+                        </div>
+                    </section>
+                </div>
+            </main>
+
+            <footer id="dashboard-footer" class="dashboard-footer" aria-label="Dashboard controls">
+                <div id="dashboard-swap-banner" class="dashboard-hint hidden" role="status">
+                    <span id="dashboard-swap-text"></span>
+                    <button id="dashboard-swap-cancel" type="button" class="dashboard-hint-btn">Cancel</button>
+                </div>
+
+                <div id="edit-toolbar" class="dash-dock hidden" role="toolbar" aria-label="Customize dashboard">
+                    <button id="btn-add-widget" type="button" class="dock-btn primary" data-icon="plus">Add widgets</button>
+                    <button id="btn-presets" type="button" class="dock-btn" data-icon="presets">Presets</button>
+                    <span class="dock-sep" aria-hidden="true"></span>
+                    <button id="btn-undo" type="button" class="dock-btn icon-only" data-icon="undo" aria-label="Undo" title="Undo" disabled></button>
+                    <button id="btn-redo" type="button" class="dock-btn icon-only" data-icon="redo" aria-label="Redo" title="Redo" disabled></button>
+                    <button
+                        id="btn-compact"
+                        type="button"
+                        class="dock-btn icon-only"
+                        data-icon="tidy"
+                        aria-pressed="false"
+                        aria-label="Keep tiles packed toward the top"
+                        title="Keep tiles packed toward the top"
+                    ></button>
+                    <button
+                        id="btn-delete-data"
+                        type="button"
+                        class="dock-btn icon-only"
+                        data-icon="trash"
+                        aria-label="Delete dashboard data…"
+                        title="Delete dashboard data…"
+                    ></button>
+                    <span class="dock-sep" aria-hidden="true"></span>
+                    <span id="dashboard-save-status" class="dock-status hidden" role="status"></span>
+                    <button id="btn-done-edit" type="button" class="dock-btn done">Done</button>
+                </div>
+
+                <button id="btn-customize" type="button" class="dash-customize" data-icon="customize">Customize</button>
+            </footer>
+        </div>
+
+        <div id="dashboard-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+        <section id="picker-dialog" class="dash-shelf hidden" role="dialog" aria-modal="false" aria-labelledby="picker-title">
+            <header class="shelf-header">
+                <h2 id="picker-title">Widgets</h2>
+                <label class="shelf-search picker-search">
+                    <input id="picker-search-input" type="search" placeholder="Search widgets" autocomplete="off" aria-label="Search widgets" />
+                </label>
+                <button id="picker-close" type="button" class="dock-btn done">Done</button>
+            </header>
+            <div id="picker-cats" class="shelf-cats" role="tablist" aria-label="Widget categories">
+                <button id="picker-tab-widgets" type="button" class="shelf-cat" role="tab" aria-selected="true">All</button>
+                <button id="picker-tab-presets" type="button" class="shelf-cat" role="tab" aria-selected="false">Presets</button>
+            </div>
+            <div id="picker-body" class="shelf-body"></div>
+        </section>
+
+        <dialog id="config-dialog" class="dashboard-dialog" aria-labelledby="config-dialog-title">
+            <div class="dialog-header">
+                <h2 id="config-dialog-title">Widget settings</h2>
+                <button type="button" class="icon-close-btn" data-close-dialog data-icon="close" aria-label="Close"></button>
+            </div>
+            <div id="config-dialog-body" class="dialog-body"></div>
+        </dialog>
+
+        <dialog id="confirm-dialog" class="dashboard-dialog" aria-labelledby="confirm-dialog-title">
+            <div class="dialog-header">
+                <h2 id="confirm-dialog-title">Confirm</h2>
+                <button type="button" class="icon-close-btn" data-close-dialog data-icon="close" aria-label="Close"></button>
+            </div>
+            <div class="dialog-body">
+                <p id="confirm-dialog-message" class="description"></p>
+                <div id="confirm-dialog-extra"></div>
+                <div class="dialog-footer">
+                    <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+                    <button id="confirm-dialog-accept" type="button" class="primary-button">Confirm</button>
+                </div>
+            </div>
+        </dialog>
+
+        <script type="module" src="resource://ladybird/about-pages/dashboard/app.js"></script>
+    </body>
+</html>

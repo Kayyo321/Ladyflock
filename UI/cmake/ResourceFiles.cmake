@@ -33,6 +33,7 @@ set(ABOUT_PAGES
     bookmarks.html
     certificate.html
     crashes.html
+    dashboard.html
     downloads.html
     history.html
     licenses.html
@@ -66,6 +67,58 @@ set(ABOUT_SETTINGS_RESOURCES
     tabs.js
 )
 list(TRANSFORM ABOUT_SETTINGS_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/settings/")
+
+set(ABOUT_DASHBOARD_RESOURCES
+    app.js
+    bridge.js
+    dashboard.css
+    dot-field.js
+    grid-engine.js
+    icons.js
+    widget-chrome.js
+    widget-picker.js
+    widget-registry.js
+    widgets.css
+    widgets-controls.css
+    widgets-developer.css
+    widgets-library.css
+    widgets-navigation.css
+)
+list(TRANSFORM ABOUT_DASHBOARD_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/dashboard/")
+
+set(ABOUT_DASHBOARD_WIDGET_RESOURCES
+    bookmark-shelf.js
+    browser-health.js
+    calculator.js
+    calendar-countdown.js
+    color-contrast.js
+    dev-codec.js
+    downloads.js
+    extensions-dock.js
+    feed-reader.js
+    focus-timer.js
+    habit-tracker.js
+    now-playing.js
+    open-tabs.js
+    permissions-audit.js
+    pinned-references.js
+    privacy-summary.js
+    profile-switcher.js
+    quick-tasks.js
+    reading-queue.js
+    recent-history.js
+    recently-closed.js
+    scratchpad.js
+    search-box.js
+    shortcuts-guide.js
+    snippets.js
+    top-sites.js
+    url-inspector.js
+    weather.js
+    workspaces.js
+    world-clock.js
+)
+list(TRANSFORM ABOUT_DASHBOARD_WIDGET_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/dashboard/widgets/")
 
 set(WEB_TEMPLATES
     directory.html
@@ -180,6 +233,14 @@ function(copy_resources_to_build base_directory bundle_target)
         DESTINATION ${base_directory} TARGET ${bundle_target}
     )
 
+    copy_resource_set(ladybird/about-pages/dashboard RESOURCES ${ABOUT_DASHBOARD_RESOURCES}
+        DESTINATION ${base_directory} TARGET ${bundle_target}
+    )
+
+    copy_resource_set(ladybird/about-pages/dashboard/widgets RESOURCES ${ABOUT_DASHBOARD_WIDGET_RESOURCES}
+        DESTINATION ${base_directory} TARGET ${bundle_target}
+    )
+
     copy_resource_set(ladybird/templates RESOURCES ${WEB_TEMPLATES}
         DESTINATION ${base_directory} TARGET ${bundle_target}
     )
@@ -218,6 +279,8 @@ function(install_ladybird_resources destination component)
         COMPONENT ${component})
     install(FILES ${ABOUT_PAGES} DESTINATION "${destination}/ladybird/about-pages" COMPONENT ${component})
     install(FILES ${ABOUT_SETTINGS_RESOURCES} DESTINATION "${destination}/ladybird/about-pages/settings" COMPONENT ${component})
+    install(FILES ${ABOUT_DASHBOARD_RESOURCES} DESTINATION "${destination}/ladybird/about-pages/dashboard" COMPONENT ${component})
+    install(FILES ${ABOUT_DASHBOARD_WIDGET_RESOURCES} DESTINATION "${destination}/ladybird/about-pages/dashboard/widgets" COMPONENT ${component})
     install(FILES ${WEB_TEMPLATES} DESTINATION "${destination}/ladybird/templates" COMPONENT ${component})
     if (PDFJS_BUILD_FILES)
         install(FILES ${PDFJS_BUILD_FILES} DESTINATION "${destination}/ladybird/pdfjs/build" COMPONENT ${component})

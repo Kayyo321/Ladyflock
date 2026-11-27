@@ -21,8 +21,7 @@ static RemoteDownloads::Download download_from(Hub::DownloadState const& state)
     return {
         .id = state.id,
         .is_private = state.is_private,
-        // The Hub makes a download's requests, over its identity's network. The UI only shows its state.
-        .identity_id = {},
+        .identity_id = state.identity_id,
         .url = state.url,
         .destination = LexicalPath { state.destination },
         .status = state.status,

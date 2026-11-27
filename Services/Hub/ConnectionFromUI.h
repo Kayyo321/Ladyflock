@@ -53,6 +53,7 @@ private:
 
     // The requests that the UI has asked us to make, as it has no network of its own.
     HashMap<u64, NonnullRefPtr<Requests::Request>> m_requests;
+    HashMap<u64, RefPtr<Core::Timer>> m_request_timers;
     u64 m_last_applied_settings_change_id { 0 };
 
     // A close that the UI got ready for, and finishes once the tab is gone from its window.
@@ -89,6 +90,16 @@ private:
     virtual void add_web_ui_page(String host, String title) override;
     virtual void send_web_ui_message(u64 web_ui_id, String name, JsonValue data) override;
     virtual Messages::HubServer::WebUiConsumeUserActivationResponse web_ui_consume_user_activation(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiPrivacySummaryResponse web_ui_privacy_summary(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiExtensionsSnapshotResponse web_ui_extensions_snapshot(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiSetExtensionEnabledResponse web_ui_set_extension_enabled(u64 web_ui_id, String extension_id, bool enabled) override;
+    virtual Messages::HubServer::WebUiOpenExtensionOptionsResponse web_ui_open_extension_options(u64 web_ui_id, String extension_id) override;
+    virtual Messages::HubServer::WebUiPermissionsSnapshotResponse web_ui_permissions_snapshot(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiRevokeSitePermissionResponse web_ui_revoke_site_permission(u64 web_ui_id, String origin, String permission_name, u64 expected_generation) override;
+    virtual Messages::HubServer::WebUiIdentitiesSnapshotResponse web_ui_identities_snapshot(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiMediaSessionsSnapshotResponse web_ui_media_sessions_snapshot(u64 web_ui_id) override;
+    virtual Messages::HubServer::WebUiMediaSessionActionResponse web_ui_media_session_action(u64 web_ui_id, u64 target_view_id, String action, Optional<double> seek_time) override;
+    virtual void web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, String kind, String target, u64 expected_policy_epoch) override;
     virtual void fetch_search_suggestions(u64 request_id, String engine_name, String query, WebView::IsPrivate is_private) override;
     virtual void post_report(u64 request_id, URL::URL url, Vector<HTTP::Header> headers, ByteString body) override;
     void start_request(u64 request_id, ByteString const& method, URL::URL const&, HTTP::HeaderList const& headers, ByteString const& body, HTTP::CacheMode, HTTP::Cookie::IncludeCredentials, WebView::IsPrivate, ReadonlySpan<StringView> response_header_names);

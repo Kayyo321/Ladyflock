@@ -65,6 +65,7 @@ public:
     Optional<HistoryEntry> entry_for_url(URL::URL const&);
     Vector<HistoryEntry> autocomplete_entries(StringView query, size_t limit = 8);
     Vector<HistoryEntry> list_entries(StringView query = {}, size_t offset = 0, size_t limit = 50);
+    Vector<HistoryEntry> top_sites(size_t limit = 12);
     Vector<String> referenced_favicon_hashes();
 
     void record_omnibox_engagement(OmniboxEngagement const&, UnixDateTime used_at = UnixDateTime::now());
@@ -82,6 +83,7 @@ private:
         Database::StatementID get_entry { 0 };
         Database::StatementID search_entries { 0 };
         Database::StatementID list_entries { 0 };
+        Database::StatementID top_entries { 0 };
         Database::StatementID referenced_favicon_hashes { 0 };
         Database::StatementID delete_entry { 0 };
         Database::StatementID delete_entries_accessed_since { 0 };
@@ -107,6 +109,7 @@ private:
         virtual Optional<HistoryEntry> entry_for_url(String const& url) = 0;
         virtual Vector<HistoryEntry> autocomplete_entries(StringView title_query, StringView url_query, size_t limit) = 0;
         virtual Vector<HistoryEntry> list_entries(StringView title_query, StringView url_query, size_t offset, size_t limit) = 0;
+        virtual Vector<HistoryEntry> top_sites(size_t limit) = 0;
         virtual Vector<String> referenced_favicon_hashes() = 0;
 
         virtual void record_omnibox_engagement(OmniboxEngagement const&, UnixDateTime used_at) = 0;
@@ -136,6 +139,7 @@ private:
         virtual Optional<HistoryEntry> entry_for_url(String const& url) override;
         virtual Vector<HistoryEntry> autocomplete_entries(StringView title_query, StringView url_query, size_t limit) override;
         virtual Vector<HistoryEntry> list_entries(StringView title_query, StringView url_query, size_t offset, size_t limit) override;
+        virtual Vector<HistoryEntry> top_sites(size_t limit) override;
         virtual Vector<String> referenced_favicon_hashes() override { return {}; }
 
         virtual void record_omnibox_engagement(OmniboxEngagement const&, UnixDateTime used_at) override;
@@ -165,6 +169,7 @@ private:
         virtual Optional<HistoryEntry> entry_for_url(String const& url) override;
         virtual Vector<HistoryEntry> autocomplete_entries(StringView title_query, StringView url_query, size_t limit) override;
         virtual Vector<HistoryEntry> list_entries(StringView title_query, StringView url_query, size_t offset, size_t limit) override;
+        virtual Vector<HistoryEntry> top_sites(size_t limit) override;
         virtual Vector<String> referenced_favicon_hashes() override;
 
         virtual void record_omnibox_engagement(OmniboxEngagement const&, UnixDateTime used_at) override;

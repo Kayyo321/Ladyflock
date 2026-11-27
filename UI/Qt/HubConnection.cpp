@@ -106,6 +106,14 @@ u64 HubConnection::post_report(URL::URL const& url, Vector<HTTP::Header> headers
     return request_id;
 }
 
+u64 HubConnection::fetch_dashboard_resource(u64 web_ui_id, String kind, String target, u64 expected_policy_epoch, Function<void(RequestResponse)> on_response)
+{
+    auto request_id = m_next_request_id++;
+    m_requests.set(request_id, move(on_response));
+    async_web_ui_dashboard_fetch(web_ui_id, request_id, move(kind), move(target), expected_policy_epoch);
+    return request_id;
+}
+
 void HubConnection::stop_request(u64 request_id)
 {
     m_requests.remove(request_id);
@@ -798,9 +806,9 @@ void HubConnection::app_open_new_window(Vector<URL::URL> urls)
         application.on_new_window(urls);
 }
 
-void HubConnection::web_ui_opened(u64 web_ui_id, String host, WebView::IsPrivate is_private)
+void HubConnection::web_ui_opened(Hub::WebUIPageContext context)
 {
-    Application::web_ui_pages().page_opened(web_ui_id, host, is_private);
+    Application::web_ui_pages().page_opened(context);
 }
 
 void HubConnection::web_ui_message(u64 web_ui_id, String name, JsonValue data)

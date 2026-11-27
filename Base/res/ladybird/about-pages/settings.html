@@ -1178,7 +1178,29 @@
                             <label for="restore-previous-session">Restore previous windows and tabs</label>
                             <input id="restore-previous-session" type="checkbox" switch />
                         </div>
-                        <div class="card-group inline-container control-row">
+                        <div class="card-group" id="new-tab-page-group">
+                            <div class="inline-container">
+                                <label for="new-tab-page-mode">
+                                    New tab page
+                                    <p class="description">Choose what opens when you create a new tab.</p>
+                                </label>
+                                <div class="inline-container" style="gap: 8px">
+                                    <select id="new-tab-page-mode" aria-label="New tab page">
+                                        <option value="blank">Blank</option>
+                                        <option value="dashboard" id="new-tab-page-mode-dashboard" class="hidden">Dashboard</option>
+                                        <option value="custom">Custom URL</option>
+                                    </select>
+                                    <button
+                                        id="new-tab-page-preview-dashboard"
+                                        type="button"
+                                        class="secondary-button hidden"
+                                    >
+                                        Preview…
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-group inline-container control-row" id="new-tab-page-url-group">
                             <label for="new-tab-page-url">New tab page URL</label>
                             <div class="input-with-reset">
                                 <input id="new-tab-page-url" type="url" spellcheck="false" />

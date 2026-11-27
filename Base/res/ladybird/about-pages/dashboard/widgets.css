@@ -1,0 +1,487 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * about:dashboard — what individual widgets draw inside their tiles.
+ * The tile, its tint and the shared pieces (buttons, fields, lists) are in dashboard.css.
+ */
+
+/* --- Shared by several widgets --------------------------------------------------------- */
+
+.dash-notice {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px 6px 11px;
+    border-radius: 12px;
+    background-color: var(--tint-soft, var(--control));
+    color: var(--body);
+    font-size: 12px;
+}
+
+.dash-notice > :first-child {
+    flex: 1;
+    min-width: 0;
+}
+
+.dash-switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 26px;
+    margin: 0;
+    color: var(--text);
+    font-size: 13px;
+}
+
+.md-preview {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    font-size: 13.5px;
+    line-height: 1.55;
+}
+
+.md-preview h1,
+.md-preview h2,
+.md-preview h3 {
+    margin: 8px 0 4px;
+    font-size: 14.5px;
+    font-weight: 650;
+}
+
+.md-preview h1 {
+    font-size: 16px;
+}
+
+.md-preview p,
+.md-preview ul {
+    margin: 4px 0;
+}
+
+.md-preview ul {
+    padding-inline-start: 18px;
+}
+
+.md-preview pre {
+    margin: 6px 0;
+    padding: 8px 10px;
+    overflow-x: auto;
+    border-radius: 10px;
+    background-color: var(--well);
+    box-shadow: inset 0 0 0 1px var(--well-edge);
+    font-size: 12px;
+}
+
+.md-preview code {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background-color: var(--control);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+}
+
+.md-preview pre code {
+    padding: 0;
+    background: none;
+}
+
+/* --- World Clock ----------------------------------------------------------------------- */
+
+.clock-face {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.clock-time {
+    white-space: nowrap;
+}
+
+.clock-date {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12.5px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.dash-card[data-tier="compact"] .clock-face {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.dash-card[data-tier="compact"] .clock-date {
+    font-size: 12px;
+}
+
+/* One bar for the day: dim at night, brightest at noon, with a marker for now. It reads the same in
+   either direction, so it needs no mirroring. */
+.clock-day {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex-shrink: 0;
+    margin-top: auto;
+    padding-top: 4px;
+}
+
+.clock-day-marks {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    opacity: 0.8;
+}
+
+.clock-ribbon {
+    position: relative;
+    flex-shrink: 0;
+    height: 6px;
+    margin: 0 6px 4px;
+    border-radius: 999px;
+    background-color: var(--control);
+    background-image: linear-gradient(
+        to right,
+        transparent 0%,
+        transparent 22%,
+        var(--tint-soft) 31%,
+        color-mix(in srgb, var(--tint) 50%, transparent) 50%,
+        var(--tint-soft) 69%,
+        transparent 78%,
+        transparent 100%
+    );
+}
+
+.clock-ribbon-knob {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin-top: -6px;
+    margin-inline-start: -6px;
+    border-radius: 50%;
+    background-color: var(--tint);
+    box-shadow: 0 0 0 2.5px var(--tile-bg);
+}
+
+.clock-ribbon.small {
+    flex: 1.3 1 0;
+    height: 4px;
+    margin: 0 4px;
+}
+
+.clock-ribbon.small .clock-ribbon-knob {
+    width: 8px;
+    height: 8px;
+    margin-top: -4px;
+    margin-inline-start: -4px;
+    box-shadow: 0 0 0 2px var(--tile-bg);
+}
+
+.clock-zones {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+    margin-top: 2px;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.dash-card-body:has(> .clock-face) {
+    overflow: hidden;
+}
+
+.clock-zone {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 23px;
+    font-size: 12.5px;
+}
+
+.clock-zone-name {
+    flex: 1 1 0;
+    color: var(--body);
+}
+
+.clock-zone-time {
+    min-width: 62px;
+    font-weight: 600;
+    text-align: end;
+}
+
+/* Equal widths keep the zone ribbons the same length from row to row. */
+.clock-zone .dash-badge {
+    justify-content: center;
+    min-width: 62px;
+}
+
+/* --- Quick Tasks ----------------------------------------------------------------------- */
+
+.dash-card-body.tasks {
+    gap: 4px;
+    overflow: hidden;
+}
+
+.tasks-entry {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-shrink: 0;
+    min-height: 30px;
+    border-bottom: 1px solid var(--separator-soft);
+}
+
+.tasks-entry:focus-within {
+    border-bottom-color: var(--focus-edge);
+}
+
+.tasks-entry-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    cursor: pointer;
+}
+
+.tasks-entry-add:hover {
+    background-color: var(--tint);
+    color: #ffffff;
+}
+
+.tasks-entry-add:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
+}
+
+.dashboard-page .tasks-entry-input,
+.dashboard-page .tasks-entry-input:hover,
+.dashboard-page .tasks-entry-input:focus {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.tasks-list {
+    flex: 1;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.tasks-item.is-done .tasks-text {
+    color: var(--muted);
+    text-decoration: line-through;
+}
+
+.tasks-empty {
+    padding: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.tasks-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.tasks-footer > .dash-btn {
+    margin-inline-start: auto;
+    margin-inline-end: -6px;
+}
+
+.dashboard-page .tasks-list-select {
+    height: 24px;
+    margin-inline-start: -8px;
+    padding-inline-start: 8px;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--body);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.dashboard-page .tasks-list-select:hover {
+    background-color: var(--control);
+}
+
+.dash-card[data-compact-row="true"] .tasks-footer {
+    display: none;
+}
+
+/* --- Scratchpad ------------------------------------------------------------------------ */
+
+.dash-card-body.pad {
+    gap: 4px;
+    overflow: hidden;
+}
+
+.pad-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.dashboard-page .pad-note-select {
+    max-width: 62%;
+    height: 26px;
+    margin-inline-start: -8px;
+    padding-inline-start: 8px;
+    background-color: transparent;
+    box-shadow: none;
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.dashboard-page .pad-note-select:hover {
+    background-color: var(--control);
+}
+
+.pad-actions {
+    display: flex;
+    gap: 1px;
+    margin-inline-end: -5px;
+}
+
+.pad-actions .dash-btn[aria-pressed="true"] {
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+}
+
+/* The note fills the tile like a sheet of paper; the tile itself shows focus. */
+.dashboard-page .pad-paper {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    padding: 2px 0 0;
+    border: none;
+    outline: none;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.55;
+    resize: none;
+}
+
+.dashboard-page .pad-paper::placeholder {
+    color: var(--muted);
+}
+
+.dash-card:has(.pad-paper:focus-visible) .dash-card-face {
+    box-shadow: inset 0 0 0 1.5px var(--focus-edge);
+}
+
+.dash-card[data-compact-row="true"] .pad-bar {
+    display: none;
+}
+
+/* --- Focus Timer ----------------------------------------------------------------------- */
+
+.dash-card-body.timer {
+    overflow: hidden;
+}
+
+.timer-modes {
+    align-self: flex-start;
+    flex-shrink: 0;
+}
+
+.timer-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 0;
+}
+
+.timer-dial {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.timer-dial .dash-ring ~ .timer-time {
+    position: absolute;
+    font-size: 19px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+}
+
+.timer-time {
+    font-size: 26px;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    line-height: 1;
+}
+
+.timer-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.timer-start {
+    height: 32px;
+    padding: 0 14px 0 12px;
+}
+
+.dash-card[data-tier="compact"] .timer-main {
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.dash-card[data-tier="compact"] .timer-start {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+}
+
+.dash-card[data-tier="compact"] .timer-start span {
+    display: none;
+}
+
+.dash-card[data-tier="expanded"] .timer-main {
+    justify-content: center;
+    gap: 26px;
+}
+
+.dash-card[data-tier="expanded"] .timer-dial .dash-ring ~ .timer-time {
+    font-size: 28px;
+    font-weight: 400;
+}
+
+.timer-log {
+    flex-shrink: 0;
+    text-align: center;
+}
