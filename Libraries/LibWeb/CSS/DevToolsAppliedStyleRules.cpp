@@ -41,6 +41,7 @@
 #include <LibWeb/CSS/Parser/SyntaxParsing.h>
 #include <LibWeb/CSS/PropertyNameAndID.h>
 #include <LibWeb/CSS/SelectorMatching.h>
+#include <LibWeb/CSS/SharedCompiledStyleSheet.h>
 #include <LibWeb/CSS/StyleComputeFFI.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleEngineInput.h>
@@ -534,7 +535,7 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
     serialized_rule.set("matchedSelectorIndexes"sv, move(matched_selector_indexes));
     serialized_rule.set("maxSpecificity"sv, max_matched_specificity);
     serialized_rule.set("cssText"sv, rule.serialized().to_utf8());
-    serialized_rule.set("ruleIdentity"sv, String::number(target.rule_identity));
+    serialized_rule.set("ruleIdentity"sv, String::number(rule.native_rule().identity()));
     serialized_rule.set("origin"sv, cascade_origin_to_string(target.cascade_origin));
     serialized_rule.set("isSystem"sv, target.cascade_origin == CascadeOrigin::UserAgent);
     if (!target.qualified_layer_name.is_empty())
@@ -553,8 +554,10 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
         serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, declaration));
     }
     if (auto* sheet = rule.parent_style_sheet()) {
-        serialized_rule.set("sheetId"sv, String::number(sheet->style_engine_occurrence_id()));
-        serialized_rule.set("sheetRevision"sv, sheet->edit_revision() + declaration.revision());
+        if (sheet->owner_node() || sheet->owner_import() || sheet->constructed()) {
+            serialized_rule.set("sheetId"sv, String::number(sheet->style_engine_occurrence_id()));
+            serialized_rule.set("sheetRevision"sv, sheet->edit_revision() + declaration.revision());
+        }
         if (sheet->attribution_kind() != StyleSheetState::AttributionKind::None) {
             JsonObject attribution;
             attribution.set("kind"sv, attribution_kind_to_string(sheet->attribution_kind()));
@@ -634,6 +637,27 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
         u32 expected_pseudo = current_element.pseudo_element().has_value()
             ? to_underlying(*current_element.pseudo_element())
             : NumericLimits<u32>::max();
+        // The engine may name a shared compiled stylesheet. Edits must use the live occurrence
+        // in this element's style scope. Ambiguous occurrences remain readable from the snapshot.
+        HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
+        auto add_occurrences = [&](StyleScope const& scope) {
+            scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
+                auto* compiled = sheet.shared_compiled_style_sheet();
+                if (!compiled)
+                    return;
+                auto* snapshot = &compiled->contents();
+                auto existing = live_sheet_by_snapshot.get(snapshot);
+                if (!existing.has_value())
+                    live_sheet_by_snapshot.set(snapshot, &sheet);
+                else if (*existing != &sheet)
+                    live_sheet_by_snapshot.set(snapshot, nullptr);
+            });
+        };
+        auto& own_scope = current_element.element().document_or_shadow_root_style_scope();
+        add_occurrences(own_scope);
+        if (&own_scope != &m_document->style_scope())
+            add_occurrences(m_document->style_scope());
+
         for (auto const& match : matches.in_reverse()) {
             if (match.pseudo_element != expected_pseudo)
                 continue;
@@ -659,7 +683,19 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
                 if (!context.has_inherited_declaration)
                     continue;
             }
-            auto* rule = target->source_style_sheet->rules().rule_for_identity(target->rule_identity);
+            auto const& source_sheet = *target->source_style_sheet;
+            CSSRule* rule = nullptr;
+            if (auto occurrence = live_sheet_by_snapshot.get(&source_sheet); occurrence.has_value() && *occurrence) {
+                auto path = source_sheet.native_rules().path_to_rule(target->rule_identity);
+                auto const* rules = &(*occurrence)->rules();
+                for (auto index : path) {
+                    rule = rules ? rules->item(index) : nullptr;
+                    auto const* grouping_rule = as_if<CSSGroupingRule>(rule);
+                    rules = grouping_rule ? &grouping_rule->css_rules() : nullptr;
+                }
+            } else {
+                rule = source_sheet.rules().rule_for_identity(target->rule_identity);
+            }
             if (!rule)
                 continue;
             append_devtools_applied_style_entry(entries, serialize_devtools_applied_rule(m_document, *rule, current_element, *target), inherited_node_id);
