@@ -5,6 +5,7 @@
  */
 
 #include "HeadlessTest.h"
+#include <AK/LexicalPath.h>
 #include <AK/Random.h>
 #include <LibCore/Directory.h>
 #include <LibCore/Environment.h>
@@ -39,7 +40,19 @@ HeadlessTestEnvironment::HeadlessTestEnvironment(StringView name, unsigned timeo
     alarm(timeout_seconds);
 
     MUST(Core::Directory::create(m_directory, Core::Directory::CreateDirectories::Yes));
+
+    // A test that keeps a persistent profile must keep it here, never in the user's own profile. Each standard
+    // location a profile can use is redirected into the test's directory, which goes away with the test.
     MUST(Core::Environment::set("XDG_CONFIG_HOME"sv, m_directory, Core::Environment::Overwrite::Yes));
+    struct Location {
+        StringView variable;
+        StringView name;
+    };
+    for (auto const& location : Array { Location { "XDG_DATA_HOME"sv, "data"sv }, Location { "XDG_CACHE_HOME"sv, "cache"sv } }) {
+        auto path = LexicalPath::join(m_directory, location.name).string();
+        MUST(Core::Directory::create(path, Core::Directory::CreateDirectories::Yes));
+        MUST(Core::Environment::set(location.variable, path, Core::Environment::Overwrite::Yes));
+    }
 
     tzset();
     if (auto result = Core::System::set_resource_limits(RLIMIT_NOFILE, 65536); result.is_error())
