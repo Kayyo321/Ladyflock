@@ -38,7 +38,8 @@ private:
     virtual void keyPressEvent(QKeyEvent* event) override
     {
         auto sizes = splitter()->sizes();
-        if (sizes.size() != 2 || event->modifiers() != Qt::NoModifier)
+        // macOS reports the arrow keys with the keypad modifier.
+        if (sizes.size() != 2 || (event->modifiers() & ~Qt::KeypadModifier) != Qt::NoModifier)
             return QSplitterHandle::keyPressEvent(event);
 
         bool horizontal = orientation() == Qt::Horizontal;
