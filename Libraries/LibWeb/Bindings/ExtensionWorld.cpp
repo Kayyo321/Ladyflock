@@ -1216,6 +1216,14 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             auto websites = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
             websites->define_direct_property("hyperlinkAuditingEnabled"_utf16_fly_string, create_namespace_object("privacy.websites.hyperlinkAuditingEnabled"sv, setting_methods.span(), is_chrome), JS::default_attributes);
             privacy->define_direct_property("websites"_utf16_fly_string, websites, JS::default_attributes);
+            auto services = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+            for (auto setting : Array { "passwordSavingEnabled"sv, "autofillEnabled"sv, "autofillAddressEnabled"sv, "autofillCreditCardEnabled"sv }) {
+                auto name = MUST(String::formatted("privacy.services.{}", setting));
+                auto object = create_namespace_object(name, setting_methods.span(), is_chrome);
+                object.as_object().define_direct_property("onChange"_utf16_fly_string, create_event_object(name, "onChange"sv), JS::default_attributes);
+                services->define_direct_property(Utf16FlyString::from_utf8(setting), object, JS::default_attributes);
+            }
+            privacy->define_direct_property("services"_utf16_fly_string, services, JS::default_attributes);
             root->define_direct_property("privacy"_utf16_fly_string, privacy, JS::default_attributes);
         }
 
@@ -1240,9 +1248,11 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             root->define_direct_property("webNavigation"_utf16_fly_string, navigation, JS::default_attributes);
         }
 
-        static constexpr Array window_methods { "getCurrent"sv, "getLastFocused"sv, "get"sv, "getAll"sv };
+        static constexpr Array window_methods { "getCurrent"sv, "getLastFocused"sv, "get"sv, "getAll"sv, "create"sv };
         auto windows = create_namespace_object("windows"sv, window_methods.span(), is_chrome);
         windows.as_object().define_direct_property("onFocusChanged"_utf16_fly_string, create_event_object("windows"sv, "onFocusChanged"sv), JS::default_attributes);
+        windows.as_object().define_direct_property("onCreated"_utf16_fly_string, create_event_object("windows"sv, "onCreated"sv), JS::default_attributes);
+        windows.as_object().define_direct_property("onRemoved"_utf16_fly_string, create_event_object("windows"sv, "onRemoved"sv), JS::default_attributes);
         windows.as_object().define_direct_property("WINDOW_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::default_attributes);
         windows.as_object().define_direct_property("WINDOW_ID_CURRENT"_utf16_fly_string, JS::Value(-2), JS::default_attributes);
         static constexpr Array window_types { "normal"sv, "popup"sv, "panel"sv, "devtools"sv };
@@ -1271,7 +1281,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         }
 
         // action + browserAction
-        static constexpr Array action_methods { "setTitle"sv, "getTitle"sv, "setBadgeText"sv, "getBadgeText"sv, "setBadgeBackgroundColor"sv, "getBadgeBackgroundColor"sv, "setPopup"sv, "getPopup"sv, "setIcon"sv, "enable"sv, "disable"sv };
+        static constexpr Array action_methods { "setTitle"sv, "getTitle"sv, "setBadgeText"sv, "getBadgeText"sv, "setBadgeBackgroundColor"sv, "getBadgeBackgroundColor"sv, "setPopup"sv, "getPopup"sv, "setIcon"sv, "enable"sv, "disable"sv, "getUserSettings"sv };
         auto action_obj = create_namespace_object("action"sv, action_methods.span(), is_chrome);
         action_obj.as_object().define_direct_property("onClicked"_utf16_fly_string, create_event_object("action"sv, "onClicked"sv), JS::default_attributes);
         root->define_direct_property("action"_utf16_fly_string, action_obj, JS::default_attributes);

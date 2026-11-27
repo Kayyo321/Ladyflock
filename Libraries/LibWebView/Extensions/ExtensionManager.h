@@ -240,6 +240,7 @@ public:
         Optional<Web::HTML::CrossProcessId> source_document_id = {});
 
     void notify_tab_created(ViewImplementation const&);
+    void notify_window_removed(u64 window_id);
     enum class TabChange { Loading,
         Complete,
         Title,
@@ -352,6 +353,19 @@ private:
     };
     HashMap<String, HashMap<String, ExtensionNotification>> m_notifications;
     u64 m_next_notification_number { 1 };
+    JsonObject window_info(StringView extension_id, u64 window_id, bool populate) const;
+    struct PendingWindowCreation {
+        u64 id { 0 };
+        WeakPtr<WebContentClient> caller;
+        Web::PageId page_id;
+        Web::HTML::CrossProcessId document_id;
+        u64 call_id { 0 };
+        String extension_id;
+        RefPtr<Core::Timer> timeout;
+    };
+    Vector<PendingWindowCreation> m_pending_window_creations;
+    u64 m_next_window_creation_id { 1 };
+    HashTable<u64> m_known_window_ids;
     HashMap<u64, String> m_extension_downloads;
     OwnPtr<DownloadEvents> m_download_events;
     HashMap<String, u32> m_idle_detection_intervals;

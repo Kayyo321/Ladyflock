@@ -16,6 +16,7 @@
 #include <LibCore/StandardPaths.h>
 #include <LibCore/Timer.h>
 #include <LibFileSystem/FileSystem.h>
+#include <LibGfx/SystemTheme.h>
 #include <LibHTTP/Cookie/ParsedCookie.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
@@ -24,9 +25,11 @@
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/Extensions/NativeMessaging.h>
+#include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/NotificationManager.h>
 #include <LibWebView/RecordingNotificationBackend.h>
 #include <LibWebView/SystemIdle.h>
+#include <LibWebView/Utilities.h>
 
 namespace {
 
@@ -38,6 +41,22 @@ public:
         : Test::HeadlessApplication(move(ladybird_binary_path))
     {
     }
+
+    // Stands in for the UI's new window: a view in a window of its own, reported as the Hub reports a window's tab.
+    virtual void open_url_in_new_window(URL::URL const& url, WebView::IsPrivate) override
+    {
+        opened_window_urls.append(url);
+        auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
+        auto view = WebView::HeadlessWebView::create(MUST(Gfx::load_system_theme(theme_path.string())), { 400, 300 }, WebView::IsPrivate::No);
+        view->set_extension_window_id(next_window_id++);
+        view->load_from_browser_ui(url);
+        default_session().extension_manager->notify_tab_created(*view);
+        windows.append(move(view));
+    }
+
+    Vector<URL::URL> opened_window_urls;
+    Vector<NonnullOwnPtr<WebView::HeadlessWebView>> windows;
+    u64 next_window_id { 77 };
 
     virtual void create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions& request_server_options, WebView::WebContentOptions&) override
     {
@@ -509,4 +528,46 @@ TEST_CASE(clipboard_permissions_let_extension_pages_use_the_clipboard_without_a_
     EXPECT_EQ(granted.get_string("write"sv).value(), "written"sv);
     EXPECT_EQ(granted.get_string("after"sv).value(), "copied password"sv);
     EXPECT_EQ(app->clipboard_text(), "copied password"_utf16);
+}
+
+// A password manager turns off the browser's own password saving, reads its toolbar state, and opens its popup as a
+// window of its own.
+TEST_CASE(password_manager_startup_settings_and_popout_windows)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatPopout"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "popout"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Popout", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "popout@example.test"}},
+        "permissions": ["privacy", "storage"], "background": {"scripts": ["background.js"]},
+        "browser_action": {"default_popup": "popup.html"}
+    })"sv);
+    write_file(directory, "popup.html"sv, "<!DOCTYPE html><title>Popup</title>"sv);
+    write_file(directory, "background.js"sv, R"(
+        const created = [];
+        browser.windows.onCreated.addListener(window => created.push(window.id));
+        (async () => {
+            const saving = await browser.privacy.services.passwordSavingEnabled.get({});
+            const turnedOff = await browser.privacy.services.passwordSavingEnabled.set({ value: false });
+            const settings = await browser.browserAction.getUserSettings();
+            const window = await browser.windows.create({ url: "popup.html", type: "popup", width: 400, height: 600 });
+            const refused = await browser.windows.create({ url: "file:///etc/passwd" }).then(() => "opened", () => "refused");
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await browser.storage.local.set({ saving, turnedOff, toolbar: typeof settings.isOnToolbar, window: window.id, created, refused, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_object("saving"sv)->serialized(), R"({"value":false,"levelOfControl":"not_controllable"})"sv);
+    EXPECT(results.get_bool("turnedOff"sv) == false);
+    EXPECT_EQ(results.get_string("toolbar"sv).value(), "boolean"sv);
+    EXPECT_EQ(results.get_u32("window"sv).value(), 77u);
+    EXPECT_EQ(results.get_array("created"sv)->serialized(), "[77]"sv);
+    EXPECT_EQ(results.get_string("refused"sv).value(), "refused"sv);
+    EXPECT_EQ(app->opened_window_urls.size(), 1u);
+    if (!app->opened_window_urls.is_empty())
+        EXPECT_EQ(app->opened_window_urls.first().serialize(), MUST(String::formatted("moz-extension://{}/popup.html", installed.uuid)));
 }

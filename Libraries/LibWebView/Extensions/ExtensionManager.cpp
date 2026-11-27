@@ -935,7 +935,7 @@ void ExtensionManager::dispatch_to_extensions_with_permission(StringView permiss
 {
     Vector<String> listeners;
     for (auto const& [id, extension] : m_extensions_by_id) {
-        if (extension.enabled && extension.manifest.has_permission(permission))
+        if (extension.enabled && (permission.is_empty() || extension.manifest.has_permission(permission)))
             listeners.append(id);
     }
     for (auto const& id : listeners)
@@ -3719,6 +3719,35 @@ void ExtensionManager::handle_api_call(
         return;
     }
 
+    // Ladyflock saves no passwords and fills no forms itself, so these are off and no extension can turn them on. A
+    // password manager turns them off at startup, which then changes nothing.
+    if (namespace_name.bytes_as_string_view().starts_with("privacy.services."sv)) {
+        if (!ext->manifest.has_permission("privacy"sv)) {
+            reply_err("Extension lacks the privacy permission");
+            return;
+        }
+        if (method_name == "get"sv) {
+            JsonObject setting;
+            setting.set("value"sv, false);
+            setting.set("levelOfControl"sv, "not_controllable"sv);
+            reply_ok(move(setting));
+            return;
+        }
+        if (method_name.is_one_of("set"sv, "clear"sv)) {
+            reply_ok(JsonValue(false));
+            return;
+        }
+        reply_err("Unsupported privacy setting method");
+        return;
+    }
+
+    if ((namespace_name == "action"sv || namespace_name == "browserAction"sv) && method_name == "getUserSettings"sv) {
+        JsonObject settings;
+        settings.set("isOnToolbar"sv, m_action_controller.resolved_state(extension_id).pinned);
+        reply_ok(move(settings));
+        return;
+    }
+
     bool is_network_prediction = namespace_name == "privacy.network.networkPredictionEnabled"sv;
     bool is_gpc = namespace_name == "privacy.network.globalPrivacyControl"sv;
     bool is_hyperlink_auditing = namespace_name == "privacy.websites.hyperlinkAuditingEnabled"sv;
@@ -3830,24 +3859,7 @@ void ExtensionManager::handle_api_call(
                 window_ids.append(view->extension_window_id());
         }
         auto window_json = [&](u64 window_id, JsonValue const& options) {
-            JsonObject window;
-            window.set("id"sv, window_id);
-            window.set("focused"sv, focused_window == window_id);
-            window.set("incognito"sv, false);
-            window.set("type"sv, "normal"sv);
-            window.set("state"sv, "normal"sv);
-            window.set("alwaysOnTop"sv, false);
-            if (options.is_object() && options.as_object().get_bool("populate"sv) == true) {
-                JsonArray tabs;
-                for (auto* view : ordinary_tab_views()) {
-                    if (view->extension_window_id() != window_id)
-                        continue;
-                    if (auto tab = tab_info_for_extension(extension_id, *view); tab.has_value())
-                        tabs.must_append(serialize_tab(*tab));
-                }
-                window.set("tabs"sv, move(tabs));
-            }
-            return window;
+            return window_info(extension_id, window_id, options.is_object() && options.as_object().get_bool("populate"sv) == true);
         };
         auto options_at = [&](size_t index) { return index < arguments.size() ? arguments[index] : JsonValue {}; };
 
@@ -3885,6 +3897,47 @@ void ExtensionManager::handle_api_call(
             for (auto window_id : window_ids)
                 windows.must_append(window_json(window_id, options));
             reply_ok(move(windows));
+            return;
+        }
+        if (method_name == "create"sv) {
+            auto options = options_at(0);
+            auto const& details = options.is_object() ? options.as_object() : empty_obj;
+            if (details.get_bool("incognito"sv) == true) {
+                reply_err("Extension does not have permission for incognito mode");
+                return;
+            }
+            // The first URL opens in the new window. Ladyflock opens every window as a normal one.
+            Optional<String> requested;
+            if (auto url = details.get_string("url"sv); url.has_value())
+                requested = *url;
+            else if (auto urls = details.get_array("url"sv); urls.has_value() && !urls->is_empty() && urls->at(0).is_string())
+                requested = urls->at(0).as_string();
+            auto base = URL::Parser::basic_parse(ByteString::formatted("moz-extension://{}/", ext->uuid));
+            auto url = requested.has_value() ? URL::Parser::basic_parse(*requested, base) : URL::Parser::basic_parse("about:blank"sv);
+            bool own_page = url.has_value() && url->scheme() == "moz-extension"sv && url->serialized_host() == ext->uuid;
+            if (!url.has_value() || (!own_page && !url->scheme().is_one_of("http"sv, "https"sv) && url->serialize() != "about:blank"sv)) {
+                reply_err("Illegal URL for a new window");
+                return;
+            }
+            auto pending_id = m_next_window_creation_id++;
+            m_pending_window_creations.append(PendingWindowCreation {
+                .id = pending_id,
+                .caller = caller.make_weak_ptr<WebContentClient>(),
+                .page_id = page_id,
+                .document_id = document_id,
+                .call_id = call_id,
+                .extension_id = extension_id,
+                .timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [this, pending_id] {
+                    auto index = m_pending_window_creations.find_first_index_if([&](auto const& pending) { return pending.id == pending_id; });
+                    if (!index.has_value())
+                        return;
+                    auto pending = m_pending_window_creations.take(*index);
+                    if (auto renderer = pending.caller.strong_ref())
+                        renderer->async_extension_api_response(pending.page_id, pending.document_id, pending.call_id, false, "\"The window did not open\""_string);
+                }),
+            });
+            m_pending_window_creations.last().timeout->start();
+            Application::the().open_url_in_new_window(*url, IsPrivate::No);
             return;
         }
         reply_err("Unsupported windows method");
@@ -4786,8 +4839,57 @@ void ExtensionManager::handle_api_call(
     reply_err("Unsupported extension API namespace");
 }
 
+JsonObject ExtensionManager::window_info(StringView extension_id, u64 window_id, bool populate) const
+{
+    auto active = Application::the().active_web_view();
+    JsonObject window;
+    window.set("id"sv, window_id);
+    window.set("focused"sv, active.has_value() && active->is_private() == IsPrivate::No && active->extension_window_id() == window_id);
+    window.set("incognito"sv, false);
+    window.set("type"sv, "normal"sv);
+    window.set("state"sv, "normal"sv);
+    window.set("alwaysOnTop"sv, false);
+    if (populate) {
+        JsonArray tabs;
+        for (auto* view : ordinary_tab_views()) {
+            if (view->extension_window_id() != window_id)
+                continue;
+            if (auto tab = tab_info_for_extension(extension_id, *view); tab.has_value())
+                tabs.must_append(serialize_tab(*tab));
+        }
+        window.set("tabs"sv, move(tabs));
+    }
+    return window;
+}
+
+void ExtensionManager::notify_window_removed(u64 window_id)
+{
+    if (!m_known_window_ids.remove(window_id))
+        return;
+    JsonArray arguments;
+    arguments.must_append(window_id);
+    dispatch_to_extensions_with_permission({}, "windows"sv, "onRemoved"sv, arguments.serialized());
+}
+
 void ExtensionManager::notify_tab_created(ViewImplementation const& view)
 {
+    // A window's first tab is the window's creation, and the answer to the oldest windows.create still waiting.
+    if (auto window_id = view.extension_window_id(); window_id != 0 && m_known_window_ids.set(window_id) == AK::HashSetResult::InsertedNewEntry) {
+        if (!m_pending_window_creations.is_empty()) {
+            auto pending = m_pending_window_creations.take_first();
+            pending.timeout->stop();
+            if (auto renderer = pending.caller.strong_ref())
+                renderer->async_extension_api_response(pending.page_id, pending.document_id, pending.call_id, true, window_info(pending.extension_id, window_id, true).serialized());
+        }
+        for (auto const& [id, extension] : m_extensions_by_id) {
+            if (!extension.enabled)
+                continue;
+            JsonArray arguments;
+            arguments.must_append(window_info(id, window_id, false));
+            dispatch_event_to_extension(extension.extension_id, "windows"sv, "onCreated"sv, arguments.serialized());
+        }
+    }
+
     for (auto const& [id, extension] : m_extensions_by_id) {
         if (auto tab = tab_info_for_extension(id, view); tab.has_value()) {
             JsonArray args;

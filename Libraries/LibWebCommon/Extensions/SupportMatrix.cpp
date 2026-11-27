@@ -362,6 +362,15 @@ static constexpr Array s_supported_api_methods {
     "downloads.onErased"sv,
     "navigator.clipboard (clipboardWrite, clipboardRead)"sv,
     "theme.getCurrent (no theme; update and reset are refused)"sv,
+    "privacy.services.passwordSavingEnabled"sv,
+    "privacy.services.autofillEnabled"sv,
+    "privacy.services.autofillAddressEnabled"sv,
+    "privacy.services.autofillCreditCardEnabled"sv,
+    "action.getUserSettings"sv,
+    "browserAction.getUserSettings"sv,
+    "windows.create (opens a normal window)"sv,
+    "windows.onCreated"sv,
+    "windows.onRemoved"sv,
     "omnibox events (the keyword is not bound to the address bar)"sv,
 };
 
