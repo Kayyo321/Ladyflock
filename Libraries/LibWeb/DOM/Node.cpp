@@ -3305,8 +3305,12 @@ void Node::serialize_tree_as_json(JsonObjectSerializer<Utf16StringBuilder>& obje
         MUST(object.add("type"sv, "comment"sv));
         MUST(object.add("data"sv, static_cast<DOM::Comment const&>(*this).data().utf16_view()));
     } else if (is_shadow_root()) {
+        auto const& shadow_root = static_cast<DOM::ShadowRoot const&>(*this);
         MUST(object.add("type"sv, "shadow-root"));
-        MUST(object.add("mode"sv, static_cast<DOM::ShadowRoot const&>(*this).mode() == ShadowRootMode::Open ? "open"sv : "closed"sv));
+        MUST(object.add("mode"sv, shadow_root.mode() == ShadowRootMode::Open ? "open"sv : "closed"sv));
+        // A form control's own internals, which an inspector hides unless asked to show them.
+        if (shadow_root.is_user_agent_internal())
+            MUST(object.add("userAgent"sv, true));
     }
 
     MUST((object.add("visible"sv, !!layout_node(read))));

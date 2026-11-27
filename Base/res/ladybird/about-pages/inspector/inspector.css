@@ -649,6 +649,11 @@ body.inspector-shell {
     color: var(--primary) !important;
 }
 
+.dom-row.picker-hover {
+    background: var(--choice-fill);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .dom-row.search-match {
     outline: 1px solid var(--accent);
     outline-offset: -1px;

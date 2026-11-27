@@ -213,6 +213,8 @@ export class SidebarsController {
         const gridNodes = [];
         const flexNodes = [];
         for (const node of this.app.elementsTree.nodesById.values()) {
+            if (!this.app.elementsTree.isNodeVisibleInTree(node.id))
+                continue;
             const d = String(node.display || "");
             if (d.includes("grid"))
                 gridNodes.push(node);

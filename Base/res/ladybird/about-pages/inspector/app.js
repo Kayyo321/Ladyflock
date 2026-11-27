@@ -50,6 +50,7 @@ class InspectorApp {
 
         this.prefs = {
             showWhitespace: false,
+            showUserAgentShadowDom: false,
             useApcaContrast: false,
             showUaStyles: false,
         };
@@ -298,16 +299,19 @@ class InspectorApp {
         onEvent("pickerStateChanged", data => {
             this.state.pickerActive = !!data?.active;
             this.syncPickerButton();
+            if (!this.state.pickerActive)
+                this.elementsTree.previewNode(null);
         });
 
         onEvent("pickerEvent", data => {
             if (data?.type === "picked" && data.nodeId) {
+                this.elementsTree.previewNode(null);
                 this.selectPanel("elements");
                 this.selectSidebar("styles");
                 this.elementsTree.selectNode(data.nodeId, null, { reveal: true, focusRow: true });
             } else if (data?.type === "hovered" && data.nodeId) {
-                // Preview hovered node in tree
-                this.elementsTree.expandAncestors(data.nodeId);
+                // Show the row of the node under the pointer, as the picker's tooltip promises.
+                this.elementsTree.previewNode(data.nodeId);
             }
         });
 
@@ -745,6 +749,7 @@ class InspectorApp {
             return el("label", { class: "inline-check" }, cb, label);
         };
         body.appendChild(opt("Show authored whitespace text nodes in Elements tree", "showWhitespace"));
+        body.appendChild(opt("Show user-agent shadow DOM in Elements tree", "showUserAgentShadowDom"));
         body.appendChild(opt("Show User-Agent stylesheet rules in Styles", "showUaStyles"));
         body.appendChild(opt("Show APCA Lc contrast alongside WCAG 2 ratio", "useApcaContrast"));
         if (this.state.isPrivate)

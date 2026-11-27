@@ -16,6 +16,13 @@ function pseudoOf(node) {
     return node.type === "pseudo-element" ? node.name : null;
 }
 
+// Elements that never have a closing tag in markup.
+const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+
+function isVoidElement(node) {
+    return node.type === "element" && VOID_ELEMENTS.has(String(node.name || "").toLowerCase());
+}
+
 export class ElementsTreeController {
     constructor(app) {
         this.app = app;
@@ -37,6 +44,10 @@ export class ElementsTreeController {
         this.searchIndex = -1;
         this.hiddenNodeIds = new Set();
         this.ghostSnapshot = null;
+        this.hoverPreviewId = null;
+        // While an inline editor is open, re-rendering would remove it; the render waits until the edit ends.
+        this.activeEditors = 0;
+        this.renderDeferred = false;
 
         this.bindEvents();
     }
@@ -171,6 +182,9 @@ export class ElementsTreeController {
             const row = this.treeEl.querySelector(".dom-row.selected");
             this.treeEl.focus({ preventScroll: true });
             row?.scrollIntoView({ block: "nearest" });
+            // Moving through the tree from the keyboard shows the element on the page, as hovering its row does.
+            if (!this.app.state.loupeLatched && this.nodesById.has(nodeId))
+                sendCommand("highlightNode", { nodeId, pseudoElement: pseudo || "" }).catch(() => {});
         }
     }
 
@@ -276,10 +290,12 @@ export class ElementsTreeController {
             return out;
         if (node.type === "text" && !this.app.prefs.showWhitespace && !(node.text || "").trim())
             return out;
+        if (!this.isShown(node))
+            return out;
 
         const key = this.nodeKey(node);
         const children = (node.children || []).filter(
-            c => c.type !== "text" || this.app.prefs.showWhitespace || (c.text || "").trim().length > 0
+            c => this.isShown(c) && (c.type !== "text" || this.app.prefs.showWhitespace || (c.text || "").trim().length > 0)
         );
         const hasChildren = children.length > 0;
         const isExpanded = this.expanded.has(key);
@@ -289,13 +305,56 @@ export class ElementsTreeController {
         if (hasChildren && isExpanded) {
             for (const child of children)
                 this.buildFlatRows(child, depth + 1, out);
-            if (node.type === "element")
+            if (node.type === "element" && !isVoidElement(node))
                 out.push({ node, key: `${key}:close`, depth, hasChildren: false, isExpanded: false, isClosing: true });
         }
         return out;
     }
 
+    beginEditing() {
+        this.activeEditors++;
+    }
+
+    endEditing({ refocus }) {
+        this.activeEditors = Math.max(0, this.activeEditors - 1);
+        this.render();
+        // Enter or Escape returns to the row; a click elsewhere keeps the focus it moved.
+        if (refocus)
+            this.treeEl.focus({ preventScroll: true });
+    }
+
+    // The picker hovers a node on the page: show its row without selecting it.
+    previewNode(nodeId) {
+        if (this.hoverPreviewId === nodeId)
+            return;
+        this.hoverPreviewId = nodeId;
+        if (nodeId !== null && this.nodesById.has(nodeId))
+            this.expandAncestors(nodeId);
+        this.render();
+        if (nodeId !== null)
+            this.treeEl.querySelector(".dom-row.picker-hover")?.scrollIntoView({ block: "nearest" });
+    }
+
+    isShown(node) {
+        return node.type !== "shadow-root" || !node.userAgent || this.app.prefs.showUserAgentShadowDom;
+    }
+
+    // Whether the node is in the tree as drawn, rather than inside a shadow root the tree hides.
+    isNodeVisibleInTree(nodeId) {
+        for (let cur = nodeId; cur !== undefined; cur = this.parentById.get(cur)) {
+            const node = this.nodesById.get(cur);
+            if (node && !this.isShown(node))
+                return false;
+        }
+        return true;
+    }
+
     render() {
+        if (this.activeEditors > 0) {
+            this.renderDeferred = true;
+            return;
+        }
+        this.renderDeferred = false;
         this.treeEl.removeAttribute("aria-activedescendant");
         this.treeEl.textContent = "";
         if (!this.rootNode) {
@@ -317,6 +376,7 @@ export class ElementsTreeController {
                     isSelected ? "selected" : "",
                     matchSet.has(node.id) && !row.isClosing ? "search-match" : "",
                     this.hiddenNodeIds.has(node.id) ? "hidden-node" : "",
+                    !row.isClosing && this.hoverPreviewId !== null && nodeIdOf(node) === this.hoverPreviewId && !pseudoOf(node) ? "picker-hover" : "",
                 ].filter(Boolean).join(" "),
                 role: row.isClosing ? "presentation" : "treeitem",
                 "aria-hidden": row.isClosing ? "true" : undefined,
@@ -389,7 +449,7 @@ export class ElementsTreeController {
             return;
         }
         if (node.type === "shadow-root") {
-            rowEl.appendChild(el("span", { class: "dom-pseudo", text: `#shadow-root (${node.mode || "open"})` }));
+            rowEl.appendChild(el("span", { class: "dom-pseudo", text: `#shadow-root (${node.userAgent ? "user-agent" : node.mode || "open"})` }));
             return;
         }
         if (node.type === "pseudo-element") {
@@ -439,7 +499,7 @@ export class ElementsTreeController {
                 markup.appendChild(document.createTextNode('"'));
             }
         }
-        markup.appendChild(el("span", { class: "dom-tag", text: showEllipsis ? ">…<" + `/${tagName}>` : ">" }));
+        markup.appendChild(el("span", { class: "dom-tag", text: showEllipsis && !isVoidElement(node) ? ">…<" + `/${tagName}>` : ">" }));
 
         rowEl.appendChild(markup);
 
@@ -667,12 +727,13 @@ export class ElementsTreeController {
 
     beginInlineTagEdit(targetSpan, node) {
         const before = String(node.name || "").toLowerCase();
-        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
+        const input = el("input", { class: "dom-inline-input", type: "text", value: before, "aria-label": "Tag name" });
         targetSpan.replaceWith(input);
+        this.beginEditing();
         input.focus();
         input.select();
         let finished = false;
-        const finish = commit => {
+        const finish = (commit, refocus) => {
             if (finished)
                 return;
             finished = true;
@@ -680,24 +741,25 @@ export class ElementsTreeController {
             if (commit && next && next !== before) {
                 sendCommand("setNodeTag", { nodeId: node.id, tag: next, beforeTag: before }).then(() => {
                     announce(`Changed tag to ${next}`);
-                }).catch(() => {});
+                }).catch(err => this.app.showToast(err.message));
             }
-            this.render();
+            this.endEditing({ refocus });
         };
         input.addEventListener("keydown", e => {
-            if (e.key === "Enter") { e.preventDefault(); finish(true); }
-            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+            if (e.key === "Enter") { e.preventDefault(); finish(true, true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false, true); }
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
+        input.addEventListener("blur", () => finish(true, false), { once: true });
     }
 
     beginInlineAttrEdit(targetSpan, node, attrName, beforeVal) {
-        const input = el("input", { class: "dom-inline-input", type: "text", value: beforeVal });
+        const input = el("input", { class: "dom-inline-input", type: "text", value: beforeVal, "aria-label": `Value of ${attrName}` });
         targetSpan.replaceWith(input);
+        this.beginEditing();
         input.focus();
         input.select();
         let finished = false;
-        const finish = commit => {
+        const finish = (commit, refocus) => {
             if (finished)
                 return;
             finished = true;
@@ -710,39 +772,40 @@ export class ElementsTreeController {
                     value: next,
                     beforeValue: beforeVal,
                     label: this.describeNodeShort(node),
-                }).then(() => announce(`Updated ${attrName}`)).catch(() => {});
+                }).then(() => announce(`Updated ${attrName}`)).catch(err => this.app.showToast(err.message));
             }
-            this.render();
+            this.endEditing({ refocus });
         };
         input.addEventListener("keydown", e => {
-            if (e.key === "Enter") { e.preventDefault(); finish(true); }
-            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+            if (e.key === "Enter") { e.preventDefault(); finish(true, true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false, true); }
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
+        input.addEventListener("blur", () => finish(true, false), { once: true });
     }
 
     beginInlineTextEdit(rowEl, node) {
         const before = node.text || "";
-        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
-        rowEl.textContent = "";
-        rowEl.appendChild(input);
+        const input = el("input", { class: "dom-inline-input", type: "text", value: before, "aria-label": "Text" });
+        // Keep the twisty column so the text stays where it was drawn.
+        rowEl.replaceChildren(el("span", { class: "dom-twisty" }), input);
+        this.beginEditing();
         input.focus();
         input.select();
         let finished = false;
-        const finish = commit => {
+        const finish = (commit, refocus) => {
             if (finished)
                 return;
             finished = true;
             if (commit && input.value !== before) {
-                sendCommand("setNodeText", { nodeId: node.id, text: input.value, beforeText: before }).catch(() => {});
+                sendCommand("setNodeText", { nodeId: node.id, text: input.value, beforeText: before }).catch(err => this.app.showToast(err.message));
             }
-            this.render();
+            this.endEditing({ refocus });
         };
         input.addEventListener("keydown", e => {
-            if (e.key === "Enter") { e.preventDefault(); finish(true); }
-            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+            if (e.key === "Enter") { e.preventDefault(); finish(true, true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false, true); }
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
+        input.addEventListener("blur", () => finish(true, false), { once: true });
     }
 
     async openOuterHtmlEditor(node) {
@@ -752,37 +815,38 @@ export class ElementsTreeController {
             const row = this.treeEl.querySelector(`.dom-row[data-node-id="${node.id}"]`);
             if (!row)
                 return;
-            const ta = el("textarea", { class: "dom-html-editor" });
+            const ta = el("textarea", { class: "dom-html-editor", "aria-label": "Edit as HTML (Cmd/Ctrl+Enter to apply, Escape to cancel)" });
             ta.value = beforeHtml;
             row.insertAdjacentElement("afterend", ta);
+            this.beginEditing();
             ta.focus();
             let finished = false;
-            const commit = () => {
+            const finish = (apply, refocus) => {
                 if (finished)
                     return;
                 finished = true;
                 const updated = ta.value;
                 ta.remove();
-                if (updated !== beforeHtml) {
+                if (apply && updated !== beforeHtml) {
                     sendCommand("setNodeOuterHtml", {
                         nodeId: node.id,
                         html: updated,
                         beforeHtml,
                         label: this.describeNodeShort(node),
-                    }).then(() => announce("Updated element HTML")).catch(() => {});
+                    }).then(() => announce("Updated element HTML")).catch(err => this.app.showToast(err.message));
                 }
+                this.endEditing({ refocus });
             };
             ta.addEventListener("keydown", e => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                     e.preventDefault();
-                    commit();
+                    finish(true, true);
                 } else if (e.key === "Escape") {
                     e.preventDefault();
-                    finished = true;
-                    ta.remove();
+                    finish(false, true);
                 }
             });
-            ta.addEventListener("blur", commit, { once: true });
+            ta.addEventListener("blur", () => finish(true, false), { once: true });
         } catch {
             // ignore
         }
@@ -890,7 +954,7 @@ export class ElementsTreeController {
             { sep: true },
             { label: "Scroll into view", disabled: !isElement || isDetached, run: () => sendCommand("consoleEvaluate", { expression: "$0 && $0.scrollIntoView({ block: 'center' })" }) },
             { label: "Focus", disabled: !isElement || isDetached, run: () => sendCommand("consoleEvaluate", { expression: "$0 && $0.focus()" }) },
-            { label: "Store as global variable", disabled: isDetached, run: () => sendCommand("consoleEvaluate", { expression: "window.temp1 = $0; temp1" }) },
+            { label: "Store as global variable", disabled: isDetached, run: () => this.storeAsGlobalVariable() },
             { label: "Capture node screenshot", disabled: !isElement || isDetached, run: () => this.captureNodeScreenshot(node) },
             { sep: true },
             { label: "Copy outerHTML", disabled: !isElement, run: () => this.copyHtml(node, true) },
@@ -912,16 +976,18 @@ export class ElementsTreeController {
         const row = this.treeEl.querySelector(`.dom-row[data-node-id="${node.id}"]`);
         if (!row)
             return;
-        const input = el("input", { class: "dom-inline-input", type: "text", placeholder: 'name="value"' });
+        const input = el("input", { class: "dom-inline-input", type: "text", placeholder: 'name="value"', "aria-label": "New attribute" });
         row.appendChild(input);
+        this.beginEditing();
         input.focus();
         let finished = false;
-        const finish = commit => {
+        const finish = (commit, refocus = false) => {
             if (finished)
                 return;
             finished = true;
             const raw = input.value.trim();
             input.remove();
+            this.endEditing({ refocus });
             if (!commit || !raw)
                 return;
             const eq = raw.indexOf("=");
@@ -935,14 +1001,28 @@ export class ElementsTreeController {
                     value: val,
                     isNew: true,
                     label: this.describeNodeShort(node),
-                }).catch(() => {});
+                }).catch(err => this.app.showToast(err.message));
             }
         };
         input.addEventListener("keydown", e => {
-            if (e.key === "Enter") { e.preventDefault(); finish(true); }
-            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+            if (e.key === "Enter") { e.preventDefault(); finish(true, true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false, true); }
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
+        input.addEventListener("blur", () => finish(true, false), { once: true });
+    }
+
+    // As other browsers do: the next free tempN, so storing a second node keeps the first.
+    async storeAsGlobalVariable() {
+        try {
+            const res = await sendCommand("consoleEvaluate", {
+                expression: "(() => { let i = 1; while (`temp${i}` in globalThis) i++; globalThis[`temp${i}`] = $0; return `temp${i}`; })()",
+            });
+            if (res?.thrown || res?.type !== "string")
+                throw new Error("Could not store the element.");
+            this.app.showToast(`Stored as ${res.value}`);
+        } catch (err) {
+            this.app.showToast(err.message);
+        }
     }
 
     async copyHtml(node, outer) {
