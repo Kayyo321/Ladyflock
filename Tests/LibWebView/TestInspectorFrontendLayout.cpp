@@ -994,6 +994,27 @@ TEST_CASE(inspector_css_overview_reads_current_styles)
     )JS"sv);
 }
 
+// A page can go away while the Inspector has it in device mode, without the Inspector asking the page's view for its
+// viewport as the view is destroyed.
+TEST_CASE(inspector_target_closes_in_device_mode)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorTargetCloses"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+
+    expect_holds(*fixture.frontend, "Device mode is on"sv, R"JS(
+        const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendEngineCommand("setDeviceMode", { enabled: true, width: 390, height: 844, dpr: 2 });
+        return null;
+    )JS"sv);
+    {
+        auto closing_target = move(fixture.target);
+    }
+    // NB: The view's destruction runs in this process, which would have stopped at the call into the destroyed view.
+    expect_holds(*fixture.frontend, "The Inspector outlives its page"sv, "return null;"sv);
+    EXPECT(!WebView::InspectorSession::find_for_frontend_view(fixture.frontend->view_id()));
+}
+
 // Answers every request on the loopback interface with the same small page.
 class TestPageServer {
 public:

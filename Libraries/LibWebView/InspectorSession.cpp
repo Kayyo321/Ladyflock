@@ -442,9 +442,14 @@ void InspectorSession::target_did_close()
     payload.set("isPrivate"sv, m_is_private == IsPrivate::Yes);
     send_event("targetClosed"sv, move(payload));
 
-    detach_from_target_client();
+    // This runs as the view is destroyed, when the part of it that would answer (its viewport size, say) is already
+    // gone. What attaching changed goes away with the view and its page, so let go of it without calling the view.
     auto target_id = m_target_view_id;
     m_target_view = nullptr;
+    detach_from_target_client();
+    m_active_rendering_overrides = {};
+    m_active_device_overrides = {};
+    m_active_sensor_overrides = {};
 
     if (auto& on_close = ui_callbacks().on_close_requested)
         on_close(target_id);
