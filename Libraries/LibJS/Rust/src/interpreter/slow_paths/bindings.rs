@@ -988,7 +988,9 @@ fn binding_from_supplied_object_environment(
             break;
         }
         if !current.is_declarative_environment() && current.has_binding(vm, identifier, None)? {
-            return current.get_binding_value(vm, identifier, strict == Strict::Yes).map(Some);
+            return current
+                .get_binding_value(vm, identifier, strict == Strict::Yes)
+                .map(Some);
         }
         environment = current.outer_environment();
     }
