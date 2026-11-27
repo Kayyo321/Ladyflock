@@ -833,10 +833,11 @@ zoom chip, drag and drop) is on the canvas's motion spec board.
 ### Focus order
 
 Ladyflock button → tabs (one stop; arrow keys move between tabs) → back, forward, reload →
-address field → page. F6 moves between the chrome and the page. In a split view, F6 goes from the
-chrome to the focused side, then the other side, then back to the chrome (Shift+F6 goes the other
-way); the narrow-window fallback skips the side that doesn't show. Tab order in a split view runs
-through the start side's page, the divider, then the end side's pane bar and page.
+address field → page. F6 moves from the chrome to the page, then through its Inspector when open,
+and back to the chrome. In a split view, F6 visits the start and end sides in order, including each
+docked Inspector. Shift+F6 reverses the order. The narrow-window fallback visits the visible side.
+Tab order in a split view runs through the start side's page, the divider, then the end side's pane
+bar and page.
 
 ### Shortcuts
 

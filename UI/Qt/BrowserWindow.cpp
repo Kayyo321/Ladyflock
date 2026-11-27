@@ -1851,8 +1851,15 @@ void BrowserWindow::move_focus_between_chrome_and_page()
         m_current_tab->focus_location_editor();
         return;
     }
-    if (next.tab != m_current_tab)
-        focus_split_view_side(*next.tab, SideFocus::Page);
+    if (next.tab != m_current_tab) {
+        // Select the side without restoring its parked address edit before moving to the page or Inspector.
+        m_is_switching_split_view_side = true;
+        m_tabs_container->set_current_tab(next.tab);
+        m_is_switching_split_view_side = false;
+#if defined(AK_OS_MACOS)
+        make_appkit_window_first_responder(*next.widget);
+#endif
+    }
     if (next.inspector)
         next.inspector->focus_inspector();
     else
