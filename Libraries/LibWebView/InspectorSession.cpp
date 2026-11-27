@@ -1513,10 +1513,13 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         return;
     }
     auto acquire_debugger = [&] {
-        m_debugger_attached = view->attach_debugger_for_owner(ViewImplementation::InteractiveOwner::LocalInspector);
-        if (!m_debugger_attached)
+        // A refusal leaves alone what an earlier attach claimed, which detaching still has to give back.
+        if (!view->attach_debugger_for_owner(ViewImplementation::InteractiveOwner::LocalInspector)) {
             send_reply(request_id, false, {}, "Remote DevTools controls the debugger."_string);
-        return m_debugger_attached;
+            return false;
+        }
+        m_debugger_attached = true;
+        return true;
     };
     if (command == "attachDebugger"sv) {
         if (acquire_debugger())

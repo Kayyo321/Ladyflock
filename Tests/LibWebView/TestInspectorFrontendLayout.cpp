@@ -994,6 +994,30 @@ TEST_CASE(inspector_css_overview_reads_current_styles)
     )JS"sv);
 }
 
+// An Inspector that could not take the debugger from remote DevTools still gives back what it took before.
+TEST_CASE(inspector_releases_the_debugger_after_remote_devtools_held_it)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorDebuggerOwner"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+    auto& target = *fixture.target;
+
+    expect_holds(*fixture.frontend, "The Inspector attaches the debugger"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendCommand("attachDebugger");
+        return null;
+    )JS"sv);
+    target.attach_debugger({}, {});
+    expect_holds(*fixture.frontend, "Pausing is refused while remote DevTools has the debugger"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const outcome = await sendCommand("interruptDebugger").then(() => "applied", error => error.message);
+        return outcome === "Remote DevTools controls the debugger." ? null : outcome;
+    )JS"sv);
+    fixture.session->detach_frontend();
+    target.detach_debugger();
+    EXPECT(target.debugger_owner() == WebView::ViewImplementation::InteractiveOwner::None);
+}
+
 // A page can go away while the Inspector has it in device mode, without the Inspector asking the page's view for its
 // viewport as the view is destroyed.
 TEST_CASE(inspector_target_closes_in_device_mode)
