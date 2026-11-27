@@ -29,7 +29,7 @@ export class StylesPaneController {
         this.rules = [];
         this.cascadeStories = {};
         this.inactiveDiagnostics = {};
-        this.forcedStates = new Set();
+        this.forcedStates = new Map();
         this.showHov = false;
         this.showCls = false;
         this.cosmeticFilterDraft = null;
@@ -40,7 +40,7 @@ export class StylesPaneController {
 
     setRules(appliedPayload) {
         if (Array.isArray(appliedPayload)) {
-            this.rules = appliedPayload;
+            this.rules = appliedPayload.map(({ rule, inheritedNodeId }) => ({ ...rule, inheritedNodeId }));
             this.cascadeStories = {};
             this.inactiveDiagnostics = {};
         } else if (appliedPayload && typeof appliedPayload === "object") {
@@ -76,27 +76,38 @@ export class StylesPaneController {
     async previewCosmeticFilter() {
         if (!this.cosmeticFilterDraft)
             return;
-        const { selector } = this.cosmeticFilterDraft;
-        if (!selector.trim()) {
-            this.cosmeticFilterDraft.matchCount = 0;
-            this.render();
-            return;
-        }
+        const draft = this.cosmeticFilterDraft;
+        const { selector } = draft;
+        draft.previewing = false;
+        draft.matchCount = null;
+        draft.error = null;
         try {
+            if (!selector.trim())
+                throw new Error("Enter a CSS selector.");
             const res = await sendEngineCommand("previewCosmeticFilter", { selector });
-            this.cosmeticFilterDraft.matchCount = res?.matchCount ?? 0;
-            this.cosmeticFilterDraft.previewing = true;
-            this.cosmeticFilterDraft.error = null;
-        } catch {
-            // Fallback match count via querySelectorAll in inspected context
-            this.cosmeticFilterDraft.matchCount = 1;
-            this.cosmeticFilterDraft.previewing = true;
+            if (this.cosmeticFilterDraft !== draft || selector !== draft.selector)
+                return;
+            if (!res.valid)
+                throw new Error(res.error || "Invalid CSS selector.");
+            draft.matchCount = res.count;
+            draft.previewing = true;
+        } catch (err) {
+            if (this.cosmeticFilterDraft !== draft || selector !== draft.selector)
+                return;
+            draft.error = err.message;
         }
+        const restoreFocus = document.activeElement?.id === "cosmetic-filter-selector";
+        const caret = restoreFocus ? document.activeElement.selectionStart : null;
         this.render();
+        if (restoreFocus) {
+            const input = document.getElementById("cosmetic-filter-selector");
+            input?.focus();
+            input?.setSelectionRange(caret, caret);
+        }
     }
 
     async saveCosmeticFilter() {
-        if (!this.cosmeticFilterDraft)
+        if (!this.cosmeticFilterDraft?.previewing || this.app.state.isPrivate)
             return;
         const { host, selector } = this.cosmeticFilterDraft;
         try {
@@ -126,12 +137,15 @@ export class StylesPaneController {
     }
 
     render() {
+        const focusId = this.rootEl.contains(document.activeElement) ? document.activeElement.id : "";
         this.rootEl.textContent = "";
         const isDetached = !!this.app.state.ghostSnapshot;
+        const canEditElement = !!this.app.state.selectedNodeId && !isDetached && !this.app.state.selectedPseudo;
 
         // Sticky toolbar: Filter, :hov, .cls, +
         const filterInput = el("input", {
             type: "search",
+            id: "styles-filter",
             placeholder: "Filter selectors, properties, values",
             value: this.filterText,
             "aria-label": "Filter styles",
@@ -149,7 +163,7 @@ export class StylesPaneController {
                 type: "button",
                 text: ":hov",
                 title: "Force element state",
-                disabled: isDetached,
+                disabled: !canEditElement,
                 onClick: () => { this.showHov = !this.showHov; this.render(); },
             }),
             el("button", {
@@ -157,7 +171,7 @@ export class StylesPaneController {
                 type: "button",
                 text: ".cls",
                 title: "Toggle element classes",
-                disabled: isDetached,
+                disabled: !canEditElement,
                 onClick: () => { this.showCls = !this.showCls; this.render(); },
             }),
             el("button", {
@@ -165,7 +179,7 @@ export class StylesPaneController {
                 type: "button",
                 text: "+",
                 title: "New style rule in inspector stylesheet",
-                disabled: isDetached,
+                disabled: !canEditElement,
                 onClick: () => this.createNewInspectorRule(),
             })
         );
@@ -177,8 +191,9 @@ export class StylesPaneController {
             for (const st of FORCED_PSEUDO_STATES) {
                 const cb = el("input", {
                     type: "checkbox",
-                    checked: this.forcedStates.has(st.key),
-                    onChange: () => this.toggleForcedState(st.key, cb.checked),
+                    disabled: !canEditElement,
+                    checked: this.forcedStates.get(this.app.state.selectedNodeId)?.has(st.key),
+                    onChange: () => this.toggleForcedState(st.key, cb),
                 });
                 grid.appendChild(el("label", {}, cb, st.label));
             }
@@ -186,7 +201,7 @@ export class StylesPaneController {
         }
 
         // .cls Live Class Toggles
-        if (this.showCls) {
+        if (this.showCls && canEditElement) {
             this.rootEl.appendChild(this.buildClassSubdrawer());
         }
 
@@ -212,6 +227,8 @@ export class StylesPaneController {
         const rulesContainer = el("div");
         this.rootEl.appendChild(rulesContainer);
         this.renderRulesList(rulesContainer);
+        if (focusId)
+            (document.getElementById(focusId) || filterInput).focus({ preventScroll: true });
     }
 
     buildClassSubdrawer() {
@@ -261,10 +278,12 @@ export class StylesPaneController {
         const isPrivate = !!this.app.state.isPrivate;
         const selectorInput = el("input", {
             type: "text",
+            id: "cosmetic-filter-selector",
             value: draft.selector,
             placeholder: "CSS selector to hide",
             onInput: e => {
                 draft.selector = e.target.value;
+                draft.previewing = false;
                 this.previewCosmeticFilter();
             },
         });
@@ -278,7 +297,7 @@ export class StylesPaneController {
             el("div", {
                 class: "muted tabular",
                 style: "margin:6px 0;font-size:11px",
-                text: draft.matchCount === null
+                text: draft.error ? "" : draft.matchCount === null
                     ? "Previewing matches…"
                     : `${draft.matchCount} matching element${draft.matchCount === 1 ? "" : "s"} · Scope: ${isPrivate ? "Private preview only (will not save to profile)" : "Regular profile custom filters"}`,
             }),
@@ -290,7 +309,7 @@ export class StylesPaneController {
                     class: "chip-btn primary",
                     type: "button",
                     text: "Save Filter",
-                    disabled: isPrivate || !draft.selector.trim(),
+                    disabled: isPrivate || !draft.previewing,
                     onClick: () => this.saveCosmeticFilter(),
                 }),
                 el("button", {
@@ -314,24 +333,32 @@ export class StylesPaneController {
         return panel;
     }
 
-    async toggleForcedState(stateKey, enabled) {
+    async toggleForcedState(stateKey, checkbox) {
         const nodeId = this.app.state.selectedNodeId;
-        if (!nodeId)
-            return;
-        if (enabled)
-            this.forcedStates.add(stateKey);
-        else
-            this.forcedStates.delete(stateKey);
-
+        const enabled = checkbox.checked;
+        checkbox.disabled = true;
         try {
             await sendEngineCommand("setForcedPseudoState", {
                 nodeId,
                 state: stateKey,
                 enabled,
             });
-            this.app.refreshSelectedNodeProperties();
+            const states = this.forcedStates.get(nodeId) || new Set();
+            if (enabled)
+                states.add(stateKey);
+            else
+                states.delete(stateKey);
+            if (states.size)
+                this.forcedStates.set(nodeId, states);
+            else
+                this.forcedStates.delete(nodeId);
+            if (this.app.state.selectedNodeId === nodeId)
+                this.app.refreshSelectedNodeProperties();
         } catch (err) {
+            checkbox.checked = !enabled;
             this.app.showToast(err.message);
+        } finally {
+            checkbox.disabled = false;
         }
     }
 
@@ -356,14 +383,15 @@ export class StylesPaneController {
         }
 
         const q = this.filterText.trim().toLowerCase();
-        // Track first winning declaration per property name to detect overrides when engine doesn't pre-flag.
-        const winningProp = new Map();
         const isDetached = !!this.app.state.ghostSnapshot;
 
         let lastInheritedId = null;
         let lastPseudoHeader = null;
 
         this.rules.forEach((rule, ruleIdx) => {
+            const editable = !isDetached && !rule.isSystem
+                && (rule.type === 100 || !!rule.sheetId)
+                && !["content-blocker", "extension"].includes(rule.attribution?.kind);
             const inheritedId = rule.inheritedNodeId ?? null;
             if (inheritedId !== null && inheritedId !== lastInheritedId) {
                 lastInheritedId = inheritedId;
@@ -414,20 +442,24 @@ export class StylesPaneController {
 
             // Header: selector + source link
             const sourceLabel = this.formatRuleSource(rule);
-            const selectorEl = el("span", { class: "selector-text", text: selectorLabel });
-            if (rule.type !== 100 && !isDetached) {
-                selectorEl.addEventListener("dblclick", () => this.beginInlineSelectorEdit(selectorEl, rule));
-            }
+            const editId = `style-${this.app.state.selectedNodeId}-${rule.inheritedNodeId ?? "self"}-${rule.ruleIdentity ?? "inline"}`;
+            const selectorEl = rule.type !== 100 && editable
+                ? el("button", {
+                    class: "inline-editor-trigger selector-text", type: "button", text: selectorLabel,
+                    id: `${editId}-selector`, "aria-label": `Edit selector ${selectorLabel}`,
+                    onClick: e => this.beginInlineSelectorEdit(e.currentTarget, rule),
+                })
+                : el("span", { class: "selector-text", text: selectorLabel });
             const header = el(
                 "div",
                 { class: "style-rule-header" },
                 selectorEl,
                 sourceLabel
-                    ? el("button", {
+                    ? el(rule.ruleId?.type ? "button" : "span", {
                         class: "source-link",
-                        type: "button",
+                        type: rule.ruleId?.type ? "button" : undefined,
                         text: sourceLabel,
-                        onClick: () => this.app.openStyleSource(rule),
+                        onClick: rule.ruleId?.type ? () => this.app.openStyleSource(rule) : undefined,
                     })
                     : null
             );
@@ -437,22 +469,10 @@ export class StylesPaneController {
             decls.forEach((decl, declIdx) => {
                 const propName = String(decl.name || "");
                 const propVal = String(decl.value || "");
-                const isImportant = decl.priority === "important" || propVal.includes("!important");
                 const isValid = decl.isValid !== false && decl.isNameValid !== false;
                 const isDisabled = decl.disabled === true;
 
-                let isOverridden = decl.overridden === true;
-                if (decl.overridden === undefined && isValid && !isDisabled && !pseudoTag) {
-                    const prev = winningProp.get(propName);
-                    if (!prev) {
-                        winningProp.set(propName, { isImportant, ruleIdx });
-                    } else if (isImportant && !prev.isImportant) {
-                        winningProp.set(propName, { isImportant, ruleIdx });
-                    } else {
-                        isOverridden = true;
-                    }
-                }
-
+                const isOverridden = decl.overridden === true;
                 const inactiveReason = decl.inactiveReason || this.inactiveDiagnostics[propName] || null;
                 const storyKey = `${ruleIdx}:${declIdx}:${propName}`;
                 const hasStory = !!(decl.cascadeStory || this.cascadeStories[propName]);
@@ -470,7 +490,7 @@ export class StylesPaneController {
                     type: "checkbox",
                     class: "decl-toggle",
                     checked: !isDisabled,
-                    disabled: isDetached || rule.origin === "user-agent",
+                    disabled: !editable,
                     "aria-label": `Toggle ${propName}`,
                     onChange: () => this.toggleDeclaration(rule, decl, declIdx, toggle.checked),
                 });
@@ -482,8 +502,9 @@ export class StylesPaneController {
 
                 // Inline color swatch + WCAG/APCA contrast picker
                 const parsedColor = parseCssColor(propVal.replace(/!important/i, "").trim());
-                if (parsedColor) {
-                    const swatch = el("span", {
+                if (parsedColor && editable) {
+                    const swatch = el("button", {
+                        type: "button",
                         class: "color-swatch-inline",
                         title: "Open color & contrast editor",
                         onClick: () => {
@@ -497,10 +518,13 @@ export class StylesPaneController {
                 }
 
                 const valText = `${propVal}${decl.priority === "important" && !propVal.includes("!important") ? " !important" : ""}`;
-                const valSpan = el("span", { class: "decl-val", text: valText });
-                if (!isDetached && rule.origin !== "user-agent") {
-                    valSpan.addEventListener("click", () => this.beginInlineValueEdit(valSpan, rule, decl, declIdx));
-                }
+                const valSpan = editable
+                    ? el("button", {
+                        class: "inline-editor-trigger decl-val", type: "button", text: valText,
+                        id: `${editId}-value-${declIdx}`, "aria-label": `Edit ${propName}, ${valText}`,
+                        onClick: e => this.beginInlineValueEdit(e.currentTarget, rule, decl, declIdx),
+                    })
+                    : el("span", { class: "decl-val", text: valText });
                 declRow.appendChild(valSpan);
                 declRow.appendChild(document.createTextNode(";"));
 
@@ -512,7 +536,7 @@ export class StylesPaneController {
                     }));
                 }
 
-                if (hasStory || !isOverridden) {
+                if (hasStory) {
                     declRow.appendChild(el("button", {
                         class: "why-won-btn",
                         type: "button",
@@ -530,7 +554,7 @@ export class StylesPaneController {
                 declList.appendChild(declRow);
 
                 // Expandable Cascade Story box!
-                if (this.expandedStories.has(storyKey)) {
+                if (hasStory && this.expandedStories.has(storyKey)) {
                     declList.appendChild(this.buildCascadeStoryBox(propName, rule, decl));
                 }
 
@@ -541,7 +565,7 @@ export class StylesPaneController {
             });
 
             // Quick "+ add declaration" trigger on editable rules
-            if (!isDetached && rule.origin !== "user-agent") {
+            if (editable) {
                 const addRow = el("button", {
                     class: "why-won-btn",
                     type: "button",
@@ -561,34 +585,31 @@ export class StylesPaneController {
         const story = decl.cascadeStory || this.cascadeStories[propName];
         const box = el("div", { class: "cascade-story-box" });
         if (story) {
-            box.appendChild(el("div", { class: "cascade-story-headline", text: story.explanation || `Winning value for ${propName}` }));
+            box.appendChild(el("div", { class: "cascade-story-headline", text: story.reason || `Winning value for ${propName}` }));
             if (story.decidingStep)
                 box.appendChild(el("div", { class: "muted", style: "margin-bottom:4px", text: `Deciding cascade step: ${story.decidingStep}` }));
-            for (const cand of story.candidates || []) {
+            for (const cand of story.competitors || []) {
                 box.appendChild(el(
                     "div",
-                    { class: `cascade-candidate ${cand.winner ? "winner" : ""}` },
-                    el("span", { class: "monospace", text: `${cand.winner ? "★ " : ""}${cand.selector || cand.origin}: ${cand.value}${cand.important ? " !important" : ""}` }),
+                    { class: `cascade-candidate ${cand.won ? "winner" : ""}` },
+                    el("span", { class: "monospace", text: `${cand.won ? "★ " : ""}${cand.selector || cand.origin}: ${cand.value}${cand.important ? " !important" : ""}` }),
                     el("span", { class: "muted", text: cand.reason || cand.layer || "" })
                 ));
             }
-        } else {
-            const origin = rule.type === 100 ? "Inline style attribute" : (rule.layerName ? `@layer ${rule.layerName}` : (rule.origin || "Author stylesheet"));
-            box.appendChild(el("div", { class: "cascade-story-headline", text: `${propName}: ${decl.value}` }));
-            box.appendChild(el("div", { class: "muted", text: `Won via ${origin}${decl.priority === "important" ? " (!important)" : ""}.` }));
+
         }
         return box;
     }
 
     buildColorPopover(rule, decl, declIdx, parsedColor) {
         const computed = this.app.state.lastComputedStyle || {};
-        const bgColor = computed["background-color"] || "rgb(255, 255, 255)";
+        const bgColor = computed["background-color"];
         const bgImage = computed["background-image"] && computed["background-image"] !== "none";
         const blendMode = computed["mix-blend-mode"] && computed["mix-blend-mode"] !== "normal";
         const fontSizePx = parseFloat(computed["font-size"] || "14") || 14;
         const fontWeight = parseInt(computed["font-weight"] || "400", 10) || 400;
 
-        const contrast = computeContrast(decl.value, bgColor, {
+        const contrast = computeContrast(decl.name === "color" ? decl.value : computed.color, decl.name === "background-color" ? decl.value : bgColor, {
             hasBackgroundImage: bgImage,
             hasBlendMode: blendMode,
             fontSizePx,
@@ -599,7 +620,7 @@ export class StylesPaneController {
             type: "color",
             value: rgbToHex(parsedColor),
             "aria-label": `Pick color for ${decl.name}`,
-            onInput: e => this.commitDeclarationEdit(rule, decl, declIdx, decl.name, e.target.value),
+            onChange: e => this.commitDeclarationEdit(rule, decl, declIdx, decl.name, e.target.value + (decl.priority ? " !important" : "")),
         });
 
         const contrastBox = el("div", { class: "contrast-readout tabular" });
@@ -640,54 +661,51 @@ export class StylesPaneController {
     }
 
     beginInlineSelectorEdit(selectorEl, rule) {
-        const before = selectorEl.textContent || "";
-        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
-        selectorEl.replaceWith(input);
-        input.focus();
-        input.select();
-        const finish = commit => {
-            const next = input.value.trim();
-            if (commit && next && next !== before) {
-                sendEngineCommand("editStyleRuleSelector", {
-                    nodeId: this.app.state.selectedNodeId,
-                    ruleIdentity: rule.ruleIdentity || 0,
-                    sheetId: rule.ruleId || {},
-                    baseRevision: rule.sheetRevision || 0,
-                    selectorText: next,
-                }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => this.app.showToast(err.message));
-            } else {
-                this.render();
-            }
-        };
-        input.addEventListener("keydown", e => {
-            if (e.key === "Enter") { e.preventDefault(); finish(true); }
-            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        this.editText(selectorEl, next => {
+            sendEngineCommand("editStyleRuleSelector", {
+                nodeId: this.app.state.selectedNodeId,
+                ruleIdentity: rule.ruleIdentity,
+                sheetId: rule.sheetId,
+                baseRevision: rule.sheetRevision,
+                selectorText: next,
+            }).then(res => {
+                if (res?.conflict)
+                    this.app.showToast("Stylesheet changed. Showing the current selector.");
+                this.app.refreshSelectedNodeProperties();
+            }).catch(err => this.app.showToast(err.message));
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
     }
 
     beginInlineValueEdit(valSpan, rule, decl, declIdx) {
-        const before = valSpan.textContent || "";
-        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
-        valSpan.replaceWith(input);
+        this.editText(valSpan, next => this.commitDeclarationEdit(rule, decl, declIdx, decl.name, next), true);
+    }
+
+    editText(button, onCommit, stepNumbers = false) {
+        const before = button.textContent;
+        const input = el("input", {
+            class: "dom-inline-input", type: "text", value: before, "aria-label": button.getAttribute("aria-label"),
+        });
+        button.replaceWith(input);
         input.focus();
         input.select();
-        const finish = commit => {
+        const finish = (commit, restoreFocus) => {
+            if (!input.isConnected)
+                return;
             const next = input.value.trim();
-            if (commit && next !== before) {
-                this.commitDeclarationEdit(rule, decl, declIdx, decl.name, next);
-            } else {
-                this.render();
-            }
+            input.removeEventListener("blur", onBlur);
+            input.replaceWith(button);
+            if (restoreFocus)
+                button.focus();
+            if (commit && next !== before)
+                onCommit(next);
         };
+        const onBlur = () => finish(true, false);
+        input.addEventListener("blur", onBlur);
         input.addEventListener("keydown", e => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" || e.key === "Escape") {
                 e.preventDefault();
-                finish(true);
-            } else if (e.key === "Escape") {
-                e.preventDefault();
-                finish(false);
-            } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                finish(e.key === "Enter", true);
+            } else if (stepNumbers && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
                 // Numeric stepping with Up/Down (+Shift for 10, +Alt for 0.1)
                 const match = input.value.match(/^(-?[\d.]+)([a-z%]*)$/i);
                 if (match) {
@@ -696,18 +714,20 @@ export class StylesPaneController {
                     const delta = e.key === "ArrowUp" ? step : -step;
                     const nextNum = Number((parseFloat(match[1]) + delta).toFixed(2));
                     input.value = `${nextNum}${match[2]}`;
-                    this.commitDeclarationEdit(rule, decl, declIdx, decl.name, input.value, { keepEditing: true });
                 }
             }
         });
-        input.addEventListener("blur", () => finish(true), { once: true });
     }
 
     beginAddDeclaration(declList, rule) {
         const input = el("input", { class: "dom-inline-input", type: "text", placeholder: "property: value" });
         declList.appendChild(input);
         input.focus();
+        let finished = false;
         const finish = commit => {
+            if (finished)
+                return;
+            finished = true;
             const raw = input.value.trim();
             input.remove();
             if (!commit || !raw)
@@ -729,13 +749,14 @@ export class StylesPaneController {
     async toggleDeclaration(rule, decl, declIdx, enabled) {
         try {
             await sendEngineCommand("toggleStyleDeclaration", {
-                nodeId: this.app.state.selectedNodeId,
+                nodeId: rule.nodeId ?? rule.inheritedNodeId ?? this.app.state.selectedNodeId,
                 isInline: rule.type === 100,
                 ruleIdentity: rule.ruleIdentity || 0,
-                sheetId: rule.ruleId || {},
+                sheetId: rule.sheetId,
                 baseRevision: rule.sheetRevision || 0,
                 declarationIndex: declIdx,
-                name: decl.name,
+                property: decl.name,
+                priority: decl.priority,
                 value: decl.value,
                 enabled,
             });
@@ -745,17 +766,19 @@ export class StylesPaneController {
         }
     }
 
-    async commitDeclarationEdit(rule, decl, declIdx, name, value, { keepEditing = false } = {}) {
+    async commitDeclarationEdit(rule, decl, declIdx, name, value) {
         try {
             const res = await sendEngineCommand("editStyleDeclaration", {
-                nodeId: this.app.state.selectedNodeId,
+                nodeId: rule.nodeId ?? rule.inheritedNodeId ?? this.app.state.selectedNodeId,
                 isInline: rule.type === 100,
                 ruleIdentity: rule.ruleIdentity || 0,
-                sheetId: rule.ruleId || {},
+                sheetId: rule.sheetId,
                 baseRevision: rule.sheetRevision || 0,
                 declarationIndex: declIdx,
-                name,
-                value,
+                property: name,
+                oldProperty: decl.name,
+                value: value.replace(/\s*!important\s*$/i, ""),
+                priority: /!important\s*$/i.test(value) ? "important" : "",
                 beforeValue: decl.value || "",
             });
             if (res?.conflict) {
@@ -763,12 +786,9 @@ export class StylesPaneController {
             } else {
                 announce(`Updated ${name} to ${value}`);
             }
-            if (!keepEditing)
-                this.app.refreshSelectedNodeProperties();
+            this.app.refreshSelectedNodeProperties();
         } catch (err) {
             this.app.showToast(err.message);
-            if (!keepEditing)
-                this.render();
         }
     }
 }

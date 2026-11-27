@@ -8,6 +8,14 @@
 
 import { announce, el, sendCommand, sendEngineCommand } from "./bridge.js";
 
+function nodeIdOf(node) {
+    return node.id ?? node["parent-id"];
+}
+
+function pseudoOf(node) {
+    return node.type === "pseudo-element" ? node.name : null;
+}
+
 export class ElementsTreeController {
     constructor(app) {
         this.app = app;
@@ -59,6 +67,22 @@ export class ElementsTreeController {
         });
     }
 
+    resetDocument() {
+        this.selectedId = null;
+        this.selectedPseudo = null;
+        this.lastKnownSelection = null;
+        this.clearGhostSnapshot();
+        this.expanded.clear();
+        this.hiddenNodeIds.clear();
+        this.flatRows = [];
+        this.searchMatches = [];
+        this.searchIndex = -1;
+        this.searchInputEl.value = "";
+        this.searchCountEl.textContent = "0 / 0";
+        this.setTree(null);
+        this.renderBreadcrumbs();
+    }
+
     setTree(treeRoot) {
         this.rootNode = treeRoot;
         this.nodesById.clear();
@@ -82,6 +106,9 @@ export class ElementsTreeController {
             this.activateGhostSnapshot();
         } else if (this.selectedId !== null) {
             this.clearGhostSnapshot();
+            this.app.state.selectedNode = this.nodesById.get(this.selectedId);
+            this.captureGhostSeed(this.selectedId);
+            this.renderBreadcrumbs();
         }
 
         this.render();
@@ -90,7 +117,6 @@ export class ElementsTreeController {
     indexTree(node, parentId) {
         if (!node)
             return;
-        const id = node.id ?? node["parent-id"];
         if (node.id !== undefined) {
             this.nodesById.set(node.id, node);
             if (parentId !== null)
@@ -121,12 +147,29 @@ export class ElementsTreeController {
             this.activateGhostSnapshot();
         }
 
-        this.render();
+        if (reveal) {
+            this.render();
+        } else {
+            const previous = this.treeEl.querySelector(".dom-row.selected");
+            previous?.classList.remove("selected");
+            previous?.setAttribute("aria-selected", "false");
+            previous?.removeAttribute("id");
+            this.treeEl.removeAttribute("aria-activedescendant");
+            const index = this.flatRows.findIndex(row => !row.isClosing && nodeIdOf(row.node) === nodeId && pseudoOf(row.node) === pseudo);
+            const selected = this.treeEl.querySelector(`.dom-row[data-index="${index}"]`);
+            if (selected) {
+                selected.classList.add("selected");
+                selected.setAttribute("aria-selected", "true");
+                selected.id = "active-dom-row";
+                this.treeEl.setAttribute("aria-activedescendant", selected.id);
+            }
+        }
         this.renderBreadcrumbs();
         this.app.onNodeSelected(nodeId, pseudo, this.nodesById.get(nodeId) || this.ghostSnapshot?.node || null);
 
         if (focusRow) {
             const row = this.treeEl.querySelector(".dom-row.selected");
+            this.treeEl.focus({ preventScroll: true });
             row?.scrollIntoView({ block: "nearest" });
         }
     }
@@ -149,22 +192,36 @@ export class ElementsTreeController {
             ancestors.push(cur);
             cur = this.parentById.get(cur);
         }
+        const previous = this.lastKnownSelection?.nodeId === nodeId && this.lastKnownSelection.pseudo === this.selectedPseudo
+            ? this.lastKnownSelection : null;
         this.lastKnownSelection = {
             nodeId,
-            node: structuredClone(node),
+            pseudo: this.selectedPseudo,
+            node: { ...node, children: undefined },
             ancestors,
-            computed: this.app.state.lastComputedStyle || null,
-            rules: this.app.state.lastAppliedRules || null,
+            computed: previous?.computed ?? null,
+            rules: previous?.rules ?? null,
         };
     }
 
     activateGhostSnapshot() {
-        if (!this.lastKnownSelection)
+        if (!this.lastKnownSelection || this.lastKnownSelection.nodeId !== this.selectedId || this.ghostSnapshot)
             return;
         this.ghostSnapshot = {
             ...this.lastKnownSelection,
             detachedAt: Date.now(),
         };
+        const node = this.ghostSnapshot.node;
+        const preview = document.getElementById("ghost-markup");
+        let text = node.text ?? node.data ?? node.name ?? "";
+        if (this.ghostSnapshot.pseudo) {
+            text = this.ghostSnapshot.pseudo;
+        } else if (node.type === "element") {
+            const attrs = Object.entries(node.attributes || {}).map(([name, value]) =>
+                ` ${name}="${String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`);
+            text = `Captured opening tag\n<${String(node.name).toLowerCase()}${attrs.join("")}>`;
+        }
+        preview.textContent = text.length > 2048 ? text.slice(0, 2048) + "… (truncated)" : text;
         this.ghostBannerEl.classList.remove("hidden");
         announce("Selected element detached from document. Showing Ghost Snapshot.");
         this.app.onGhostSnapshotActive(this.ghostSnapshot);
@@ -174,6 +231,8 @@ export class ElementsTreeController {
         if (!this.ghostSnapshot)
             return;
         this.ghostSnapshot = null;
+        document.getElementById("ghost-capture").open = false;
+        document.getElementById("ghost-markup").textContent = "";
         this.ghostBannerEl.classList.add("hidden");
         this.app.onGhostSnapshotActive(null);
     }
@@ -192,7 +251,7 @@ export class ElementsTreeController {
     }
 
     handleMutation(mutation) {
-        if (!mutation)
+        if (!mutation || mutation.documentGeneration !== this.app.state.documentGeneration)
             return;
         // If our selected node was removed, trigger Ghost Snapshot immediately!
         if (mutation.removed && mutation.removed.includes(this.selectedId)) {
@@ -237,6 +296,7 @@ export class ElementsTreeController {
     }
 
     render() {
+        this.treeEl.removeAttribute("aria-activedescendant");
         this.treeEl.textContent = "";
         if (!this.rootNode) {
             this.treeEl.appendChild(el("div", { class: "dom-row muted", text: "Waiting for document…" }));
@@ -250,7 +310,7 @@ export class ElementsTreeController {
         for (let i = 0; i < this.flatRows.length; i++) {
             const row = this.flatRows[i];
             const node = row.node;
-            const isSelected = !row.isClosing && node.id === this.selectedId && (node["pseudo-element"] || null) === this.selectedPseudo;
+            const isSelected = !row.isClosing && nodeIdOf(node) === this.selectedId && pseudoOf(node) === this.selectedPseudo;
             const rowEl = el("div", {
                 class: [
                     "dom-row",
@@ -258,12 +318,17 @@ export class ElementsTreeController {
                     matchSet.has(node.id) && !row.isClosing ? "search-match" : "",
                     this.hiddenNodeIds.has(node.id) ? "hidden-node" : "",
                 ].filter(Boolean).join(" "),
-                role: "treeitem",
+                role: row.isClosing ? "presentation" : "treeitem",
+                "aria-hidden": row.isClosing ? "true" : undefined,
                 "aria-level": row.depth + 1,
                 "aria-selected": isSelected ? "true" : "false",
                 "aria-expanded": row.hasChildren ? (row.isExpanded ? "true" : "false") : undefined,
                 dataset: { index: i, nodeId: node.id ?? "" },
             });
+            if (isSelected) {
+                rowEl.id = "active-dom-row";
+                this.treeEl.setAttribute("aria-activedescendant", rowEl.id);
+            }
             rowEl.style.paddingLeft = `${8 + row.depth * 14}px`;
 
             if (row.hasChildren) {
@@ -289,24 +354,24 @@ export class ElementsTreeController {
                 this.renderRowContent(rowEl, node, row.hasChildren && !row.isExpanded);
             }
 
-            rowEl.addEventListener("click", () => {
-                if (row.isClosing)
+            rowEl.addEventListener("click", e => {
+                if (row.isClosing || e.target.closest("input, textarea, button"))
                     return;
-                this.selectNode(node.id ?? node["parent-id"], node["pseudo-element"] || null, { reveal: false });
+                this.selectNode(nodeIdOf(node), pseudoOf(node), { reveal: false });
             });
             rowEl.addEventListener("dblclick", () => {
                 if (!row.isClosing && node.type === "text")
                     this.beginInlineTextEdit(rowEl, node);
             });
             rowEl.addEventListener("mouseenter", () => {
-                if (!this.app.state.loupeLatched && node.id)
-                    sendCommand("highlightNode", { nodeId: node.id, pseudoElement: node["pseudo-element"] || "" }).catch(() => {});
+                if (!this.app.state.loupeLatched && nodeIdOf(node))
+                    sendCommand("highlightNode", { nodeId: nodeIdOf(node), pseudoElement: pseudoOf(node) || "" }).catch(() => {});
             });
             rowEl.addEventListener("contextmenu", e => {
                 e.preventDefault();
                 if (row.isClosing)
                     return;
-                this.selectNode(node.id ?? node["parent-id"], node["pseudo-element"] || null, { reveal: false });
+                this.selectNode(nodeIdOf(node), pseudoOf(node), { reveal: false });
                 this.showNodeContextMenu(e.clientX, e.clientY, node);
             });
 
@@ -332,12 +397,12 @@ export class ElementsTreeController {
             return;
         }
         if (node.type === "comment") {
-            rowEl.appendChild(el("span", { class: "dom-comment", text: `<!-- ${node.text || ""} -->` }));
+            rowEl.appendChild(el("span", { class: "dom-comment", text: `<!-- ${node.data || ""} -->` }));
             return;
         }
         if (node.type === "text") {
-            const text = (node.text || "").replace(/\s+/g, " ").trim();
-            rowEl.appendChild(el("span", { class: "dom-text", text: `"${text}"` }));
+            const text = this.app.prefs.showWhitespace ? (node.text || "") : (node.text || "").replace(/\s+/g, " ").trim();
+            rowEl.appendChild(el("span", { class: this.app.prefs.showWhitespace ? "dom-text preserve-whitespace" : "dom-text", text: `"${text}"` }));
             return;
         }
 
@@ -373,6 +438,8 @@ export class ElementsTreeController {
             rowEl.appendChild(el("button", {
                 class: `node-badge ${active ? "active" : ""}`,
                 type: "button",
+                tabindex: -1,
+                "aria-pressed": String(active),
                 text: display.includes("subgrid") ? "subgrid" : "grid",
                 title: "Toggle grid overlay",
                 onClick: e => {
@@ -385,6 +452,8 @@ export class ElementsTreeController {
             rowEl.appendChild(el("button", {
                 class: `node-badge ${active ? "active" : ""}`,
                 type: "button",
+                tabindex: -1,
+                "aria-pressed": String(active),
                 text: "flex",
                 title: "Toggle flex overlay",
                 onClick: e => {
@@ -525,18 +594,25 @@ export class ElementsTreeController {
             return;
 
         const selectable = this.flatRows.filter(r => !r.isClosing);
-        const curIdx = selectable.findIndex(r => r.node.id === this.selectedId && (r.node["pseudo-element"] || null) === this.selectedPseudo);
+        const curIdx = selectable.findIndex(r => nodeIdOf(r.node) === this.selectedId && pseudoOf(r.node) === this.selectedPseudo);
 
-        if (e.key === "ArrowDown") {
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+            const row = this.treeEl.querySelector(".dom-row.selected");
+            if (row && selectable[curIdx]) {
+                e.preventDefault();
+                const bounds = row.getBoundingClientRect();
+                this.showNodeContextMenu(bounds.left, bounds.bottom, selectable[curIdx].node);
+            }
+        } else if (e.key === "ArrowDown") {
             e.preventDefault();
             const next = selectable[Math.min(selectable.length - 1, Math.max(0, curIdx + 1))];
             if (next)
-                this.selectNode(next.node.id ?? next.node["parent-id"], next.node["pseudo-element"] || null, { reveal: false, focusRow: true });
+                this.selectNode(nodeIdOf(next.node), pseudoOf(next.node), { reveal: false, focusRow: true });
         } else if (e.key === "ArrowUp") {
             e.preventDefault();
             const prev = selectable[Math.max(0, curIdx - 1)];
             if (prev)
-                this.selectNode(prev.node.id ?? prev.node["parent-id"], prev.node["pseudo-element"] || null, { reveal: false, focusRow: true });
+                this.selectNode(nodeIdOf(prev.node), pseudoOf(prev.node), { reveal: false, focusRow: true });
         } else if (e.key === "ArrowRight") {
             e.preventDefault();
             const cur = selectable[curIdx];
@@ -544,28 +620,30 @@ export class ElementsTreeController {
                 if (!cur.isExpanded)
                     this.toggleExpand(cur.key, e.altKey);
                 else if (selectable[curIdx + 1])
-                    this.selectNode(selectable[curIdx + 1].node.id, null, { reveal: false, focusRow: true });
+                    this.selectNode(nodeIdOf(selectable[curIdx + 1].node), pseudoOf(selectable[curIdx + 1].node), { reveal: false, focusRow: true });
             }
         } else if (e.key === "ArrowLeft") {
             e.preventDefault();
             const cur = selectable[curIdx];
             if (cur?.hasChildren && cur.isExpanded) {
                 this.toggleExpand(cur.key);
+            } else if (cur && pseudoOf(cur.node)) {
+                this.selectNode(nodeIdOf(cur.node), null, { reveal: false, focusRow: true });
             } else if (cur && this.parentById.has(cur.node.id)) {
                 this.selectNode(this.parentById.get(cur.node.id), null, { reveal: false, focusRow: true });
             }
         } else if (e.key === "F2") {
             e.preventDefault();
-            if (this.selectedId && this.nodesById.has(this.selectedId))
+            if (!this.selectedPseudo && this.selectedId && this.nodesById.has(this.selectedId))
                 this.openOuterHtmlEditor(this.nodesById.get(this.selectedId));
         } else if (e.key === "Delete" || e.key === "Backspace") {
             const node = this.nodesById.get(this.selectedId);
-            if (node && node.type === "element" && !this.ghostSnapshot) {
+            if (!this.selectedPseudo && node && node.type === "element" && !this.ghostSnapshot) {
                 e.preventDefault();
                 sendCommand("removeNode", { nodeId: node.id, label: this.describeNodeShort(node) }).catch(() => {});
             }
         } else if (e.key.toLowerCase() === "h" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-            if (this.selectedId && !this.ghostSnapshot) {
+            if (!this.selectedPseudo && this.selectedId && !this.ghostSnapshot) {
                 e.preventDefault();
                 this.toggleHideNode(this.selectedId);
             }
@@ -578,7 +656,11 @@ export class ElementsTreeController {
         targetSpan.replaceWith(input);
         input.focus();
         input.select();
+        let finished = false;
         const finish = commit => {
+            if (finished)
+                return;
+            finished = true;
             const next = input.value.trim().toLowerCase();
             if (commit && next && next !== before) {
                 sendCommand("setNodeTag", { nodeId: node.id, tag: next, beforeTag: before }).then(() => {
@@ -599,7 +681,11 @@ export class ElementsTreeController {
         targetSpan.replaceWith(input);
         input.focus();
         input.select();
+        let finished = false;
         const finish = commit => {
+            if (finished)
+                return;
+            finished = true;
             const next = input.value;
             if (commit && next !== beforeVal) {
                 sendCommand("setAttribute", {
@@ -627,7 +713,11 @@ export class ElementsTreeController {
         rowEl.appendChild(input);
         input.focus();
         input.select();
+        let finished = false;
         const finish = commit => {
+            if (finished)
+                return;
+            finished = true;
             if (commit && input.value !== before) {
                 sendCommand("setNodeText", { nodeId: node.id, text: input.value, beforeText: before }).catch(() => {});
             }
@@ -651,7 +741,11 @@ export class ElementsTreeController {
             ta.value = beforeHtml;
             row.insertAdjacentElement("afterend", ta);
             ta.focus();
+            let finished = false;
             const commit = () => {
+                if (finished)
+                    return;
+                finished = true;
                 const updated = ta.value;
                 ta.remove();
                 if (updated !== beforeHtml) {
@@ -669,6 +763,7 @@ export class ElementsTreeController {
                     commit();
                 } else if (e.key === "Escape") {
                     e.preventDefault();
+                    finished = true;
                     ta.remove();
                 }
             });
@@ -678,19 +773,18 @@ export class ElementsTreeController {
         }
     }
 
-    toggleHideNode(nodeId) {
-        const hidden = this.hiddenNodeIds.has(nodeId);
-        if (hidden)
-            this.hiddenNodeIds.delete(nodeId);
-        else
-            this.hiddenNodeIds.add(nodeId);
-        sendEngineCommand("setNodeHidden", { nodeId, hidden: !hidden }).catch(() => {
-            // Fallback via inline style visibility toggle
-            sendCommand("consoleEvaluate", {
-                expression: `($0 && ($0.style.visibility = ${!hidden ? "'hidden'" : "''"}))`,
-            }).catch(() => {});
-        });
-        this.render();
+    async toggleHideNode(nodeId) {
+        const hidden = !this.hiddenNodeIds.has(nodeId);
+        try {
+            await sendEngineCommand("setNodeHidden", { nodeId, hidden });
+            if (hidden)
+                this.hiddenNodeIds.add(nodeId);
+            else
+                this.hiddenNodeIds.delete(nodeId);
+            this.render();
+        } catch (err) {
+            this.app.showToast(err.message);
+        }
     }
 
     openSearch() {
@@ -722,8 +816,7 @@ export class ElementsTreeController {
         let ids = [];
         try {
             const res = await sendEngineCommand("searchDom", { query: q });
-            if (Array.isArray(res?.nodeIds))
-                ids = res.nodeIds;
+            ids = (res?.matches || []).map(match => match.nodeId);
         } catch {
             // Fallback local substring match across indexed DOM tree
             const lower = q.toLowerCase();
@@ -738,6 +831,8 @@ export class ElementsTreeController {
             }
         }
 
+        if (q !== this.searchInputEl.value.trim())
+            return;
         this.searchMatches = ids;
         this.searchIndex = ids.length > 0 ? 0 : -1;
         this.updateSearchDisplay();
@@ -755,7 +850,8 @@ export class ElementsTreeController {
         this.searchCountEl.textContent = total ? `${this.searchIndex + 1} / ${total}` : "0 / 0";
         announce(total ? `${total} matches` : "No matches");
         if (this.searchIndex >= 0) {
-            this.selectNode(this.searchMatches[this.searchIndex], null, { reveal: true, focusRow: true });
+            this.selectNode(this.searchMatches[this.searchIndex], null, { reveal: true });
+            this.treeEl.querySelector(".dom-row.selected")?.scrollIntoView({ block: "nearest" });
         } else {
             this.render();
         }
@@ -790,6 +886,10 @@ export class ElementsTreeController {
             { sep: true },
             { label: "Create Cosmetic Filter…", disabled: !isElement || isDetached, run: () => this.app.stylesPane.openCosmeticFilterDrawer(selector) },
         ];
+        if (isElement && node.display?.includes("grid"))
+            items.unshift({ label: "Toggle grid overlay", run: () => this.app.toggleGridOverlay(node.id) });
+        else if (isElement && node.display?.includes("flex"))
+            items.unshift({ label: "Toggle flex overlay", run: () => this.app.toggleFlexOverlay(node.id) });
         this.app.showContextMenu(x, y, items);
     }
 
@@ -800,7 +900,11 @@ export class ElementsTreeController {
         const input = el("input", { class: "dom-inline-input", type: "text", placeholder: 'name="value"' });
         row.appendChild(input);
         input.focus();
+        let finished = false;
         const finish = commit => {
+            if (finished)
+                return;
+            finished = true;
             const raw = input.value.trim();
             input.remove();
             if (!commit || !raw)

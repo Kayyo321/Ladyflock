@@ -544,6 +544,21 @@ body.inspector-shell {
     font-weight: 500;
 }
 
+#ghost-capture {
+    min-width: 0;
+}
+
+#ghost-markup {
+    max-height: 8em;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.preserve-whitespace {
+    white-space: pre-wrap;
+}
+
 /* DOM Tree */
 .dom-tree {
     flex: 1;
@@ -846,10 +861,44 @@ body.inspector-shell {
     white-space: nowrap;
 }
 
+span.source-link {
+    color: var(--muted);
+    cursor: default;
+    text-decoration: none;
+}
+
+.quick-source-code {
+    flex: 1;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    font-family: var(--font-mono);
+}
+
+.source-location {
+    color: var(--selected-row-fg);
+    background: var(--selected-row-bg);
+}
+
 .selector-text {
     font-family: var(--font-mono);
     color: var(--code-selector);
     cursor: text;
+}
+
+.inline-editor-trigger {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+}
+
+.inline-editor-trigger:focus-visible {
+    outline: 2px solid var(--focus-edge);
+    outline-offset: 1px;
 }
 
 .selector-unmatched {
@@ -1381,6 +1430,10 @@ body.inspector-shell {
 .code-line {
     display: flex;
     padding: 0 8px;
+}
+
+.source-line-text {
+    white-space: pre;
 }
 
 .code-line.paused {

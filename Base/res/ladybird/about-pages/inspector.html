@@ -165,8 +165,6 @@ SPDX-License-Identifier: BSD-2-Clause
                 </select>
             </label>
             <button id="btn-device-rotate" class="chip-btn" type="button">Rotate</button>
-            <label class="inline-check"><input id="device-touch" type="checkbox" checked /> Touch</label>
-            <label class="inline-check"><input id="device-rulers" type="checkbox" /> Rulers</label>
             <button id="btn-device-apply" class="chip-btn primary" type="button">Apply</button>
             <button id="btn-device-reset" class="chip-btn" type="button">Reset</button>
         </section>
@@ -203,7 +201,10 @@ SPDX-License-Identifier: BSD-2-Clause
                             </div>
 
                             <div id="ghost-banner" class="ghost-banner hidden" role="status">
-                                <span class="ghost-title">Detached from document — showing Ghost Snapshot</span>
+                                <details id="ghost-capture">
+                                    <summary>Detached from document</summary>
+                                    <pre id="ghost-markup" class="monospace"></pre>
+                                </details>
                                 <button id="btn-ghost-jump-parent" class="chip-btn" type="button">Jump to parent</button>
                             </div>
 

@@ -6,8 +6,10 @@
  */
 
 let nextRequestId = 1;
+let documentGeneration;
 const pendingRequests = new Map();
 const eventListeners = new Map();
+const timedReads = new Set(["getDomTree", "getNodeHtml", "getAccessibilityTree", "listStyleSheets", "getStyleSheetSource", "getSourceContent"]);
 
 export function onEvent(name, handler) {
     if (!eventListeners.has(name))
@@ -36,12 +38,22 @@ export function sendCommand(command, params = {}) {
             return;
         }
         const requestId = nextRequestId++;
-        pendingRequests.set(requestId, { resolve, reject });
-        window.ladybird.sendMessage("inspectorCommand", {
-            requestId,
-            command,
-            params,
-        });
+        const timeout = timedReads.has(command) ? setTimeout(() => {
+            pendingRequests.delete(requestId);
+            reject(new Error("The target did not return the requested data in time."));
+        }, 10000) : undefined;
+        pendingRequests.set(requestId, { resolve, reject, timeout });
+        try {
+            window.ladybird.sendMessage("inspectorCommand", {
+                requestId,
+                command,
+                params: documentGeneration === undefined ? params : { documentGeneration, ...params },
+            });
+        } catch (err) {
+            pendingRequests.delete(requestId);
+            clearTimeout(timeout);
+            reject(err);
+        }
     });
 }
 
@@ -52,10 +64,21 @@ export function sendEngineCommand(action, params = {}) {
 export function initBridge() {
     document.addEventListener("WebUIMessage", event => {
         const { name, data } = event.detail || {};
+        if (name === "inspectorState" || name === "targetDocumentChanged" || name === "targetRecovered")
+            documentGeneration = data?.documentGeneration;
+        if (["targetDocumentChanged", "targetCrashed", "targetRecovered", "targetClosed"].includes(name)
+            || (name === "inspectorState" && !data?.bound)) {
+            for (const { reject, timeout } of pendingRequests.values()) {
+                clearTimeout(timeout);
+                reject(new Error("The inspected document changed before the command returned."));
+            }
+            pendingRequests.clear();
+        }
         if (name === "inspectorReply" && data) {
             const pending = pendingRequests.get(data.requestId);
             if (pending) {
                 pendingRequests.delete(data.requestId);
+                clearTimeout(pending.timeout);
                 if (data.ok)
                     pending.resolve(data.result);
                 else
@@ -180,7 +203,9 @@ export function computeContrast(fgRaw, bgRaw, { hasBackgroundImage = false, hasB
     if (!fgParsed || !bgParsed)
         return { unavailable: true, reason: "Contrast unavailable" };
 
-    const opaqueBg = bgParsed.a < 1 ? compositeOver(bgParsed, { r: 255, g: 255, b: 255, a: 1 }) : bgParsed;
+    if (bgParsed.a < 1)
+        return { unavailable: true, reason: "Contrast unavailable (underlying background unknown)" };
+    const opaqueBg = bgParsed;
     const effectiveFg = fgParsed.a < 1 ? compositeOver(fgParsed, opaqueBg) : fgParsed;
 
     const l1 = relativeLuminance(effectiveFg);

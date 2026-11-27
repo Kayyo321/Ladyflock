@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Wider Toolbox Panels: Sources (with breakpoints/stack/scope/stepping),
- * Network (waterfall, headers, HAR export), Application (Cookies/Storage/IDB),
+ * Network (durations, headers, JSON export), Application (Cookies/Storage/IDB),
  * Performance, Memory, Issues, and Audits / CSS Overview / Recorder.
  */
 
@@ -27,7 +27,7 @@ export class ToolboxPanelsController {
     setNetworkEntries(entries) {
         this.networkEntries = entries || [];
         if (this.app.state.activePanel === "network")
-            this.renderNetwork(document.getElementById("panel-network"));
+            this.renderNetworkRows(document.getElementById("network-rows"));
     }
 
     addNetworkStart(ev) {
@@ -35,7 +35,7 @@ export class ToolboxPanelsController {
         if (this.networkEntries.length > 500)
             this.networkEntries.shift();
         if (this.app.state.activePanel === "network")
-            this.renderNetwork(document.getElementById("panel-network"));
+            this.renderNetworkRows(document.getElementById("network-rows"));
     }
 
     updateNetworkHeaders(ev) {
@@ -47,7 +47,7 @@ export class ToolboxPanelsController {
             row.responseHeaders = ev.responseHeaders;
         }
         if (this.app.state.activePanel === "network")
-            this.renderNetwork(document.getElementById("panel-network"));
+            this.renderNetworkRows(document.getElementById("network-rows"));
     }
 
     finishNetwork(ev) {
@@ -59,7 +59,7 @@ export class ToolboxPanelsController {
             row.finished = true;
         }
         if (this.app.state.activePanel === "network")
-            this.renderNetwork(document.getElementById("panel-network"));
+            this.renderNetworkRows(document.getElementById("network-rows"));
     }
 
     setPaused(pause) {
@@ -69,7 +69,7 @@ export class ToolboxPanelsController {
     }
 
     // 1. Sources & Debugger Panel
-    async renderSources(host) {
+    async renderSources(host, location) {
         host.textContent = "";
         const toolbar = el(
             "div",
@@ -91,11 +91,15 @@ export class ToolboxPanelsController {
         split.append(sidebar, codeEl);
         host.appendChild(split);
 
+        const generation = this.app.state.documentGeneration;
         try {
             const res = await sendCommand("listSources");
+            if (!sidebar.isConnected || generation !== this.app.state.documentGeneration)
+                return;
             this.sources = res?.sources || [];
-        } catch {
-            // keep existing
+        } catch (err) {
+            sidebar.textContent = err.message;
+            return;
         }
 
         if (this.sources.length === 0) {
@@ -117,71 +121,96 @@ export class ToolboxPanelsController {
         if (this.pauseState?.frames?.length) {
             sidebar.appendChild(el("div", { style: "font-weight:600;margin-top:10px;font-size:11px", text: "Call Stack" }));
             for (const frame of this.pauseState.frames) {
-                sidebar.appendChild(el("div", {
-                    class: "monospace muted",
+                sidebar.appendChild(el("button", {
+                    type: "button",
+                    class: "command-item monospace",
                     style: "font-size:11px;padding:2px 4px",
                     text: `${frame.displayName || "(anonymous)"} :${frame.line}:${frame.column}`,
+                    onClick: () => this.openSource(frame.source, codeEl, frame.line),
                 }));
             }
         }
 
-        if (this.activeSource)
+        if (location?.source?.id)
+            this.openSource(location.source, codeEl, location.line);
+        else if (this.activeSource)
             this.renderSourceLines(codeEl);
         else if (this.sources[0])
             this.openSource(this.sources[0], codeEl);
     }
 
-    async openSource(src, codeEl) {
+    async openSource(src, codeEl, line) {
         this.activeSource = src;
+        this.activeSourceText = "";
+        codeEl.textContent = "Loading source…";
         try {
             const res = await sendCommand("getSourceContent", {
                 documentId: src.id.documentId,
                 scriptId: src.id.scriptId,
             });
+            if (this.activeSource !== src || !codeEl.isConnected)
+                return;
             this.activeSourceText = res?.text || "";
         } catch (err) {
-            this.activeSourceText = `// Could not load source: ${err.message}`;
+            if (this.activeSource === src)
+                codeEl.textContent = err.message;
+            return;
         }
         this.renderSourceLines(codeEl);
+        if (Number.isInteger(line)) {
+            const row = codeEl.querySelector(`[data-line="${line}"]`);
+            if (row) {
+                row.classList.add("source-location");
+                row.scrollIntoView({ block: "center" });
+            }
+        }
     }
 
     renderSourceLines(codeEl) {
         codeEl.textContent = "";
         const lines = this.activeSourceText.split("\n");
-        const pausedLine = this.pauseState?.frames?.[0]?.line || -1;
+        const source = this.activeSource;
+        const frame = this.pauseState?.frames?.[0];
+        const pausedLine = frame?.source?.id?.documentId === source.id.documentId
+            && frame?.source?.id?.scriptId === source.id.scriptId ? frame.line : null;
         lines.forEach((lineText, idx) => {
-            const lineNum = idx + 1;
-            const bpKey = `${this.activeSource?.id?.scriptId}:${lineNum}`;
+            const lineNum = idx + Math.max(1, source.sourceStartLine || 1);
+            const bpKey = `${source.id.documentId}:${source.id.scriptId}:${lineNum}`;
             const hasBp = this.breakpoints.has(bpKey);
             codeEl.appendChild(el(
                 "div",
-                { class: `code-line ${pausedLine === lineNum ? "paused" : ""}` },
-                el("span", {
+                { class: `code-line ${pausedLine === lineNum ? "paused" : ""}`, dataset: { line: lineNum } },
+                el("button", {
+                    type: "button",
                     class: `code-gutter tabular ${hasBp ? "bp" : ""}`,
                     text: String(lineNum),
-                    title: "Toggle breakpoint",
-                    onClick: async () => {
-                        if (hasBp) {
-                            this.breakpoints.delete(bpKey);
-                            await sendCommand("removeBreakpoint", {
-                                documentId: this.activeSource.id.documentId,
-                                scriptId: this.activeSource.id.scriptId,
-                                filename: this.activeSource.url || this.activeSource.displayUrl || "",
+                    "aria-label": `Breakpoint on line ${lineNum}`,
+                    "aria-pressed": String(hasBp),
+                    onClick: async e => {
+                        const button = e.currentTarget;
+                        button.disabled = true;
+                        try {
+                            await sendCommand(hasBp ? "removeBreakpoint" : "setBreakpoint", {
+                                ...source.id,
+                                filename: source.url || source.displayUrl || "",
                                 line: lineNum,
-                            }).catch(() => {});
-                        } else {
-                            this.breakpoints.add(bpKey);
-                            await sendCommand("setBreakpoint", {
-                                documentId: this.activeSource.id.documentId,
-                                scriptId: this.activeSource.id.scriptId,
-                                filename: this.activeSource.url || this.activeSource.displayUrl || "",
-                                line: lineNum,
-                            }).catch(() => {});
+                            });
+                            if (hasBp)
+                                this.breakpoints.delete(bpKey);
+                            else
+                                this.breakpoints.add(bpKey);
+                            if (this.activeSource === source) {
+                                button.classList.toggle("bp", !hasBp);
+                                this.renderSourceLines(codeEl);
+                                codeEl.querySelectorAll(".code-gutter")[idx]?.focus();
+                            }
+                        } catch (err) {
+                            this.app.showToast(err.message);
+                            button.disabled = false;
                         }
-                        this.renderSourceLines(codeEl);
                     },
                 }),
-                el("span", { text: lineText })
+                el("span", { class: "source-line-text", text: lineText })
             ));
         });
     }
@@ -193,7 +222,8 @@ export class ToolboxPanelsController {
             type: "search",
             placeholder: "Filter requests by URL, method, or status",
             value: this.networkFilter,
-            onInput: e => { this.networkFilter = e.target.value; this.renderNetwork(host); },
+            "aria-label": "Filter network requests",
+            onInput: e => { this.networkFilter = e.target.value; this.renderNetworkRows(rowsHost); },
         });
         const preserveCb = el("input", {
             type: "checkbox",
@@ -221,11 +251,20 @@ export class ToolboxPanelsController {
             el("button", {
                 class: "chip-btn",
                 type: "button",
-                text: "Copy Sanitized HAR",
-                onClick: () => this.exportSanitizedHar(),
+                text: "Copy network log",
+                onClick: () => this.copyNetworkLog(),
             })
         ));
 
+        const rowsHost = el("div", { id: "network-rows", style: "flex:1;overflow:auto" });
+        host.appendChild(rowsHost);
+        this.renderNetworkRows(rowsHost);
+    }
+
+    renderNetworkRows(host) {
+        if (!host)
+            return;
+        host.textContent = "";
         const q = this.networkFilter.trim().toLowerCase();
         const rows = this.networkEntries.filter(r => !q
             || String(r.url || "").toLowerCase().includes(q)
@@ -246,7 +285,7 @@ export class ToolboxPanelsController {
                 el("th", { text: "Type" }),
                 el("th", { text: "Size" }),
                 el("th", { text: "Time" }),
-                el("th", { text: "Waterfall" })
+                el("th", { text: "Relative duration" })
             )
         ));
         const tbody = el("tbody");
@@ -256,8 +295,23 @@ export class ToolboxPanelsController {
             bar.style.width = `${Math.max(4, Math.round(((req.durationMs || 1) / maxDur) * 100))}%`;
             tbody.appendChild(el(
                 "tr",
-                { onClick: () => { this.selectedNetworkId = req.requestId; this.renderNetwork(host); } },
-                el("td", { class: "monospace", text: name, title: req.url }),
+                {},
+                el("td", {}, el("button", { class: "source-link monospace", type: "button", text: name, title: req.url,
+                    onClick: async () => {
+                        this.selectedNetworkId = req.requestId;
+                        try {
+                            const log = await sendCommand("getNetworkLog");
+                            if (this.selectedNetworkId !== req.requestId)
+                                return;
+                            const snapshot = log.entries.find(entry => entry.requestId === req.requestId);
+                            if (snapshot)
+                                req.requestHeaders = snapshot.requestHeaders;
+                        } catch (err) {
+                            this.app.showToast(err.message);
+                        }
+                        this.renderNetworkRows(host);
+                    },
+                })),
                 el("td", { text: req.method || "GET" }),
                 el("td", { text: req.error ? `Error (${req.error})` : (req.statusCode || "…") }),
                 el("td", { text: req.initiatorType || "other" }),
@@ -267,25 +321,40 @@ export class ToolboxPanelsController {
             ));
         }
         table.appendChild(tbody);
-        host.appendChild(el("div", { style: "flex:1;overflow:auto" }, table));
+        host.appendChild(table);
+        const selected = rows.find(row => row.requestId === this.selectedNetworkId);
+        if (selected) {
+            const detail = el("section", { class: "section-block" }, el("h3", { text: selected.url }));
+            for (const [label, headers] of [["Request headers", selected.requestHeaders], ["Response headers", selected.responseHeaders]]) {
+                detail.appendChild(el("h4", { text: label }));
+                detail.appendChild(el("pre", { text: headers?.map(header => `${header.name}: ${header.value}`).join("\n") || "No headers captured" }));
+            }
+            host.appendChild(detail);
+        }
     }
 
-    exportSanitizedHar() {
-        // Strip cookies / authorization headers so HAR exports never leak credentials!
-        const sanitizeHeaders = headers => (headers || []).filter(h => !/^(cookie|set-cookie|authorization)$/i.test(h.name));
-        const har = {
-            log: {
-                version: "1.2",
-                creator: { name: "Ladyflock Inspector", version: "1.0" },
-                entries: this.networkEntries.map(e => ({
-                    request: { method: e.method, url: e.url, headers: sanitizeHeaders(e.requestHeaders) },
-                    response: { status: e.statusCode, statusText: e.reasonPhrase || "", headers: sanitizeHeaders(e.responseHeaders), bodySize: e.bodySize },
-                    time: e.durationMs,
-                })),
-            },
+    async copyNetworkLog() {
+        const sanitizeHeaders = headers => (headers || []).filter(h => /^(content-length|content-type|cache-control)$/i.test(h.name));
+        const sanitizeUrl = raw => {
+            try {
+                const url = new URL(raw);
+                return ["http:", "https:"].includes(url.protocol) ? url.origin + url.pathname : url.protocol;
+            } catch {
+                return "";
+            }
         };
-        sendCommand("copyText", { text: JSON.stringify(har, null, 2) });
-        this.app.showToast("Copied sanitized HAR JSON to clipboard");
+        try {
+            const { entries } = await sendCommand("getNetworkLog");
+            const log = entries.map(e => ({
+                request: { method: e.method, url: sanitizeUrl(e.url), headers: sanitizeHeaders(e.requestHeaders) },
+                response: { status: e.statusCode, headers: sanitizeHeaders(e.responseHeaders), bodySize: e.bodySize },
+                durationMs: e.durationMs,
+            }));
+            await sendCommand("copyText", { text: JSON.stringify(log, null, 2) });
+            this.app.showToast("Copied network log");
+        } catch (err) {
+            this.app.showToast(err.message);
+        }
     }
 
     // 3. Application / Storage Panel
@@ -353,7 +422,7 @@ export class ToolboxPanelsController {
             el("button", {
                 class: "chip-btn primary",
                 type: "button",
-                text: "Capture Layout & Paint Snapshot",
+                text: "Open Engine Lens",
                 onClick: () => this.app.drawers.open("engine-lens"),
             })
         ));
@@ -373,18 +442,19 @@ export class ToolboxPanelsController {
         host.appendChild(el(
             "div",
             { class: "pane-toolbar" },
-            el("span", { class: "muted", text: "Memory & Heap Diagnostics" }),
+            el("span", { class: "muted", text: "Session diagnostics" }),
             el("button", {
                 class: "chip-btn primary",
                 type: "button",
                 text: "Inspect Detached Snapshot",
+                disabled: !this.app.state.ghostSnapshot,
                 onClick: () => this.app.selectPanel("elements"),
             })
         ));
         host.appendChild(el(
             "div",
             { class: "section-block" },
-            el("h3", { text: "Session Memory Footprint" }),
+            el("h3", { text: "Inspector session counts" }),
             el("div", { class: "tabular", text: `Live DOM nodes tracked: ${this.app.elementsTree.nodesById.size}` }),
             el("div", { class: "tabular", text: `Flight Recorder entries: ${(this.app.drawers.editJournal.entries || []).length}` }),
             el("div", { class: "tabular", text: `Ghost Snapshot active: ${this.app.state.ghostSnapshot ? "Yes (serialized data only)" : "No"}` })
@@ -397,7 +467,7 @@ export class ToolboxPanelsController {
         const failedReqs = this.networkEntries.filter(r => r.error || (r.statusCode >= 400));
         host.appendChild(el("div", { class: "pane-toolbar" }, el("span", { class: "muted", text: `Diagnostics & Issues (${failedReqs.length})` })));
         if (failedReqs.length === 0) {
-            host.appendChild(el("div", { class: "section-block muted", text: "No network or diagnostic issues detected in this session." }));
+            host.appendChild(el("div", { class: "section-block muted", text: "No failed requests in the captured network log." }));
             return;
         }
         for (const req of failedReqs) {
@@ -424,7 +494,7 @@ export class ToolboxPanelsController {
                 onClick: () => this.runQuickAudit(resultsEl),
             })
         ));
-        const resultsEl = el("div", { class: "section-block muted", text: "Click 'Run Page Audit' to inspect colors, fonts, missing alt text, and contrast across this document." });
+        const resultsEl = el("div", { class: "section-block muted", text: "Inspect document colors, fonts, and accessibility issues." });
         host.appendChild(resultsEl);
     }
 
@@ -435,16 +505,20 @@ export class ToolboxPanelsController {
             resultsEl.textContent = "";
             resultsEl.appendChild(el("h3", { text: "Audit Summary" }));
             resultsEl.appendChild(el("div", { class: "tabular", text: `Elements scanned: ${res.elementCount ?? 0}` }));
-            resultsEl.appendChild(el("div", { class: "tabular", text: `Images missing alt text: ${(res.missingAltNodeIds || []).length}` }));
-            for (const id of res.missingAltNodeIds || []) {
+            for (const [label, values] of [["Text colors", res.colors], ["Background colors", res.backgroundColors], ["Font families", res.fonts]]) {
+                if (values?.length)
+                    resultsEl.appendChild(el("details", {}, el("summary", { text: label }), el("ul", {}, ...values.map(text => el("li", { text })))));
+            }
+            const issues = res.issues || [];
+            resultsEl.appendChild(el("h3", { text: `Accessibility findings (${issues.length}${issues.length === 50 ? "+" : ""})` }));
+            for (const issue of issues) {
                 resultsEl.appendChild(el("button", {
                     class: "source-link monospace",
                     type: "button",
-                    style: "display:block;margin:2px 0",
-                    text: `Reveal <img> node #${id}`,
+                    text: issue.message,
                     onClick: () => {
                         this.app.selectPanel("elements");
-                        this.app.elementsTree.selectNode(id, null, { reveal: true, focusRow: true });
+                        this.app.elementsTree.selectNode(issue.nodeId, null, { reveal: true, focusRow: true });
                     },
                 }));
             }

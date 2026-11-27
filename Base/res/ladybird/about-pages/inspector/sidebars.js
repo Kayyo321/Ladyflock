@@ -29,7 +29,6 @@ export class SidebarsController {
         this.a11yTree = null;
         this.a11yDetails = null;
         this.fullA11yTreeMode = false;
-        this.sourceOrderOverlay = false;
     }
 
     // 1. Computed + Box Model + Rendered Fonts
@@ -73,9 +72,9 @@ export class SidebarsController {
         this.renderComputedTable(tableHost);
 
         // Rendered Fonts section
-        const fontsSection = el("div", { class: "section-block" }, el("h3", { text: "Rendered Fonts" }));
+        const fontsSection = el("div", { class: "section-block" }, el("h3", { text: "Computed font list" }));
         if (this.usedFonts.length === 0) {
-            fontsSection.appendChild(el("div", { class: "muted", text: "No rendered font data for this node." }));
+            fontsSection.appendChild(el("div", { class: "muted", text: "No computed font data for this node." }));
         } else {
             for (const f of this.usedFonts) {
                 fontsSection.appendChild(el(
@@ -92,22 +91,25 @@ export class SidebarsController {
     buildBoxModel() {
         const m = this.layoutMetrics || {};
         const fmt = v => (v === undefined || v === null || v === "" ? "–" : String(v).replace(/px$/, ""));
-        const editable = (prop, posClass, value) => el("span", {
-            class: `bm-val ${posClass}`,
+        const editable = (prop, posClass, value) => el("button", {
+            class: `inline-editor-trigger bm-val ${posClass}`,
+            type: "button",
+            disabled: value == null || !this.app.state.selectedNodeId || !!this.app.state.ghostSnapshot || !!this.app.state.selectedPseudo,
             text: fmt(value),
             title: `Edit ${prop}`,
+            "aria-label": `Edit ${prop}, ${fmt(value)} pixels`,
             onClick: e => {
                 e.stopPropagation();
                 if (this.app.state.ghostSnapshot)
                     return;
-                const next = prompt(`Set ${prop} (e.g. 12px):`, String(value || "0px"));
+                const next = prompt(`Set ${prop} (e.g. 12px):`, `${value}px`);
                 if (next !== null) {
                     sendEngineCommand("editStyleDeclaration", {
                         nodeId: this.app.state.selectedNodeId,
                         isInline: true,
-                        name: prop,
+                        property: prop,
                         value: next.trim(),
-                    }).then(() => this.app.refreshSelectedNodeProperties()).catch(() => {});
+                    }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => this.app.showToast(err.message));
                 }
             },
         });
@@ -296,7 +298,7 @@ export class SidebarsController {
     // 3. Event Listeners
     async loadEventListeners() {
         const nodeId = this.app.state.selectedNodeId;
-        if (!nodeId) {
+        if (!nodeId || this.app.state.ghostSnapshot) {
             this.listeners = [];
             this.renderEventListeners();
             return;
@@ -306,8 +308,12 @@ export class SidebarsController {
                 nodeId,
                 includeAncestors: this.includeAncestorListeners,
             });
+            if (this.app.state.selectedNodeId !== nodeId || this.app.state.ghostSnapshot)
+                return;
             this.listeners = res?.listeners || [];
         } catch {
+            if (this.app.state.selectedNodeId !== nodeId)
+                return;
             this.listeners = [];
         }
         this.renderEventListeners();
@@ -372,7 +378,8 @@ export class SidebarsController {
                     el(
                         "div",
                         {},
-                        el("span", { class: "monospace", text: item.targetLabel || `node #${item.targetNodeId}` }),
+                        el("span", { class: "monospace", text: item.target || `node #${item.nodeId}` }),
+                        el("span", { class: "monospace", text: item.handlerName }),
                         item.capture ? el("span", { class: "node-badge", text: "capture" }) : null,
                         item.passive ? el("span", { class: "node-badge", text: "passive" }) : null,
                         item.once ? el("span", { class: "node-badge", text: "once" }) : null,
@@ -381,12 +388,12 @@ export class SidebarsController {
                     el(
                         "div",
                         { style: "display:flex;gap:6px;align-items:center" },
-                        item.sourceUrl
+                        item.source?.id
                             ? el("button", {
                                 class: "source-link",
                                 type: "button",
-                                text: `${item.sourceUrl}:${item.line || 1}`,
-                                onClick: () => this.app.openScriptLocation(item.sourceUrl, item.line || 1),
+                                text: `${item.source.displayUrl || item.source.url || "Source"}:${item.line}`,
+                                onClick: () => this.app.selectPanel("sources", item),
                             })
                             : null,
                         el("button", {
@@ -395,10 +402,10 @@ export class SidebarsController {
                             text: "Remove",
                             onClick: async () => {
                                 await sendEngineCommand("removeEventListener", {
-                                    nodeId: item.targetNodeId,
-                                    type: item.type,
-                                    listenerIndex: item.index,
-                                }).catch(() => {});
+                                    nodeId: item.nodeId,
+                                    listenerId: item.listenerId,
+                                    windowTarget: item.windowTarget,
+                                }).catch(err => this.app.showToast(err.message));
                                 this.loadEventListeners();
                             },
                         })
@@ -471,21 +478,28 @@ export class SidebarsController {
     // 5. Properties Pane (JS Wrapper + Prototype chain)
     async loadProperties() {
         const nodeId = this.app.state.selectedNodeId;
-        if (!nodeId) {
+        const generation = this.app.state.documentGeneration;
+        if (!nodeId || this.app.state.ghostSnapshot) {
             this.jsProperties = [];
             this.renderProperties();
             return;
         }
         try {
             const evalRes = await sendCommand("consoleEvaluate", { expression: "$0" });
+            if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+                return;
             if (evalRes?.objectId) {
                 const propsRes = await sendCommand("getObjectProperties", { objectId: evalRes.objectId, scope: "console" });
+                if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+                    return;
                 this.jsProperties = propsRes?.properties || [];
                 this.jsPrototype = propsRes?.prototype || null;
             } else {
                 this.jsProperties = [];
             }
         } catch {
+            if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+                return;
             this.jsProperties = [];
         }
         this.renderProperties();
@@ -526,20 +540,21 @@ export class SidebarsController {
 
     // 6. Accessibility Pane
     async loadAccessibility() {
-        try {
-            const res = await sendCommand("getAccessibilityTree");
-            this.a11yTree = res?.tree || null;
-        } catch {
-            this.a11yTree = null;
-        }
+        const generation = this.app.state.documentGeneration;
         const nodeId = this.app.state.selectedNodeId;
-        if (nodeId) {
-            try {
-                this.a11yDetails = await sendEngineCommand("getAccessibilityNodeDetails", { nodeId });
-            } catch {
-                this.a11yDetails = null;
-            }
-        }
+        this.a11yTree = null;
+        this.a11yDetails = null;
+        this.renderAccessibility();
+        if (this.app.state.ghostSnapshot)
+            return;
+        const [tree, details] = await Promise.allSettled([
+            sendCommand("getAccessibilityTree"),
+            nodeId ? sendEngineCommand("getAccessibilityNodeDetails", { nodeId }) : null,
+        ]);
+        if (generation !== this.app.state.documentGeneration || nodeId !== this.app.state.selectedNodeId || this.app.state.ghostSnapshot)
+            return;
+        this.a11yTree = tree.value?.tree ?? null;
+        this.a11yDetails = details.value ?? null;
         this.renderAccessibility();
     }
 
@@ -565,22 +580,10 @@ export class SidebarsController {
             checked: this.fullA11yTreeMode,
             onChange: () => { this.fullA11yTreeMode = fullCb.checked; this.renderAccessibility(); },
         });
-        const orderCb = el("input", {
-            type: "checkbox",
-            checked: this.sourceOrderOverlay,
-            onChange: () => {
-                this.sourceOrderOverlay = orderCb.checked;
-                sendEngineCommand("setSourceOrderOverlay", {
-                    nodeId: this.app.state.selectedNodeId || 0,
-                    enabled: this.sourceOrderOverlay,
-                }).catch(() => {});
-            },
-        });
         root.appendChild(el(
             "div",
             { class: "pane-toolbar" },
             el("label", { class: "inline-check" }, fullCb, "Full tree"),
-            el("label", { class: "inline-check" }, orderCb, "Source order"),
             el("button", { class: "chip-btn", type: "button", text: "Refresh", onClick: () => this.loadAccessibility() })
         ));
 
@@ -595,8 +598,9 @@ export class SidebarsController {
                 ["Role", info.role || "generic"],
                 ["Name", info.name || "(empty)"],
                 ["Description", info.description || "(none)"],
-                ["Keyboard focusable", info.focusable ? "Yes" : "No"],
             ];
+            if (typeof info.focusable === "boolean")
+                rows.push(["Keyboard focusable", info.focusable ? "Yes" : "No"]);
             if (info.ignoredReason)
                 rows.push(["Ignored reason", info.ignoredReason]);
             const t = el("table", { class: "data-table" });
@@ -606,13 +610,14 @@ export class SidebarsController {
             t.appendChild(tb);
             propsSec.appendChild(t);
 
-            if (Array.isArray(info.nameContributors) && info.nameContributors.length > 0) {
-                propsSec.appendChild(el("h3", { style: "margin-top:8px", text: "Accessible Name Contributors" }));
-                for (const contrib of info.nameContributors) {
+            const nameInputs = info.nameInputs?.filter(input => input.present) || [];
+            if (nameInputs.length) {
+                propsSec.appendChild(el("h3", { text: "Name-related attributes and text" }));
+                for (const input of nameInputs) {
                     propsSec.appendChild(el("div", {
                         class: "monospace",
                         style: "font-size:11px;padding:2px 0",
-                        text: `${contrib.source}: ${JSON.stringify(contrib.value)}${contrib.used ? " (used)" : ""}`,
+                        text: `${input.source}: ${JSON.stringify(input.value)}`,
                     }));
                 }
             }
@@ -630,6 +635,8 @@ export class SidebarsController {
                 const inp = el("input", {
                     type: "text",
                     value: String(v),
+                    "aria-label": k,
+                    disabled: !!this.app.state.ghostSnapshot || !!this.app.state.selectedPseudo,
                     style: "height:22px;font-size:11px",
                     onChange: () => sendCommand("setAttribute", {
                         nodeId: domNode.id,
@@ -637,7 +644,7 @@ export class SidebarsController {
                         newName: k,
                         value: inp.value,
                         beforeValue: String(v),
-                    }).then(() => this.loadAccessibility()),
+                    }).then(() => this.loadAccessibility()).catch(err => this.app.showToast(err.message)),
                 });
                 ariaSec.appendChild(el("div", { style: "display:flex;align-items:center;gap:8px;margin:4px 0" }, el("span", { class: "monospace decl-prop", text: k }), inp));
             }
@@ -647,11 +654,13 @@ export class SidebarsController {
         if (this.fullA11yTreeMode && this.a11yTree) {
             const treeSec = el("div", { class: "section-block" }, el("h3", { text: "Accessibility Tree" }));
             const renderA11yBranch = (node, depth = 0) => {
-                const row = el("div", {
-                    class: `dom-row monospace ${node.id === this.app.state.selectedNodeId ? "selected" : ""}`,
+                const canReveal = this.app.elementsTree.nodesById.has(node.id);
+                const row = el(canReveal ? "button" : "div", {
+                    class: `inline-editor-trigger dom-row monospace ${node.id === this.app.state.selectedNodeId ? "selected" : ""}`,
+                    type: canReveal ? "button" : undefined,
                     style: `padding-left:${depth * 14 + 4}px`,
                     text: `${node.role || node.type || "node"}${node.name ? ` "${node.name}"` : ""}`,
-                    onClick: () => node.id && this.app.elementsTree.selectNode(node.id, null, { reveal: true, focusRow: true }),
+                    onClick: canReveal ? () => this.app.elementsTree.selectNode(node.id, null, { reveal: true, focusRow: true }) : undefined,
                 });
                 treeSec.appendChild(row);
                 for (const c of node.children || [])

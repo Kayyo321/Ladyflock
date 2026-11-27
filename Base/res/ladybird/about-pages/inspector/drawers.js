@@ -24,23 +24,10 @@ export class DrawersController {
         this.editJournal = { entries: [], truncated: false };
         this.engineLensKind = "layout";
         this.engineLensText = "";
+        this.quickStyleSource = null;
         this.animations = [];
-        this.renderingState = {
-            mediaType: "screen",
-            prefersColorScheme: "auto",
-            prefersReducedMotion: "no-preference",
-            prefersContrast: "no-preference",
-            visionDeficiency: "none",
-            paintFlashing: false,
-            layerBorders: false,
-            layoutShiftRegions: false,
-        };
-        this.sensorState = {
-            latitude: "",
-            longitude: "",
-            locale: "",
-            timezone: "",
-        };
+        this.colorScheme = "auto";
+        this.sensorState = { latitude: "", longitude: "" };
 
         document.querySelectorAll("#drawer-tabs button").forEach(btn => {
             btn.addEventListener("click", () => this.open(btn.dataset.drawer));
@@ -78,10 +65,8 @@ export class DrawersController {
         this.consoleEntries.push(entry);
         if (this.consoleEntries.length > 1000)
             this.consoleEntries.shift();
-        if (this.isOpen && this.activeDrawer === "console")
-            this.renderConsole(this.bodyEl);
-        if (this.app.state.activePanel === "console")
-            this.renderConsole(document.getElementById("panel-console"));
+        for (const log of document.querySelectorAll(".console-log"))
+            this.renderConsoleMessages(log);
     }
 
     setEditJournal(journal) {
@@ -104,7 +89,10 @@ export class DrawersController {
             this.renderEngineLens(this.bodyEl);
             break;
         case "quick-source":
-            this.app.toolboxPanels.renderSources(this.bodyEl);
+            if (this.quickStyleSource)
+                this.renderStyleSource(this.quickStyleSource);
+            else
+                this.app.toolboxPanels.renderSources(this.bodyEl);
             break;
         case "animations":
             this.renderAnimations(this.bodyEl);
@@ -116,6 +104,40 @@ export class DrawersController {
             this.renderSensors(this.bodyEl);
             break;
         }
+    }
+
+    async openStyleSource(identifier, label, line) {
+        const location = { label, line };
+        this.quickStyleSource = location;
+        this.open("quick-source");
+        try {
+            const reply = await sendCommand("getStyleSheetSource", identifier);
+            location.text = reply.source;
+        } catch (err) {
+            location.error = err.message;
+        }
+        if (this.quickStyleSource === location && this.isOpen && this.activeDrawer === "quick-source")
+            this.renderStyleSource(location);
+    }
+
+    renderStyleSource(location) {
+        const heading = el("h3", { class: "section-block", text: location.label });
+        const pre = el("pre", { class: "quick-source-code" });
+        this.bodyEl.replaceChildren(heading, pre);
+        if (location.error || location.text === undefined) {
+            pre.textContent = location.error || "Loading stylesheet…";
+            return;
+        }
+        const lines = location.text.split(/\r\n|\r|\n/);
+        const index = location.line - 1;
+        if (!Number.isInteger(index) || index < 0 || index >= lines.length) {
+            pre.textContent = location.text || "(empty stylesheet)";
+            return;
+        }
+        const selected = el("mark", { class: "source-location", text: lines[index] || " " });
+        pre.append(lines.slice(0, index).join("\n") + (index ? "\n" : ""), selected,
+            index < lines.length - 1 ? "\n" + lines.slice(index + 1).join("\n") : "");
+        selected.scrollIntoView({ block: "center" });
     }
 
     renderConsole(host) {
@@ -252,17 +274,21 @@ export class DrawersController {
     renderChanges(host) {
         host.textContent = "";
         const entries = this.editJournal.entries || [];
-        const copyPatch = () => {
+        const copyPatch = async () => {
             const lines = entries.filter(e => !e.undone).map(e => `/* ${e.targetLabel} */\n- ${e.beforeText}\n+ ${e.afterText}`);
-            sendCommand("copyText", { text: lines.join("\n\n") });
-            this.app.showToast("Copied patch to clipboard");
+            try {
+                await sendCommand("copyText", { text: lines.join("\n\n") });
+                this.app.showToast("Copied changes");
+            } catch (err) {
+                this.app.showToast(err.message);
+            }
         };
 
         host.appendChild(el(
             "div",
             { class: "pane-toolbar" },
             el("span", { class: "muted", text: `Flight Recorder (${entries.length} edits${this.editJournal.truncated ? ", oldest evicted" : ""})` }),
-            el("button", { class: "chip-btn", type: "button", text: "Copy Patch", disabled: entries.length === 0, onClick: copyPatch })
+            el("button", { class: "chip-btn", type: "button", text: "Copy changes", disabled: entries.length === 0, onClick: copyPatch })
         ));
 
         if (entries.length === 0) {
@@ -288,6 +314,26 @@ export class DrawersController {
             ));
             for (const item of list) {
                 block.appendChild(el("div", { class: "muted", style: "font-size:11px;margin-top:4px", text: `${item.kind} · ${item.targetLabel}${item.undone ? " (undone)" : ""}` }));
+                if (item.canUndo && !item.undone) {
+                    block.appendChild(el("button", {
+                        class: "chip-btn",
+                        type: "button",
+                        text: "Undo",
+                        "aria-label": `Undo ${item.kind} edit to ${item.targetLabel}`,
+                        onClick: async e => {
+                            const button = e.currentTarget;
+                            button.disabled = true;
+                            try {
+                                await sendCommand("undoEdit", { id: item.id });
+                                await this.app.refreshDomTree();
+                                this.app.refreshSelectedNodeProperties();
+                            } catch (err) {
+                                this.app.showToast(err.message);
+                                button.disabled = false;
+                            }
+                        },
+                    }));
+                }
                 if (item.beforeText)
                     block.appendChild(el("div", { class: "diff-line del", text: `- ${item.beforeText}` }));
                 if (item.afterText)
@@ -341,28 +387,7 @@ export class DrawersController {
     // Animations Drawer
     async renderAnimations(host) {
         host.textContent = "";
-        const rates = [1, 0.25, 0.1];
-        const bar = el("div", { class: "pane-toolbar" }, el("span", { class: "muted", text: "Playback speed:" }));
-        for (const rate of rates) {
-            bar.appendChild(el("button", {
-                class: "chip-btn tabular",
-                type: "button",
-                text: `${Math.round(rate * 100)}%`,
-                onClick: () => sendEngineCommand("setAnimationsPlaybackRate", { rate }).catch(() => {}),
-            }));
-        }
-        bar.appendChild(el("button", {
-            class: "chip-btn",
-            type: "button",
-            text: "Pause all",
-            onClick: () => sendEngineCommand("pauseAllAnimations", { paused: true }).catch(() => {}),
-        }));
-        bar.appendChild(el("button", {
-            class: "chip-btn",
-            type: "button",
-            text: "Resume all",
-            onClick: () => sendEngineCommand("pauseAllAnimations", { paused: false }).catch(() => {}),
-        }));
+        const bar = el("div", { class: "pane-toolbar" });
         bar.appendChild(el("button", {
             class: "chip-btn",
             type: "button",
@@ -378,58 +403,48 @@ export class DrawersController {
             const list = res?.animations || [];
             body.textContent = "";
             if (list.length === 0) {
-                body.textContent = "No active CSS animations, transitions, or Web Animations in this document.";
+                body.textContent = "No animations found in this document.";
                 return;
             }
             for (const anim of list) {
                 body.appendChild(el(
                     "div",
                     { style: "display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--separator-soft)" },
-                    el("span", { class: "monospace", text: `${anim.name || "animation"} (${anim.playState})` }),
-                    el("span", { class: "tabular muted", text: `${Math.round(anim.currentTime || 0)}ms / ${anim.duration || "auto"}` })
+                    el("button", {
+                        class: "source-link",
+                        type: "button",
+                        text: `${anim.target} · ${anim.name} (${anim.playState})`,
+                        onClick: () => {
+                            this.app.selectPanel("elements");
+                            this.app.elementsTree.selectNode(anim.nodeId, null, { reveal: true, focusRow: true });
+                        },
+                    }),
+                    el("span", { class: "tabular muted", text: anim.duration || "" })
                 ));
             }
-        } catch {
-            body.textContent = "Animations timeline ready — trigger an animation on the page and click Refresh.";
+        } catch (err) {
+            body.textContent = err.message;
         }
     }
 
     // Rendering Emulation Drawer
     renderRendering(host) {
         host.textContent = "";
-        const apply = () => {
-            sendCommand("setRenderingOverrides", this.renderingState).catch(() => {});
-            sendEngineCommand("setRenderingOverrides", this.renderingState).catch(() => {});
-        };
-
-        const row = (label, control) => el("div", { style: "display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid var(--separator-soft)" }, el("span", { text: label }), control);
-
-        const makeSelect = (key, options) => {
-            const sel = el("select", {
-                onChange: () => { this.renderingState[key] = sel.value; apply(); },
-            });
-            for (const [val, txt] of options)
-                sel.appendChild(el("option", { value: val, selected: this.renderingState[key] === val, text: txt }));
-            return sel;
-        };
-
-        const makeCheck = key => {
-            const cb = el("input", {
-                type: "checkbox",
-                checked: !!this.renderingState[key],
-                onChange: () => { this.renderingState[key] = cb.checked; apply(); },
-            });
-            return cb;
-        };
-
-        host.appendChild(row("Emulate prefers-color-scheme", makeSelect("prefersColorScheme", [["auto", "No override"], ["light", "Light"], ["dark", "Dark"]])));
-        host.appendChild(row("Emulate CSS media type", makeSelect("mediaType", [["screen", "screen"], ["print", "print"]])));
-        host.appendChild(row("Emulate prefers-reduced-motion", makeSelect("prefersReducedMotion", [["no-preference", "No override"], ["reduce", "reduce"]])));
-        host.appendChild(row("Emulate prefers-contrast", makeSelect("prefersContrast", [["no-preference", "No override"], ["more", "more"], ["less", "less"]])));
-        host.appendChild(row("Emulate vision deficiency", makeSelect("visionDeficiency", [["none", "None"], ["blurred", "Blurred vision"], ["protanopia", "Protanopia"], ["deuteranopia", "Deuteranopia"], ["tritanopia", "Tritanopia"], ["achromatopsia", "Achromatopsia"]])));
-        host.appendChild(row("Paint flashing", makeCheck("paintFlashing")));
-        host.appendChild(row("Layer borders", makeCheck("layerBorders")));
-        host.appendChild(row("Layout shift regions", makeCheck("layoutShiftRegions")));
+        const select = el("select", {
+            onChange: async () => {
+                const scheme = select.value;
+                try {
+                    await sendCommand("setRenderingOverrides", { prefersColorScheme: scheme });
+                    this.colorScheme = scheme;
+                } catch (err) {
+                    select.value = this.colorScheme;
+                    this.app.showToast(err.message);
+                }
+            },
+        });
+        for (const [value, text] of [["auto", "System"], ["light", "Light"], ["dark", "Dark"]])
+            select.appendChild(el("option", { value, text, selected: this.colorScheme === value }));
+        host.appendChild(el("label", { class: "inline-field" }, "Color scheme", select));
     }
 
     // Sensors Drawer
@@ -442,32 +457,44 @@ export class DrawersController {
                 placeholder,
                 onInput: e => { this.sensorState[key] = e.target.value; },
             });
-            return el("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 12px" }, el("span", { text: label }), inp);
+            return el("label", { style: "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 12px" }, el("span", { text: label }), inp);
         };
         host.appendChild(field("Geolocation latitude", "latitude", "e.g. 37.7749"));
         host.appendChild(field("Geolocation longitude", "longitude", "e.g. -122.4194"));
-        host.appendChild(field("Locale override", "locale", "e.g. en-US, ja-JP"));
-        host.appendChild(field("Timezone ID", "timezone", "e.g. America/New_York"));
         host.appendChild(el(
             "div",
             { style: "padding:8px 12px;display:flex;gap:8px" },
             el("button", {
                 class: "chip-btn primary",
                 type: "button",
-                text: "Apply Sensors",
-                onClick: () => {
-                    sendEngineCommand("setSensorOverrides", this.sensorState).catch(() => {});
-                    this.app.showToast("Applied sensor overrides");
+                text: "Apply location",
+                onClick: async () => {
+                    const { latitude, longitude } = this.sensorState;
+                    if (!latitude.trim() || !longitude.trim() || !Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))
+                        || Math.abs(Number(latitude)) > 90 || Math.abs(Number(longitude)) > 180) {
+                        this.app.showToast("Enter a latitude from −90 to 90 and a longitude from −180 to 180.");
+                        return;
+                    }
+                    try {
+                        await sendEngineCommand("setSensorOverrides", { latitude: Number(latitude), longitude: Number(longitude) });
+                        this.app.showToast("Location applied");
+                    } catch (err) {
+                        this.app.showToast(err.message);
+                    }
                 },
             }),
             el("button", {
                 class: "chip-btn",
                 type: "button",
                 text: "Reset",
-                onClick: () => {
-                    this.sensorState = { latitude: "", longitude: "", locale: "", timezone: "" };
-                    sendEngineCommand("setSensorOverrides", this.sensorState).catch(() => {});
-                    this.renderSensors(host);
+                onClick: async () => {
+                    try {
+                        await sendEngineCommand("setSensorOverrides", { enabled: false });
+                        this.sensorState = { latitude: "", longitude: "" };
+                        this.renderSensors(host);
+                    } catch (err) {
+                        this.app.showToast(err.message);
+                    }
                 },
             })
         ));

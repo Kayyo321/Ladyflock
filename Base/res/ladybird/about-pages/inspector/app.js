@@ -135,7 +135,6 @@ class InspectorApp {
         });
         document.getElementById("btn-device-apply").addEventListener("click", () => this.applyDeviceMode());
         document.getElementById("btn-device-reset").addEventListener("click", () => {
-            sendEngineCommand("setDeviceMode", { enabled: false }).catch(() => {});
             this.toggleDeviceMode(false);
         });
 
@@ -193,7 +192,8 @@ class InspectorApp {
                 this.selectPanel(data.initialPanel);
 
             this.refreshDomTree().then(() => {
-                if (data.selectedNodeId)
+                if (data.selectedNodeId && data.documentGeneration === this.state.documentGeneration
+                    && this.elementsTree.nodesById.has(data.selectedNodeId))
                     this.elementsTree.selectNode(data.selectedNodeId, null, { reveal: true, focusRow: true });
             });
         });
@@ -208,12 +208,18 @@ class InspectorApp {
         });
 
         onEvent("domNodeProperties", data => {
-            if (!data)
+            if (!data || this.state.ghostSnapshot || data.documentGeneration !== this.state.documentGeneration
+                || data.nodeId !== this.state.selectedNodeId || (data.pseudoElement || null) !== this.state.selectedPseudo)
                 return;
+            const snapshot = this.elementsTree.lastKnownSelection;
             if (data.type === "appliedStyleRules") {
+                if (snapshot)
+                    snapshot.rules = data.properties;
                 this.state.lastAppliedRules = data.properties;
                 this.stylesPane.setRules(data.properties);
             } else if (data.type === "computedStyle") {
+                if (snapshot)
+                    snapshot.computed = data.properties;
                 this.state.lastComputedStyle = data.properties || {};
                 this.sidebars.computedData = this.state.lastComputedStyle;
                 if (this.state.activeSidebar === "computed")
@@ -230,6 +236,8 @@ class InspectorApp {
         });
 
         onEvent("selectNode", data => {
+            if (data?.documentGeneration !== undefined && data.documentGeneration !== this.state.documentGeneration)
+                return;
             if (!data?.nodeId) {
                 this.showBanner("Element is no longer available.");
                 return;
@@ -239,7 +247,10 @@ class InspectorApp {
             if (this.elementsTree.nodesById.has(data.nodeId)) {
                 this.elementsTree.selectNode(data.nodeId, null, { reveal: true, focusRow: true });
             } else {
+                const generation = this.state.documentGeneration;
                 this.refreshDomTree().then(() => {
+                    if (generation !== this.state.documentGeneration)
+                        return;
                     if (this.elementsTree.nodesById.has(data.nodeId))
                         this.elementsTree.selectNode(data.nodeId, null, { reveal: true, focusRow: true });
                     else
@@ -261,6 +272,7 @@ class InspectorApp {
         onEvent("pickerEvent", data => {
             if (data?.type === "picked" && data.nodeId) {
                 this.selectPanel("elements");
+                this.selectSidebar("styles");
                 this.elementsTree.selectNode(data.nodeId, null, { reveal: true, focusRow: true });
             } else if (data?.type === "hovered" && data.nodeId) {
                 // Preview hovered node in tree
@@ -276,11 +288,7 @@ class InspectorApp {
         });
 
         onEvent("targetDocumentChanged", data => {
-            this.state.documentGeneration = data?.documentGeneration || (this.state.documentGeneration + 1);
-            this.state.targetUrl = data?.url || this.state.targetUrl;
-            this.state.activeGridOverlays.clear();
-            this.state.activeFlexOverlays.clear();
-            this.elementsTree.clearGhostSnapshot();
+            this.resetDocument(data);
             this.refreshDomTree();
         });
 
@@ -295,7 +303,8 @@ class InspectorApp {
             });
         });
 
-        onEvent("targetRecovered", () => {
+        onEvent("targetRecovered", data => {
+            this.resetDocument(data);
             this.clearBanner();
             this.refreshDomTree();
         });
@@ -304,8 +313,8 @@ class InspectorApp {
         onEvent("editJournalUpdated", journal => this.drawers.setEditJournal(journal));
         onEvent("domBreakpointsChanged", data => this.sidebars.setDomBreakpoints(data?.breakpoints || []));
         onEvent("debuggerPaused", pause => {
-            this.toolboxPanels.setPaused(pause);
-            this.selectPanel("sources");
+            this.toolboxPanels.pauseState = pause;
+            this.selectPanel("sources", pause.frames?.[0]);
         });
         onEvent("debuggerResumed", () => this.toolboxPanels.setPaused(null));
         onEvent("networkRequestStarted", ev => this.toolboxPanels.addNetworkStart(ev));
@@ -313,17 +322,67 @@ class InspectorApp {
         onEvent("networkRequestFinished", ev => this.toolboxPanels.finishNetwork(ev));
     }
 
-    async refreshDomTree() {
-        try {
-            const res = await sendCommand("getDomTree");
-            if (res?.tree)
+    resetDocument(data) {
+        this.state.documentGeneration = data.documentGeneration;
+        this.state.targetUrl = data.url ?? this.state.targetUrl;
+        this.state.activeGridOverlays.clear();
+        this.state.activeFlexOverlays.clear();
+        this.state.overlayColors.clear();
+        this.state.selectedNodeId = null;
+        this.state.selectedNode = null;
+        this.state.selectedPseudo = null;
+        this.state.lastComputedStyle = null;
+        this.state.lastAppliedRules = null;
+        this.elementsTree.resetDocument();
+        this.sidebars.a11yTree = null;
+        this.sidebars.a11yDetails = null;
+        this.sidebars.computedData = {};
+        this.sidebars.layoutMetrics = {};
+        this.sidebars.usedFonts = [];
+        this.stylesPane.cosmeticFilterDraft = null;
+        this.stylesPane.forcedStates.clear();
+        this.stylesPane.setRules([]);
+        this.toolboxPanels.activeSource = null;
+        this.toolboxPanels.activeSourceText = "";
+        this.toolboxPanels.sources = [];
+        this.toolboxPanels.breakpoints.clear();
+        this.toolboxPanels.pauseState = null;
+        this.toolboxPanels.selectedNetworkId = null;
+        if (!this.state.preserveConsoleLog)
+            this.drawers.consoleEntries = [];
+        if (!this.state.preserveNetworkLog)
+            this.toolboxPanels.networkEntries = [];
+        this.drawers.setEditJournal(null);
+        this.drawers.quickStyleSource = null;
+        this.selectSidebar(this.state.activeSidebar);
+        this.selectPanel(this.state.activePanel);
+        this.drawers.renderActive();
+    }
+
+    refreshDomTree() {
+        const generation = this.state.documentGeneration;
+        if (this.treeRequest?.generation === generation)
+            return this.treeRequest.promise;
+        const promise = sendCommand("getDomTree").then(res => {
+            if (res?.tree && res.documentGeneration === this.state.documentGeneration)
                 this.elementsTree.setTree(res.tree);
-        } catch {
-            // ignore while loading
-        }
+        }).catch(() => {}).finally(() => {
+            if (this.treeRequest?.promise === promise)
+                this.treeRequest = null;
+        });
+        this.treeRequest = { generation, promise };
+        return promise;
     }
 
     onNodeSelected(nodeId, pseudo, node) {
+        if (this.state.selectedNodeId !== nodeId || this.state.selectedPseudo !== pseudo) {
+            this.state.lastComputedStyle = null;
+            this.state.lastAppliedRules = null;
+            this.sidebars.computedData = {};
+            this.sidebars.layoutMetrics = {};
+            this.sidebars.usedFonts = [];
+            this.stylesPane.setRules([]);
+        }
         this.state.selectedNodeId = nodeId;
         this.state.selectedPseudo = pseudo;
         this.state.selectedNode = node;
@@ -334,17 +393,21 @@ class InspectorApp {
     onGhostSnapshotActive(snapshot) {
         this.state.ghostSnapshot = snapshot;
         if (snapshot) {
+            this.state.selectedNode = snapshot.node;
             if (snapshot.rules)
                 this.stylesPane.setRules(snapshot.rules);
             if (snapshot.computed)
                 this.sidebars.computedData = snapshot.computed;
+            this.sidebars.layoutMetrics = {};
+            this.sidebars.usedFonts = [];
+            this.selectSidebar(this.state.activeSidebar);
         }
         this.stylesPane.render();
     }
 
     refreshSelectedNodeProperties() {
         const nodeId = this.state.selectedNodeId;
-        if (!nodeId)
+        if (!nodeId || this.state.ghostSnapshot)
             return;
         const pseudo = this.state.selectedPseudo || "";
         const ruleOptions = {
@@ -366,7 +429,7 @@ class InspectorApp {
             this.sidebars.renderLayout();
     }
 
-    selectPanel(panelName) {
+    selectPanel(panelName, sourceLocation) {
         this.state.activePanel = panelName;
         document.body.dataset.panel = panelName;
         document.querySelectorAll("#panel-tabs button").forEach(b => {
@@ -380,7 +443,7 @@ class InspectorApp {
         if (panelName === "console")
             this.drawers.renderConsole(host);
         else if (panelName === "sources")
-            this.toolboxPanels.renderSources(host);
+            this.toolboxPanels.renderSources(host, sourceLocation);
         else if (panelName === "network")
             this.toolboxPanels.renderNetwork(host);
         else if (panelName === "application")
@@ -485,28 +548,16 @@ class InspectorApp {
         const width = parseInt(document.getElementById("device-width").value, 10) || 390;
         const height = parseInt(document.getElementById("device-height").value, 10) || 844;
         const dpr = parseFloat(document.getElementById("device-dpr").value) || 2;
-        const touch = document.getElementById("device-touch").checked;
-        const rulers = document.getElementById("device-rulers").checked;
-        sendEngineCommand("setDeviceMode", { enabled: true, width, height, dpr, touch, rulers }).catch(() => {});
+        sendEngineCommand("setDeviceMode", { enabled: true, width, height, dpr }).catch(err => this.showToast(err.message));
     }
 
     openStyleSource(rule) {
-        if (rule.ruleId?.type) {
-            sendCommand("getStyleSheetSource", rule.ruleId).then(res => {
-                this.drawers.open("quick-source");
-                const host = document.getElementById("drawer-body");
-                host.textContent = "";
-                host.appendChild(el("pre", { class: "monospace", style: "padding:10px;overflow:auto;flex:1", text: res?.source || "(empty stylesheet)" }));
-            }).catch(() => {});
-        }
-    }
-
-    openScriptLocation(url, line) {
-        this.selectPanel("sources");
-        this.showToast(`Opened ${url}:${line}`);
+        this.drawers.openStyleSource(rule.ruleId, this.stylesPane.formatRuleSource(rule), rule.sourceLine);
     }
 
     handleGlobalKeyDown(e) {
+        if (e.defaultPrevented)
+            return;
         const mod = e.metaKey || e.ctrlKey;
         if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
             e.preventDefault();
@@ -520,7 +571,7 @@ class InspectorApp {
         } else if (mod && e.key.toLowerCase() === "f" && this.state.activePanel === "elements") {
             e.preventDefault();
             this.elementsTree.openSearch();
-        } else if (e.key === " " && this.state.pickerActive) {
+        } else if (e.key === " " && this.state.pickerActive && !e.target.closest("input, textarea, select, button, [contenteditable]")) {
             e.preventDefault();
             this.state.loupeLatched = !this.state.loupeLatched;
             this.showToast(this.state.loupeLatched ? "Loupe latched" : "Loupe unlatched");
@@ -533,6 +584,7 @@ class InspectorApp {
                 settingsDialog.close();
             } else if (!document.getElementById("context-menu").classList.contains("hidden")) {
                 this.hideContextMenu();
+                this.elementsTree.treeEl.focus();
             } else if (this.state.pickerActive) {
                 sendCommand("setPickerActive", { active: false }).catch(() => {});
             } else {
@@ -676,6 +728,7 @@ class InspectorApp {
         const rect = menu.getBoundingClientRect();
         menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
         menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
+        menu.querySelector("button:not(:disabled)")?.focus();
     }
 
     hideContextMenu() {
