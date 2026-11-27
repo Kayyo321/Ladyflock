@@ -407,7 +407,7 @@ void expect_file_is_quarantined(ByteString const& path, QuarantineEvent event)
     // With a quarantine event the system picks the agent, which is the quarantine identifier of this process if it
     // inherited one from whatever launched it.
     if (event == QuarantineEvent::No)
-        VERIFY(fields[2] == "Ladybird"sv);
+        VERIFY(fields[2] == "Ladyflock"sv);
 }
 #endif
 

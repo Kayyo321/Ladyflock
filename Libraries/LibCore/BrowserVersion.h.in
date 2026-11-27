@@ -6,9 +6,16 @@
 
 #pragma once
 
-#define BROWSER_VERSION "@LADYBIRD_BROWSER_VERSION@"
+#define BROWSER_BRAND_NAME "@browser_brand_name@"
+#define BROWSER_ENGINE_NAME "@browser_engine_name@"
+#define BROWSER_INTERNAL_NAME "@browser_internal_name@"
+#define BROWSER_VERSION "@LADYFLOCK_BROWSER_VERSION@"
+#define BROWSER_COMPATIBILITY_VERSION "@LADYBIRD_EFFECTIVE_COMPATIBILITY_VERSION@"
 #define BROWSER_BUILD_CONFIGURATION "@CMAKE_BUILD_TYPE@"
 #define BROWSER_PRODUCT_NAME "@browser_product_name@"
 #define BROWSER_RELEASE_STAGE "@browser_release_stage@"
+#define BROWSER_RELEASE_CHANNEL "@browser_release_channel@"
+#define BROWSER_APPLICATION_ID "@LADYFLOCK_APPLICATION_ID@"
+#define BROWSER_BUNDLE_IDENTIFIER "@LADYBIRD_BUNDLE_IDENTIFIER@"
 #define BROWSER_IS_RELEASE_BUILD @browser_is_release_build@
 #define BROWSER_IS_FINAL_RELEASE @browser_is_final_release@

@@ -32,8 +32,7 @@ static constexpr int TILE_VERTICAL_MARGIN = 4;
 static constexpr qreal TILE_LEADING_PADDING = 7;
 static constexpr qreal TILE_TRAILING_PADDING = 6;
 static constexpr qreal MARK_CHEVRON_GAP = 3;
-static constexpr QSizeF LOGOMARK_SIZE { 20, 16.7 };
-static constexpr qreal LOGOMARK_STROKE_WIDTH = 1.55;
+static constexpr QSizeF LOGOMARK_SIZE { 20, 16.3 };
 static constexpr qreal PRIVATE_GLYPH_SIZE = 20;
 static constexpr qreal CHEVRON_SIZE = 10;
 // How deep the tile's fill is under the pointer, and while pressed or while the menu is open. At rest it has none, only
@@ -107,8 +106,8 @@ LadybirdButton::LadybirdButton(WebView::IsPrivate is_private, QWidget* parent)
     , m_is_private(is_private)
 {
     setObjectName("LadybirdButton");
-    setAccessibleName(is_private == WebView::IsPrivate::Yes ? "Ladybird menu, private window" : "Ladybird menu");
-    setToolTip(is_private == WebView::IsPrivate::Yes ? "Ladybird menu, private window" : "Ladybird menu");
+    setAccessibleName(is_private == WebView::IsPrivate::Yes ? "Ladyflock menu, private window" : "Ladyflock menu");
+    setToolTip(is_private == WebView::IsPrivate::Yes ? "Ladyflock menu, private window" : "Ladyflock menu");
     setFocusPolicy(Qt::TabFocus);
     setPopupMode(QToolButton::InstantPopup);
     setFixedSize(sizeHint());
@@ -188,7 +187,7 @@ void LadybirdButton::paintEvent(QPaintEvent*)
     } else {
         QRectF logomark_rect { QPointF(), LOGOMARK_SIZE };
         logomark_rect.moveCenter(mark_center);
-        paint_logomark(painter, logomark_rect, mark_color, LOGOMARK_STROKE_WIDTH);
+        paint_logomark(painter, logomark_rect, mark_color);
     }
     auto chevron_center = QPointF(tile_rect.right() - TILE_TRAILING_PADDING - (CHEVRON_SIZE / 2), tile_rect.center().y());
     paint_chevron(painter, chevron_center, mark_color);

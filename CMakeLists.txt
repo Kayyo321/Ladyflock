@@ -21,8 +21,8 @@ endif()
 project(ladybird
     VERSION 0.1.0
     LANGUAGES C CXX
-    DESCRIPTION "Ladybird Web Browser"
-    HOMEPAGE_URL "https://ladybird.org"
+    DESCRIPTION "Ladyflock (Ladybird) Web Browser"
+    HOMEPAGE_URL "https://github.com/Kayyo321/Ladyflock"
 )
 
 if (ANDROID OR IOS)

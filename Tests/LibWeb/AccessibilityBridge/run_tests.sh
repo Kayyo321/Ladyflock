@@ -17,10 +17,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-# The harness reads LADYBIRD_BINARY as the path to the Ladybird executable.
-# Default to Build/release/bin/Ladybird for local runs.
+# The harness reads LADYBIRD_BINARY as the path to the Ladyflock executable.
+# Default to Build/release/bin/Ladyflock for local runs.
 # ctest sets this explicitly to $<TARGET_FILE:ladybird>.
-: "${LADYBIRD_BINARY:=${REPO_ROOT}/Build/release/bin/Ladybird}"
+: "${LADYBIRD_BINARY:=${REPO_ROOT}/Build/release/bin/Ladyflock}"
 export LADYBIRD_BINARY
 
 if [[ ! -x "${LADYBIRD_BINARY}" ]]; then

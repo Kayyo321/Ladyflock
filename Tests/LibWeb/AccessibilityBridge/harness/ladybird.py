@@ -20,7 +20,7 @@ gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
-DEFAULT_BINARY = REPO_ROOT / "Build" / "release" / "bin" / "Ladybird"
+DEFAULT_BINARY = REPO_ROOT / "Build" / "release" / "bin" / "Ladyflock"
 FIXTURE_DIR = pathlib.Path(__file__).resolve().parents[1] / "input"
 
 
@@ -279,7 +279,7 @@ class LadybirdContext:
                 name = child.get_name() or ""
             except Exception:
                 continue
-            if "ladybird" not in name.lower():
+            if "ladyflock" not in name.lower() and "ladybird" not in name.lower():
                 continue
             # A previous test case's Ladybird can linger on the desktop while its accessible children are already gone.
             # To deal with that, pin the match to our own subprocess PID — so we don't latch onto a dying predecessor.

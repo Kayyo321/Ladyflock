@@ -1,5 +1,5 @@
 {
-  "app-id": "org.ladybird.Ladybird",
+  "app-id": "io.github.kayyo321.Ladyflock",
   "runtime": "org.kde.Platform",
   "runtime-version": "6.10",
   "sdk": "org.kde.Sdk",
@@ -7,7 +7,7 @@
     "org.freedesktop.Sdk.Extension.llvm20",
     "org.freedesktop.Sdk.Extension.rust-stable"
   ],
-  "command": "Ladybird",
+  "command": "Ladyflock",
   "finish-args": [
     "--device=dri",
     "--device=input",

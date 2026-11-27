@@ -160,13 +160,13 @@ TEST_CASE(notifications_prompt_has_two_answers)
 TEST_CASE(hint_text_names_the_feature)
 {
     PermissionPromptPopover location(nullptr, request_for("https://maps.example.com/"sv, PermissionName::Geolocation, true));
-    EXPECT_EQ(child<QLabel>(location, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladybird know your location."));
+    EXPECT_EQ(child<QLabel>(location, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladyflock know your location."));
 
     PermissionPromptPopover microphone(nullptr, request_for("https://talk.example.org/"sv, PermissionName::Microphone, true));
-    EXPECT_EQ(child<QLabel>(microphone, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladybird use your microphone."));
+    EXPECT_EQ(child<QLabel>(microphone, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladyflock use your microphone."));
 
     PermissionPromptPopover notifications(nullptr, request_for("https://mail.example.com/"sv, PermissionName::Notifications, true));
-    EXPECT_EQ(child<QLabel>(notifications, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladybird send you notifications."));
+    EXPECT_EQ(child<QLabel>(notifications, "LadybirdPermissionPromptHint").text(), QStringLiteral("Your system will then ask you to let Ladyflock send you notifications."));
 }
 
 TEST_CASE(hint_shows_only_when_requested)
@@ -177,7 +177,7 @@ TEST_CASE(hint_shows_only_when_requested)
     PermissionPromptPopover with_hint(nullptr, request_for("https://maps.example.com/"sv, PermissionName::Geolocation, true));
     auto& hint = child<QLabel>(with_hint, "LadybirdPermissionPromptHint");
     EXPECT(!hint.isHidden());
-    EXPECT_EQ(hint.text(), QStringLiteral("Your system will then ask you to let Ladybird know your location."));
+    EXPECT_EQ(hint.text(), QStringLiteral("Your system will then ask you to let Ladyflock know your location."));
 }
 
 TEST_CASE(suspending_hides_without_an_answer)
@@ -244,8 +244,8 @@ TEST_CASE(queued_requests_show_one_at_a_time)
 TEST_CASE(a_notice_tells_and_offers_the_setting)
 {
     PermissionPromptPopover popover(nullptr, notice_for("https://talk.example.org/"sv));
-    EXPECT_EQ(child<QLabel>(popover, "LadybirdPermissionPromptTitle").text(), QStringLiteral("Ladybird can't use your microphone"));
-    EXPECT_EQ(child<QLabel>(popover, "LadybirdPermissionPromptBody").text(), QStringLiteral("Your system's privacy settings don't let Ladybird use your microphone."));
+    EXPECT_EQ(child<QLabel>(popover, "LadybirdPermissionPromptTitle").text(), QStringLiteral("Ladyflock can't use your microphone"));
+    EXPECT_EQ(child<QLabel>(popover, "LadybirdPermissionPromptBody").text(), QStringLiteral("Your system's privacy settings don't let Ladyflock use your microphone."));
     EXPECT(!popover.findChild<QPushButton*>(QStringLiteral("LadybirdPermissionPromptAllowAlways")));
 
     Recorder recorder;

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibCore/BrowserVersion.h>
 #include <LibTest/TestCase.h>
 #include <LibWebView/NotificationFreedesktopArguments.h>
 
@@ -31,7 +32,8 @@ static Optional<FreedesktopHint> hint(FreedesktopNotifyArguments const& argument
 TEST_CASE(summary_is_the_title_and_body_opens_with_the_attribution)
 {
     auto arguments = build_notify_arguments(notification("New mail"_utf16, "From Alice"_utf16), { .body = true }, 0);
-    EXPECT_EQ(arguments.app_name, "Ladybird"_string);
+    EXPECT_EQ(arguments.app_name, BROWSER_BRAND_NAME ""_string);
+    EXPECT_EQ(arguments.app_icon, BROWSER_APPLICATION_ID ""_string);
     EXPECT_EQ(arguments.summary, "New mail"_string);
     EXPECT_EQ(arguments.body, "example.com\n\nFrom Alice"_string);
     EXPECT_EQ(arguments.replaces_id, 0u);
@@ -137,7 +139,7 @@ TEST_CASE(desktop_entry_names_the_application)
 {
     auto entry = hint(build_notify_arguments(notification("t"_utf16, "b"_utf16), {}, 0), "desktop-entry"sv);
     EXPECT(entry.has_value());
-    EXPECT_EQ(entry->value.get<String>(), "org.ladybird.Ladybird"_string);
+    EXPECT_EQ(entry->value.get<String>(), BROWSER_APPLICATION_ID ""_string);
 }
 
 TEST_CASE(default_action_only_when_the_daemon_takes_actions)

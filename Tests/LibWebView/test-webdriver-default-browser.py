@@ -37,7 +37,7 @@ CLICK = """
 """
 
 # What a headless browser answers, as it has no UI to ask the system.
-FAILURE = "Could not make Ladybird the default browser. Choose it in your system settings instead."
+FAILURE = "Could not make Ladyflock the default browser. Choose it in your system settings instead."
 
 
 def run_test(webdriver_binary):
@@ -118,7 +118,7 @@ def run_test(webdriver_binary):
             )
             assert row(settings_row) == {
                 "shown": True,
-                "text": "Ladybird cannot determine or set the default browser on this system.",
+                "text": "Ladyflock cannot determine or set the default browser on this system.",
                 "offersToMakeDefault": False,
                 "labelNamesButton": False,
                 "actsAsOneControl": False,
@@ -150,7 +150,7 @@ def run_test(webdriver_binary):
             report("default")
             assert row(settings_row) == {
                 "shown": True,
-                "text": "Links from other apps open in Ladybird.",
+                "text": "Links from other apps open in Ladyflock.",
                 "offersToMakeDefault": False,
                 "labelNamesButton": False,
                 "actsAsOneControl": False,
@@ -190,7 +190,7 @@ def run_test(webdriver_binary):
 
             offered = {
                 "shown": True,
-                "text": "Open links from other apps in Ladybird.",
+                "text": "Open links from other apps in Ladyflock.",
                 "offersToMakeDefault": True,
                 "labelNamesButton": True,
                 "actsAsOneControl": True,
@@ -210,7 +210,7 @@ def run_test(webdriver_binary):
             report("default")
             assert row(welcome_row) == {
                 "shown": True,
-                "text": "Links from other apps open in Ladybird.",
+                "text": "Links from other apps open in Ladyflock.",
                 "offersToMakeDefault": False,
                 "labelNamesButton": False,
                 "actsAsOneControl": False,

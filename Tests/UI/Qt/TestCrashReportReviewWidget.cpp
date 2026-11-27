@@ -4,10 +4,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Function.h>
 #include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
 #include <AK/Vector.h>
 #include <LibCore/Directory.h>
+#include <LibCore/Environment.h>
 #include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
 #include <LibFileSystem/FileSystem.h>
@@ -73,6 +75,39 @@ static T& child(QWidget& widget, char const* name)
 static QString status_title(QWidget& widget)
 {
     return child<QLabel>(widget, "CrashReportStatusTitle").text();
+}
+
+static ScopeGuard<Function<void()>> with_report_endpoint(StringView endpoint)
+{
+    auto previous = Core::Environment::get("LADYFLOCK_REPORTS_ENDPOINT"sv).map([](auto value) { return ByteString { value }; });
+    MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, endpoint, Core::Environment::Overwrite::Yes));
+    return ScopeGuard { Function<void()> { [previous = move(previous)] {
+        if (previous.has_value())
+            MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, *previous, Core::Environment::Overwrite::Yes));
+        else
+            MUST(Core::Environment::unset("LADYFLOCK_REPORTS_ENDPOINT"sv));
+    } } };
+}
+
+TEST_CASE(without_a_configured_collector_sending_is_disabled_and_local_review_still_works)
+{
+    cleanup();
+    ScopeGuard guard = cleanup;
+    auto endpoint_guard = with_report_endpoint(""sv);
+
+    auto name = write_report("2026-10-01T12-00-00Z"sv);
+    WebView::CrashReportStore store { test_directory() };
+    CrashReportReviewWidget widget { QStringLiteral("Reload page"), nullptr, store };
+    MUST(widget.open_report(name));
+    widget.show();
+
+    auto& send = child<QPushButton>(widget, "CrashReportSendButton");
+    EXPECT(!send.isEnabled());
+    EXPECT(child<QLabel>(widget, "CrashReportSubmissionDisabledNote").isVisible());
+
+    // Local full report inspection still works.
+    child<QPushButton>(widget, "CrashReportShowReportButton").click();
+    EXPECT(child<QPlainTextEdit>(widget, "ReportText").isVisible());
 }
 
 TEST_CASE(a_crash_screen_offers_the_website_without_including_it)
@@ -153,6 +188,7 @@ TEST_CASE(the_review_offers_to_exit_before_and_after_answering)
 {
     cleanup();
     ScopeGuard guard = cleanup;
+    auto endpoint_guard = with_report_endpoint("http://127.0.0.1:1"sv);
 
     auto name = write_report("2026-10-01T12-00-00Z"sv);
     WebView::CrashReportStore store { test_directory() };
@@ -218,6 +254,7 @@ TEST_CASE(a_choice_that_cannot_be_sent_is_explained_in_place)
 {
     cleanup();
     ScopeGuard guard = cleanup;
+    auto endpoint_guard = with_report_endpoint("http://127.0.0.1:1"sv);
 
     auto name = write_report("2026-10-01T12-00-00Z"sv);
     WebView::CrashReportStore store { test_directory() };
@@ -281,7 +318,7 @@ TEST_CASE(sending_shows_its_progress_and_outcome)
 
     widget.show_sent();
     EXPECT_EQ(status_title(widget), "Report sent");
-    EXPECT_EQ(message.text(), "Thank you for helping Ladybird.");
+    EXPECT_EQ(message.text(), "Thank you for helping Ladyflock.");
 }
 
 TEST_CASE(the_full_report_is_shown_in_place_of_the_review)
@@ -341,6 +378,7 @@ TEST_CASE(tab_moves_through_every_control_and_wraps_around)
 {
     cleanup();
     ScopeGuard guard = cleanup;
+    auto endpoint_guard = with_report_endpoint("http://127.0.0.1:1"sv);
 
     // As on macOS unless its keyboard navigation setting is on, Tab only moves between text fields, and buttons take focus
     // from Tab alone.
@@ -395,6 +433,7 @@ TEST_CASE(answering_the_report_is_announced_once_the_choice_is_made)
 {
     cleanup();
     ScopeGuard guard = cleanup;
+    auto endpoint_guard = with_report_endpoint("http://127.0.0.1:1"sv);
 
     auto name = write_report("2026-10-01T12-00-00Z"sv);
     WebView::CrashReportStore store { test_directory() };

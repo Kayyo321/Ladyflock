@@ -109,7 +109,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
     auto application = TRY(Hub::Application::create(arguments, nullptr));
     if (application->browser_is_unresponsive()) {
-        warnln("Ladybird is already running with this profile, but it is not responding");
+        warnln("Ladyflock is already running with this profile, but it is not responding");
         return WebView::BrowserProcess::unresponsive_browser_exit_status;
     }
     if (application->should_exit_after_profile_coordination()) {

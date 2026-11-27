@@ -85,7 +85,7 @@ except Exception:
     HAVE_SCREEN_PREFLIGHT = False
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-DEFAULT_BINARY = REPO_ROOT / "Build" / "release" / "bin" / "Ladybird.app" / "Contents" / "MacOS" / "Ladybird"
+DEFAULT_BINARY = REPO_ROOT / "Build" / "release" / "bin" / "Ladyflock.app" / "Contents" / "MacOS" / "Ladyflock"
 FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "AccessibilityBridge" / "input" / "roles.html"
 
 HELPER_NAMES = ("WebContent", "RequestServer", "ImageDecoder", "Compositor", "WebDriver")
@@ -349,7 +349,7 @@ def preexisting_ladybird_processes():
     return [
         (pid, row["command"][:140])
         for pid, row in sorted(table.items())
-        if "Ladybird.app/Contents/MacOS" in row["command"].split()[0]
+        if "Ladyflock.app/Contents/MacOS" in row["command"].split()[0]
     ]
 
 
@@ -931,7 +931,7 @@ class Probe:
                 "--style",
                 "compact",
                 "--predicate",
-                'processImagePath CONTAINS[c] "Ladybird.app"',
+                'processImagePath CONTAINS[c] "Ladyflock.app"',
             ],
             timeout=180,
         )

@@ -95,7 +95,7 @@ TEST_CASE(opening_a_report_shows_what_crashed)
         { "Crash date"sv, "2026-10-01 14:34:56"sv, false },
         { "Verification failed"sv, "value != 0"sv, true },
         { "Termination signal"sv, "SIGTRAP (5)"sv, false },
-        { "Ladybird version"sv, "1.0"sv, true },
+        { "Ladyflock version"sv, "1.0"sv, true },
         { "Platform"sv, "macOS 26.0"sv, false },
         { "Process"sv, "WebContent"sv, false },
         { "Architecture"sv, "arm64"sv, false },
@@ -295,4 +295,32 @@ TEST_CASE(a_report_changed_after_it_was_reviewed_is_not_sent)
     EXPECT(failure == ReportSubmission::Failure::Preparation);
     EXPECT_EQ(reason, "This report changed after it was reviewed, so it was not sent."sv);
     EXPECT(!review.is_sending());
+}
+
+TEST_CASE(old_ladybird_and_new_ladyflock_reports_open_identically)
+{
+    cleanup();
+    ScopeGuard guard = cleanup;
+
+    auto old_name = write_report("2026-10-01T12-00-00Z"sv,
+        "Ladybird crash report, format 1\n"
+        "Process: WebContent\n"
+        "Version: 0.1.0\n"
+        "Platform: macOS\n"sv);
+    auto new_name = write_report("2026-10-01T12-05-00Z"sv,
+        "Ladyflock (Ladybird) crash report, format 1\n"
+        "Process: WebContent\n"
+        "Version: 0.2.0\n"
+        "Platform: macOS\n"sv);
+
+    WebView::CrashReportStore store { test_directory() };
+    CrashReportReview review { store };
+
+    auto old_report = MUST(review.open(old_name));
+    EXPECT_EQ(old_report.fields[0].label, "Ladyflock version"sv);
+    EXPECT_EQ(old_report.fields[0].value, "0.1.0"sv);
+
+    auto new_report = MUST(review.open(new_name));
+    EXPECT_EQ(new_report.fields[0].label, "Ladyflock version"sv);
+    EXPECT_EQ(new_report.fields[0].value, "0.2.0"sv);
 }

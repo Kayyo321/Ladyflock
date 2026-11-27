@@ -575,7 +575,7 @@ QColor selected_row()
     return is_dark() ? rgb(0x2463b8) : primary();
 }
 
-// A tinted theme's logomark clears 4.5:1 on both the strip and the toolbar, as the Ladybird button sits on either,
+// A tinted theme's logomark clears 4.5:1 on both the strip and the toolbar, as the Ladyflock button sits on either,
 // depending on where the tabs are.
 QColor logomark()
 {
@@ -584,6 +584,70 @@ QColor logomark()
     auto adjustment = is_dark() ? Adjustment::Lighten : Adjustment::Darken;
     auto color = with_contrast(*s_color_theme.accent, chrome().strip, 4.5f, adjustment);
     return with_contrast(color, chrome().toolbar, 4.5f, adjustment);
+}
+
+PageMarkColors page_mark_colors(bool dark)
+{
+    if (!s_color_theme.accent.has_value()) {
+        if (dark) {
+            return {
+                .light = rgb(0xe2b4ff),
+                .back = rgb(0xc68cff),
+                .mid = rgb(0xa567f5),
+                .deep = rgb(0x7d43dc),
+                .bird = rgb(0xd3b8ff),
+                .shadow = rgb(0x120526),
+                .solid = rgb(0xb496ff),
+            };
+        }
+        return {
+            .light = rgb(0xc674f8),
+            .back = rgb(0x9c50da),
+            .mid = rgb(0x742dc5),
+            .deep = rgb(0x4d0b9e),
+            .bird = rgb(0x4e1599),
+            .shadow = rgb(0x1e0440),
+            .solid = rgb(0x4b22ad),
+        };
+    }
+
+    auto const& base = *s_color_theme.accent;
+    auto base_hue = base.hslHueF() * 360.0f;
+    auto base_sat = base.hslSaturationF();
+    auto sat_hi = min(0.92f, max(0.68f, base_sat * 1.05f));
+    auto sat_mid = min(0.86f, max(0.62f, base_sat));
+    auto sat_deep = min(0.84f, max(0.58f, base_sat * 0.95f));
+
+    auto hsl = [](float hue_deg, float sat, float lightness) {
+        auto wrapped = fmodf(hue_deg, 360.0f);
+        if (wrapped < 0.0f)
+            wrapped += 360.0f;
+        return QColor::fromHslF(wrapped / 360.0f, clamp(sat, 0.0f, 1.0f), clamp(lightness, 0.0f, 1.0f));
+    };
+
+    if (!dark) {
+        auto background = rgb(0xffffff);
+        return {
+            .light = with_contrast(hsl(base_hue - 6.0f, sat_hi, 0.64f), background, 2.5f, Adjustment::Darken),
+            .back = with_contrast(hsl(base_hue - 3.0f, sat_mid, 0.54f), background, 3.4f, Adjustment::Darken),
+            .mid = with_contrast(hsl(base_hue, sat_mid, 0.44f), background, 4.6f, Adjustment::Darken),
+            .deep = with_contrast(hsl(base_hue + 4.0f, sat_deep, 0.32f), background, 6.8f, Adjustment::Darken),
+            .bird = with_contrast(hsl(base_hue + 4.0f, sat_deep, 0.30f), background, 7.2f, Adjustment::Darken),
+            .shadow = hsl(base_hue + 6.0f, min(0.75f, sat_deep), 0.14f),
+            .solid = with_contrast(hsl(base_hue, sat_deep, 0.34f), background, 7.0f, Adjustment::Darken),
+        };
+    }
+
+    auto background = rgb(0x1c1c1e);
+    return {
+        .light = with_contrast(hsl(base_hue - 6.0f, min(0.95f, sat_hi), 0.82f), background, 9.5f, Adjustment::Lighten),
+        .back = with_contrast(hsl(base_hue - 3.0f, sat_hi, 0.72f), background, 7.2f, Adjustment::Lighten),
+        .mid = with_contrast(hsl(base_hue, sat_mid, 0.62f), background, 5.2f, Adjustment::Lighten),
+        .deep = with_contrast(hsl(base_hue + 4.0f, sat_mid, 0.50f), background, 3.6f, Adjustment::Lighten),
+        .bird = with_contrast(hsl(base_hue - 4.0f, min(0.92f, sat_hi), 0.80f), background, 8.8f, Adjustment::Lighten),
+        .shadow = hsl(base_hue + 6.0f, min(0.75f, sat_deep), 0.09f),
+        .solid = with_contrast(hsl(base_hue, sat_hi, 0.72f), background, 7.5f, Adjustment::Lighten),
+    };
 }
 
 }

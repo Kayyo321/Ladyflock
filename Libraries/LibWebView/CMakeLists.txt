@@ -200,7 +200,11 @@ add_custom_target(generate_build_information DEPENDS ${build_information_stamp})
 
 ladybird_lib(LibWebView webview EXPLICIT_SYMBOL_EXPORT)
 add_dependencies(LibWebView generate_build_information)
+target_compile_definitions(LibWebView PRIVATE
+    LADYFLOCK_REPORTS_ENDPOINT="${LADYFLOCK_REPORTS_ENDPOINT}"
+)
 if (LADYBIRD_ENABLE_UPDATE_CHECK)
+    configure_file(UpdateConfiguration.h.in UpdateConfiguration.h @ONLY ESCAPE_QUOTES)
     target_compile_definitions(LibWebView PUBLIC LADYBIRD_HAS_UPDATE_CHECK)
 endif()
 

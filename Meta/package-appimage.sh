@@ -42,8 +42,8 @@ case "$architecture" in
         ;;
 esac
 
-name="ladybird-${version}-Linux-${architecture}.AppImage"
-update_information="zsync|https://download.ladybird.org/linux/latest/ladybird-Linux-${architecture}.AppImage.zsync"
+name="ladyflock-${version}-Linux-${architecture}.AppImage"
+update_information="${LADYFLOCK_APPIMAGE_UPDATE_INFORMATION:-}"
 
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT
@@ -70,9 +70,9 @@ echo AppImage >"$appdir/usr/share/Lagom/package-format"
 
 "$work_directory/linuxdeploy" --appdir "$appdir" \
     --deploy-deps-only "$appdir/usr/lib" --deploy-deps-only "$appdir/usr/libexec" \
-    --executable "$appdir/usr/bin/Ladybird" \
-    --desktop-file "$appdir/usr/share/applications/org.ladybird.Ladybird.desktop" \
-    --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/org.ladybird.Ladybird.svg"
+    --executable "$appdir/usr/bin/Ladyflock" \
+    --desktop-file "$appdir/usr/share/applications/io.github.kayyo321.Ladyflock.desktop" \
+    --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.kayyo321.Ladyflock.svg"
 
 # linuxdeploy gives every library the runpath of one in usr/lib, which the plugins in directories below it do not share.
 while IFS= read -r library; do
@@ -81,7 +81,12 @@ while IFS= read -r library; do
     fi
 done < <(find "$appdir/usr/lib" -mindepth 2 -type f -name '*.so*')
 
-ln -sf usr/bin/Ladybird "$appdir/AppRun"
+ln -sf usr/bin/Ladyflock "$appdir/AppRun"
 
-ARCH="$architecture" "$work_directory/appimagetool" --no-appstream --runtime-file "$work_directory/runtime" \
-    -u "$update_information" "$appdir" "$output_directory/$name"
+appimagetool_args=(--no-appstream --runtime-file "$work_directory/runtime")
+if [ -n "$update_information" ]; then
+    appimagetool_args+=(-u "$update_information")
+fi
+
+ARCH="$architecture" "$work_directory/appimagetool" "${appimagetool_args[@]}" \
+    "$appdir" "$output_directory/$name"

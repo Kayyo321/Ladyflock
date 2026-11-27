@@ -4,22 +4,21 @@
 #
 # SPDX-License-Identifier: BSD-2-Clause
 
-"""Pack an installed Ladybird.app into a tarball such that it's runnable on a machine other than the one which built it.
+"""Pack an installed Ladyflock.app into a tarball that can run on a different Mac.
 
 Copy the Qt platform plugin the app loads at run time into the bundle; give every executable bundle-relative rpaths;
 drop absolute ones; copy in the libraries the bundle actually links, Qt included (resolving each @rpath reference the
 way dyld does); re-sign the executables with the entitlements the build gave them; check that nothing still points
 outside the bundle; and tar the result.
 
-CI invokes this on the macOS Sanitizer build machine to produce a Ladybird with which we can run the macOS AX tests,
-but on a different machine — without needing to re-build Ladybird on that other machine.
+CI uses this on the macOS Sanitizer build machine so the macOS accessibility tests can run on a different machine.
 
 Otherwise, without this, the bundle runs only on the machine which built it. That's because "cmake --install" on its own
 leaves every binary with only the absolute rpaths it was built with (the vcpkg library directory, the build's lib/ — and
 for a sanitizer build, the compiler's runtime directory); leaves behind the dylibs it links from those directories; and
 "--strip" rewrites every executable after the build signed it — invalidating signatures.
 
-    Meta/package-macos-test-bundle.py --build-dir Build/release --install-dir /tmp/Install --output /tmp/Ladybird.tar.gz
+    Meta/package-macos-test-bundle.py --build-dir Build/release --install-dir /tmp/Install --output /tmp/Ladyflock.tar.gz
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from __future__ import annotations
 import argparse
 import functools
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -66,9 +64,9 @@ def linked_libraries(binary: Path) -> list[str]:
     """The install names of every library `binary` links, as `otool -L` prints them."""
     names = []
     for line in run("otool", "-L", str(binary)).splitlines()[1:]:
-        match = re.match(r"\s+(\S+) \(", line)
-        if match:
-            names.append(match.group(1))
+        name, separator, _ = line.strip().rpartition(" (compatibility version ")
+        if separator:
+            names.append(name)
     # A dylib's own install name leads its list; a library never links itself. Compare the install name itself, not the
     # file name: a copied library keeps its install name, which can carry a shorter version than its file name.
     return [name for name in names if name != install_name(binary)]
@@ -126,16 +124,16 @@ def resolve_in_bundle(binary: Path, app: Path, name: str) -> Optional[Path]:
     executables, every one of which carries BUNDLE_RPATHS once fix_rpaths() has run, so it resolves against those plus
     its own. An absolute rpath never counts, and neither does an absolute reference outside the bundle: both name the
     build tree, which the machine that unpacks the tarball doesn't have."""
-    contents = app / "Contents"
+    contents = (app / "Contents").resolve()
     if not name.startswith("@rpath/"):
         candidate = expand(binary, app, name)
-        return candidate if candidate.exists() and candidate.is_relative_to(contents) else None
+        return candidate if candidate.exists() and candidate.resolve().is_relative_to(contents) else None
     rpaths = [entry for entry in rpath_entries(binary) if not entry.startswith("/")]
-    if binary.parent != contents / "MacOS":
+    if binary.parent.resolve() != contents / "MacOS":
         rpaths = [*BUNDLE_RPATHS, *rpaths]
     for entry in rpaths:
         candidate = expand(binary, app, entry) / name[len("@rpath/") :]
-        if candidate.exists():
+        if candidate.exists() and candidate.resolve().is_relative_to(contents):
             return candidate
     return None
 
@@ -214,18 +212,32 @@ def fix_rpaths(app: Path) -> list[Path]:
     return rewritten
 
 
-def copy_linked_libraries(app: Path, search_directories: list[Path]) -> list[str]:
-    """Copy every library the bundle links through @rpath but doesn't carry into Contents/lib, transitively."""
+def copy_linked_libraries(app: Path, search_directories: list[Path], extra_dylibs: set[str]) -> list[str]:
+    """Copy transitive dependencies and relocate explicitly included toolchain dylibs into Contents/lib."""
     library_directory = app / "Contents" / "lib"
     library_directory.mkdir(parents=True, exist_ok=True)
     copied = []
     pending = bundle_binaries(app)
     seen = {binary.resolve() for binary in pending}
+    relocated = set()
     while pending:
         binary = pending.pop()
         for name in linked_libraries(binary):
             if name.startswith(SYSTEM_LIBRARY_PREFIXES):
                 continue
+            if name in extra_dylibs:
+                source = Path(name)
+                library = library_directory / source.name
+                new_name = f"@rpath/{source.name}"
+                if name not in relocated:
+                    if library.exists() or library.is_symlink():
+                        sys.exit(f"error: {name} would overwrite {library}")
+                    shutil.copy2(source, library)
+                    run("install_name_tool", "-id", new_name, str(library))
+                    relocated.add(name)
+                    copied.append(source.name)
+                run("install_name_tool", "-change", name, new_name, str(binary))
+                name = new_name
             library = resolve_in_bundle(binary, app, name)
             if library is None:
                 if not name.startswith("@rpath/"):
@@ -236,6 +248,8 @@ def copy_linked_libraries(app: Path, search_directories: list[Path]) -> list[str
                     sys.exit(f"error: {binary.relative_to(app)} links {name}, and no search directory has it")
                 # Contents/lib is on every executable's rpath (fix_rpaths), so a copied library resolves from there.
                 library = library_directory / relative
+                if not library.resolve().is_relative_to(library_directory.resolve()):
+                    sys.exit(f"error: {name} would copy a library outside {library_directory}")
                 library.parent.mkdir(parents=True, exist_ok=True)
                 real_library = library.parent / source.resolve().name
                 if not real_library.exists():
@@ -246,6 +260,8 @@ def copy_linked_libraries(app: Path, search_directories: list[Path]) -> list[str
             if library.resolve() not in seen and is_mach_o(library.resolve()):
                 seen.add(library.resolve())
                 pending.append(library.resolve())
+    if unused := extra_dylibs - relocated:
+        sys.exit(f"error: no binary linked the requested dylibs: {', '.join(sorted(unused))}")
     return copied
 
 
@@ -256,7 +272,7 @@ def resign(app: Path, build_directory: Path) -> list[str]:
     already has and reseals the bundle over everything copied in. Code in nested bundles keeps the signatures the build
     gave it, since signing its files one by one would break the seals of those bundles; verify() checks them."""
     executables_directory = app / "Contents" / "MacOS"
-    main_executable = executables_directory / "Ladybird"
+    main_executable = executables_directory / "Ladyflock"
     resigned = []
     for library in bundle_binaries(app):
         if library.parent != executables_directory and not is_in_nested_bundle(app, library):
@@ -283,6 +299,7 @@ def verify(app: Path) -> None:
     """Fail if any binary still has a build-tree rpath, any executable lacks the bundle's, any signature is invalid, or
     any library reference still points outside the bundle."""
     executables_directory = app / "Contents" / "MacOS"
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     for binary in bundle_binaries(app):
         entries = rpath_entries(binary)
         if any(entry.startswith("/") for entry in entries):
@@ -305,12 +322,22 @@ def main() -> int:
     parser.add_argument(
         "--install-dir", required=True, type=Path, help="the prefix `cmake --install --strip` installed into"
     )
-    parser.add_argument("--output", required=True, type=Path, help="the .tar.gz to write, holding Ladybird.app")
+    parser.add_argument("--output", required=True, type=Path, help="the .tar.gz to write, holding Ladyflock.app")
+    parser.add_argument(
+        "--include-dylib",
+        type=Path,
+        action="append",
+        default=[],
+        help="an absolute toolchain dylib install name to redistribute in this test bundle (repeatable)",
+    )
     args = parser.parse_args()
+    for dylib in args.include_dylib:
+        if not dylib.is_absolute() or not dylib.is_file() or dylib.suffix != ".dylib":
+            parser.error(f"--include-dylib requires the absolute path of an existing .dylib: {dylib}")
 
-    app = args.install_dir / "bundle" / "Ladybird.app"
-    built_app_binary = args.build_dir / "bin" / "Ladybird.app" / "Contents" / "MacOS" / "Ladybird"
-    if not (app / "Contents" / "MacOS" / "Ladybird").is_file():
+    app = args.install_dir / "bundle" / "Ladyflock.app"
+    built_app_binary = args.build_dir / "bin" / "Ladyflock.app" / "Contents" / "MacOS" / "Ladyflock"
+    if not (app / "Contents" / "MacOS" / "Ladyflock").is_file():
         sys.exit(f"error: no installed app bundle at {app}")
     if not built_app_binary.is_file():
         sys.exit(f"error: no built app binary at {built_app_binary}")
@@ -328,7 +355,7 @@ def main() -> int:
     # copied, since vcpkg's dylibs can carry absolute rpaths of their own.
     deploy_qt(app, find_qt_plugins_directory(search_directories))
     rewritten = fix_rpaths(app)
-    copied = copy_linked_libraries(app, search_directories)
+    copied = copy_linked_libraries(app, search_directories, {str(path) for path in args.include_dylib})
     rewritten += fix_rpaths(app)
     resigned = resign(app, args.build_dir)
     verify(app)

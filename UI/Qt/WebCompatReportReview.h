@@ -84,6 +84,8 @@ private:
     QCheckBox* m_include_page_dumps { nullptr };
     QCheckBox* m_include_platform_features { nullptr };
     QPushButton* m_show_report_button { nullptr };
+    QPushButton* m_send_button { nullptr };
+    QLabel* m_submission_disabled_note { nullptr };
     QPlainTextEdit* m_report_text { nullptr };
     QLabel* m_validation { nullptr };
 

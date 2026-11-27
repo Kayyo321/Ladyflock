@@ -38,8 +38,8 @@ option(LADYBIRD_BUILD_QT "Build and bundle Qt with vcpkg on Linux" OFF)
 option(ENABLE_INSTALL_HEADERS "Enable installing headers" ON)
 option(ENABLE_INSTALL_FREEDESKTOP_FILES "Enable installing .desktop and .service files" ${freedesktop_files_default})
 option(LADYBIRD_ENABLE_CPPTRACE "Enable use of cpptrace as the default library for stacktraces. If not available falls back to backtrace.h" ON)
-option(LADYBIRD_ENABLE_UPDATE_CHECK "Check for newer releases of Ladybird" ON)
-option(LADYBIRD_ENABLE_SPARKLE "Update the macOS app with Sparkle" ON)
+option(LADYBIRD_ENABLE_UPDATE_CHECK "Check for newer releases of Ladyflock" OFF)
+option(LADYBIRD_ENABLE_SPARKLE "Update the macOS app with Sparkle" OFF)
 if (NOT LADYBIRD_ENABLE_UPDATE_CHECK)
     # Sparkle only installs the releases that the update check finds.
     set(LADYBIRD_ENABLE_SPARKLE OFF)
@@ -51,21 +51,65 @@ if (LADYBIRD_GENERATE_SYMBOL_FILES AND MSVC)
 endif()
 option(LADYBIRD_BASELINE_CPU_TARGET "Use a common CPU baseline for portable binaries and ccache sharing" OFF)
 
-set(LADYBIRD_VERSION "" CACHE STRING "Version of a release, such as 2026.46.0")
-set(LADYBIRD_BROWSER_VERSION "${PROJECT_VERSION}")
+set(LADYFLOCK_VERSION "" CACHE STRING "Version of a Ladyflock release, such as 0.1.0 or 2026.48.0")
+set(LADYFLOCK_RELEASE_STAGE "Alpha" CACHE STRING "The stage of development that Ladyflock releases are in, if any, such as Alpha or Beta")
+set(LADYFLOCK_RELEASE_CHANNEL "" CACHE STRING "Release channel for Ladyflock builds, if any")
+set(LADYBIRD_COMPATIBILITY_VERSION "" CACHE STRING "Ladybird engine compatibility version for User-Agent and WebDriver (defaults to PROJECT_VERSION)")
+set(LADYBIRD_VERSION "" CACHE STRING "Deprecated alias for LADYFLOCK_VERSION when LADYFLOCK_VERSION is unset")
+# The app ID is shared by the browser and the fixed desktop integration filenames.
+unset(LADYFLOCK_APPLICATION_ID CACHE)
+set(LADYFLOCK_APPLICATION_ID "io.github.kayyo321.Ladyflock")
+set(LADYFLOCK_UPDATE_FEED_URL "" CACHE STRING "URL of the Ladyflock releases.json update feed")
+set(LADYFLOCK_RELEASE_NOTES_BASE_URL "https://github.com/Kayyo321/Ladyflock/releases/tag" CACHE STRING "Base URL for Ladyflock release notes pages")
+set(LADYFLOCK_REPORTS_ENDPOINT "" CACHE STRING "Optional Ladyflock crash and web compatibility report collector endpoint")
+
+set(LADYFLOCK_RELEASE_VERSION "${LADYFLOCK_VERSION}")
+if (LADYFLOCK_RELEASE_VERSION STREQUAL "" AND NOT LADYBIRD_VERSION STREQUAL "")
+    set(LADYFLOCK_RELEASE_VERSION "${LADYBIRD_VERSION}")
+endif()
+
+set(LADYFLOCK_BROWSER_VERSION "${PROJECT_VERSION}")
+if (NOT LADYFLOCK_RELEASE_VERSION STREQUAL "")
+    set(LADYFLOCK_BROWSER_VERSION "${LADYFLOCK_RELEASE_VERSION}")
+endif()
+set(LADYBIRD_BROWSER_VERSION "${LADYFLOCK_BROWSER_VERSION}")
+
+set(LADYBIRD_EFFECTIVE_COMPATIBILITY_VERSION "${PROJECT_VERSION}")
+if (NOT LADYBIRD_COMPATIBILITY_VERSION STREQUAL "")
+    set(LADYBIRD_EFFECTIVE_COMPATIBILITY_VERSION "${LADYBIRD_COMPATIBILITY_VERSION}")
+endif()
 
 # Development builds have a bundle identifier of their own, so that macOS does not take them for copies of the release.
-set(LADYBIRD_BUNDLE_IDENTIFIER "org.ladybird.Ladybird.Development")
-if (NOT LADYBIRD_VERSION STREQUAL "")
-    set(LADYBIRD_BROWSER_VERSION "${LADYBIRD_VERSION}")
-    set(LADYBIRD_BUNDLE_IDENTIFIER "org.ladybird.Ladybird")
+set(LADYBIRD_BUNDLE_IDENTIFIER "${LADYFLOCK_APPLICATION_ID}.Development")
+if (NOT LADYFLOCK_RELEASE_VERSION STREQUAL "")
+    set(LADYBIRD_BUNDLE_IDENTIFIER "${LADYFLOCK_APPLICATION_ID}")
 endif()
 
 # The stage of development that releases are in, if any, such as Alpha or Beta.
-set(LADYBIRD_RELEASE_STAGE "Alpha")
+set(LADYBIRD_RELEASE_STAGE "${LADYFLOCK_RELEASE_STAGE}")
 
-# Like other browsers, our Linux packages keep Ladybird in a directory of its own.
-set(LADYBIRD_PACKAGE_INSTALL_PREFIX "/opt/ladybird")
+string(TOLOWER "${LADYFLOCK_REPORTS_ENDPOINT}" reports_endpoint_lower)
+if (reports_endpoint_lower MATCHES "^https?://([^/?#@]*@)?([^/?#:]*\\.)?ladybird\\.org\\.?([/?#:]|$)")
+    message(FATAL_ERROR "LADYFLOCK_REPORTS_ENDPOINT must not point to ladybird.org; configure a Ladyflock-owned collector or leave it empty.")
+endif()
+if (LADYBIRD_ENABLE_UPDATE_CHECK AND NOT LADYFLOCK_RELEASE_VERSION STREQUAL "" AND LADYFLOCK_UPDATE_FEED_URL STREQUAL "")
+    message(FATAL_ERROR "LADYBIRD_ENABLE_UPDATE_CHECK requires a Ladyflock-owned LADYFLOCK_UPDATE_FEED_URL for release builds.")
+endif()
+if (NOT LADYFLOCK_UPDATE_FEED_URL STREQUAL "")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../Utils/validate_release_feed_url.py" "${LADYFLOCK_UPDATE_FEED_URL}"
+        RESULT_VARIABLE update_feed_validation_result
+        ERROR_VARIABLE update_feed_validation_error
+        ERROR_STRIP_TRAILING_WHITESPACE
+    )
+    if (NOT update_feed_validation_result STREQUAL "0")
+        message(FATAL_ERROR "Invalid LADYFLOCK_UPDATE_FEED_URL. ${update_feed_validation_error}")
+    endif()
+endif()
+
+# Like other browsers, our Linux packages keep Ladyflock in a directory of its own.
+set(LADYBIRD_PACKAGE_INSTALL_PREFIX "/opt/ladyflock")
 
 option(ENABLE_ADDRESS_SANITIZER "Enable address sanitizer testing in gcc/clang" OFF)
 option(ENABLE_MEMORY_SANITIZER "Enable memory sanitizer testing in gcc/clang" OFF)

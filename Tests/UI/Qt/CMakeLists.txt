@@ -28,6 +28,7 @@ ladybird_test("TestFullscreenDebounce.cpp" UI/Qt
 
 set(TEST_SOURCES
     TestBackingStoreRelease.cpp
+    TestBookmarkStore.cpp
     TestChromeIcons.cpp
     TestDashboardStore.cpp
     TestDownloadPresentation.cpp
@@ -60,14 +61,16 @@ if (APPLE OR LINUX)
     )
 endif()
 
-# Only Linux reads the system's settings from the desktop's settings portal.
 if (LINUX AND NOT ANDROID)
+    # Only Linux reads the system's settings from the desktop's settings portal.
     list(APPEND TEST_SOURCES
         TestSystemAppearance.cpp
     )
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
     target_link_libraries(TestUIQt PRIVATE PkgConfig::GIO)
+
+    ladybird_python_test(test-orca-coexistence.py)
 endif()
 
 target_sources(TestUIQt PRIVATE ${TEST_SOURCES})

@@ -21,8 +21,16 @@ if (APPLE)
 endif()
 
 if (APPLE AND LADYBIRD_ENABLE_SPARKLE)
-    set(LADYBIRD_SPARKLE_FEED_URL "https://download.ladybird.org/macos/appcast.xml" CACHE STRING "The appcast that Sparkle finds updates in")
-    set(LADYBIRD_SPARKLE_PUBLIC_KEY "30mib/1Ke84cNc8KkKajhTkCP9Zu3iZRgophONX53Ik=" CACHE STRING "The public EdDSA key, in base64, that the appcast and its updates are signed with")
+    set(LADYBIRD_SPARKLE_FEED_URL "" CACHE STRING "The appcast that Sparkle finds Ladyflock updates in")
+    set(LADYBIRD_SPARKLE_PUBLIC_KEY "" CACHE STRING "The public EdDSA key, in base64, that the Ladyflock appcast and its updates are signed with")
+
+    if (LADYBIRD_SPARKLE_FEED_URL STREQUAL "" OR LADYBIRD_SPARKLE_PUBLIC_KEY STREQUAL "")
+        message(FATAL_ERROR "LADYBIRD_ENABLE_SPARKLE requires Ladyflock-owned LADYBIRD_SPARKLE_FEED_URL and LADYBIRD_SPARKLE_PUBLIC_KEY.")
+    endif()
+    if (LADYBIRD_SPARKLE_FEED_URL MATCHES "(^|[./])ladybird\\.org(/|:|$)"
+        OR LADYBIRD_SPARKLE_PUBLIC_KEY STREQUAL "30mib/1Ke84cNc8KkKajhTkCP9Zu3iZRgophONX53Ik=")
+        message(FATAL_ERROR "LADYBIRD_ENABLE_SPARKLE cannot use inherited Ladybird feed URL or signing key; configure Ladyflock-owned Sparkle settings or disable LADYBIRD_ENABLE_SPARKLE.")
+    endif()
 
     # The feed URL goes into the Info.plist as XML text, so a query string's & has to be escaped.
     set(sparkle_feed_url_xml "${LADYBIRD_SPARKLE_FEED_URL}")
@@ -45,7 +53,7 @@ endif()
 
 function(create_ladybird_bundle target_name)
     set_target_properties(${target_name} PROPERTIES
-        OUTPUT_NAME "Ladybird"
+        OUTPUT_NAME "Ladyflock"
         MACOSX_BUNDLE_GUI_IDENTIFIER ${LADYBIRD_BUNDLE_IDENTIFIER}
         MACOSX_BUNDLE_BUNDLE_VERSION ${LADYBIRD_BROWSER_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${LADYBIRD_BROWSER_VERSION}

@@ -28,7 +28,11 @@
 
 namespace WebView {
 
-static constexpr auto default_endpoint = "https://reports.app.ladybird.org"sv;
+#if !defined(LADYFLOCK_REPORTS_ENDPOINT)
+#    define LADYFLOCK_REPORTS_ENDPOINT ""
+#endif
+
+static constexpr auto default_endpoint = LADYFLOCK_REPORTS_ENDPOINT ""sv;
 static constexpr auto challenge_path = "/api/v1/challenges"sv;
 static constexpr auto report_path = "/api/v1/reports"sv;
 static constexpr auto challenge_algorithm = "sha256-seed-nonce-le-v1"sv;
@@ -386,15 +390,31 @@ void ReportSubmission::send_report(ProofOfWork proof)
     });
 }
 
+static bool is_upstream_ladybird_host(StringView host)
+{
+    host = host.trim("."sv, TrimMode::Right);
+    return host.equals_ignoring_ascii_case("ladybird.org"sv)
+        || host.ends_with(".ladybird.org"sv, CaseSensitivity::CaseInsensitive);
+}
+
 // A response outside the 2xx range fails this attempt, and the activity names what was going on in that message.
 static Optional<URL::URL> report_server_url(StringView path)
 {
-    auto endpoint = Core::Environment::get("LADYBIRD_REPORTS_ENDPOINT"sv).value_or(default_endpoint);
+    auto endpoint = Core::Environment::get("LADYFLOCK_REPORTS_ENDPOINT"sv).value_or(default_endpoint).trim_whitespace();
+    if (endpoint.is_empty())
+        return {};
     auto url = URL::Parser::basic_parse(MUST(String::formatted("{}{}{}", endpoint,
         endpoint.ends_with('/') ? ""sv : "/"sv, path.substring_view(1))));
     if (!url.has_value() || (url->scheme() != "https"sv && url->scheme() != "http"sv))
         return {};
+    if (is_upstream_ladybird_host(url->serialized_host()))
+        return {};
     return url;
+}
+
+bool ReportSubmission::is_configured()
+{
+    return report_server_url(challenge_path).has_value();
 }
 
 bool ReportSubmission::is_report_server_url(URL::URL const& url)
@@ -411,7 +431,7 @@ void ReportSubmission::post(StringView path, StringView activity, StringView con
 {
     auto url = report_server_url(path);
     if (!url.has_value()) {
-        fail("Invalid report server configuration."_string, ShouldRetry::No);
+        fail("Report submission is not configured in this build of Ladyflock."_string, ShouldRetry::No);
         return;
     }
 

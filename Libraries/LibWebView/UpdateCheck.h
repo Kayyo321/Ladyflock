@@ -17,6 +17,7 @@
 #include <AK/Weakable.h>
 #include <LibCore/Forward.h>
 #include <LibRequests/Forward.h>
+#include <LibURL/URL.h>
 #include <LibWebView/Export.h>
 
 namespace WebView {
@@ -77,8 +78,7 @@ WEBVIEW_API SystemDescription describe_current_system();
 
 #if defined(LADYBIRD_HAS_UPDATE_CHECK)
 
-constexpr StringView RELEASES_FEED_URL = "https://download.ladybird.org/releases.json"sv;
-
+WEBVIEW_API Optional<URL::URL> configured_releases_feed_url();
 WEBVIEW_API Optional<Vector<u64>> parse_version(StringView);
 WEBVIEW_API bool is_newer_version(StringView candidate, StringView current);
 WEBVIEW_API ErrorOr<Optional<String>> newest_release_for_system(StringView releases_json, SystemDescription const&, Optional<UnixDateTime> published_before = {});

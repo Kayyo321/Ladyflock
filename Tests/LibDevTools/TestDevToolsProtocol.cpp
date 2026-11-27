@@ -5823,3 +5823,19 @@ TEST_CASE(console_network_navigation_and_accessibility)
     auto node_response = client.request(move(node_from_accessibility));
     EXPECT_EQ(node_response.get_object("node"sv)->get_object("node"sv)->get_string("displayName"sv).value(), "div"sv);
 }
+
+TEST_CASE(device_actor_description)
+{
+    auto session = create_session();
+    auto& client = *session->client;
+    (void)client.read_message();
+
+    auto root = client.request("root"sv, "getRoot"sv);
+    auto device_actor = actor_from(root, "deviceActor"sv);
+    auto description = client.request(device_actor, "getDescription"sv).get_object("value"sv).release_value();
+
+    EXPECT_EQ(description.get_string("apptype"sv).value(), "ladybird"sv);
+    EXPECT_EQ(description.get_string("brandName"sv).value(), "Ladyflock"sv);
+    EXPECT_EQ(description.get_string("name"sv).value(), "Ladyflock (Ladybird)"sv);
+    EXPECT(description.get_string("useragent"sv).value().contains("Ladybird/"sv));
+}

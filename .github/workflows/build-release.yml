@@ -40,7 +40,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          name="ladybird${RELEASE_VERSION:+-${RELEASE_VERSION}}"
+          name="ladyflock${RELEASE_VERSION:+-${RELEASE_VERSION}}"
           git archive --prefix= --add-virtual-file="${name}/REVISION:$(git rev-parse HEAD)" --prefix="${name}/" \
             --output="${name}-source.tar" HEAD
           xz -9 -T0 "${name}-source.tar"
@@ -193,7 +193,7 @@ jobs:
         run: |
           cmake --build . --target third_party_sources
           mkdir -p packages
-          mv third-party-sources.tar "packages/ladybird-${RELEASE_VERSION}-${SYSTEM// /-}-${ARCH}-third-party-sources.tar"
+          mv third-party-sources.tar "packages/ladyflock-${RELEASE_VERSION}-${SYSTEM// /-}-${ARCH}-third-party-sources.tar"
 
       - name: Attest
         if: ${{ inputs.version != '' }}
@@ -211,8 +211,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: |
-            Build/packages/ladybird-*.tar.xz
-            !Build/packages/ladybird-symbols-*.tar.xz
+            Build/packages/ladyflock-*.tar.xz
+            !Build/packages/ladyflock-symbols-*.tar.xz
           archive: false
           if-no-files-found: error
 
@@ -220,7 +220,7 @@ jobs:
         if: ${{ matrix.archives }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird-symbols-*.tar.xz
+          path: Build/packages/ladyflock-symbols-*.tar.xz
           archive: false
           if-no-files-found: error
 
@@ -228,7 +228,7 @@ jobs:
         if: ${{ matrix.packages == 'DEB' }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird_*.deb
+          path: Build/packages/ladyflock_*.deb
           archive: false
           if-no-files-found: error
 
@@ -236,7 +236,7 @@ jobs:
         if: ${{ matrix.packages == 'DEB' }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird-dbgsym_*.deb
+          path: Build/packages/ladyflock-dbgsym_*.deb
           archive: false
           if-no-files-found: error
 
@@ -245,8 +245,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: |
-            Build/packages/ladybird-*.rpm
-            !Build/packages/ladybird-debuginfo-*.rpm
+            Build/packages/ladyflock-*.rpm
+            !Build/packages/ladyflock-debuginfo-*.rpm
           archive: false
           if-no-files-found: error
 
@@ -254,7 +254,7 @@ jobs:
         if: ${{ matrix.packages == 'RPM' }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird-debuginfo-*.rpm
+          path: Build/packages/ladyflock-debuginfo-*.rpm
           archive: false
           if-no-files-found: error
 
@@ -262,7 +262,7 @@ jobs:
         if: ${{ matrix.appimage && inputs.version != '' }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird-*.AppImage
+          path: Build/packages/ladyflock-*.AppImage
           archive: false
           if-no-files-found: error
 
@@ -270,7 +270,7 @@ jobs:
         if: ${{ inputs.version != '' }}
         uses: actions/upload-artifact@v7
         with:
-          path: Build/packages/ladybird-*-third-party-sources.tar
+          path: Build/packages/ladyflock-*-third-party-sources.tar
           archive: false
           if-no-files-found: error
 
@@ -321,9 +321,9 @@ jobs:
       artifact-metadata: write
 
     env:
-      BUNDLE: ladybird-${{ inputs.version && format('{0}-', inputs.version) }}Linux-${{ matrix.arch }}.flatpak
-      DEBUG_BUNDLE: ladybird-${{ inputs.version && format('{0}-', inputs.version) }}Linux-${{ matrix.arch }}-debug.flatpak
-      THIRD_PARTY_SOURCES: ladybird-${{ inputs.version }}-Flatpak-${{ matrix.arch }}-third-party-sources.tar
+      BUNDLE: ladyflock-${{ inputs.version && format('{0}-', inputs.version) }}Linux-${{ matrix.arch }}.flatpak
+      DEBUG_BUNDLE: ladyflock-${{ inputs.version && format('{0}-', inputs.version) }}Linux-${{ matrix.arch }}-debug.flatpak
+      THIRD_PARTY_SOURCES: ladyflock-${{ inputs.version }}-Flatpak-${{ matrix.arch }}-third-party-sources.tar
 
     steps:
       - name: Download the source
@@ -356,11 +356,11 @@ jobs:
           import json
           import os
 
-          path = "Meta/CMake/flatpak/org.ladybird.Ladybird.json"
+          path = "Meta/CMake/flatpak/io.github.kayyo321.Ladyflock.json"
           with open(path) as file:
               manifest = json.load(file)
           ladybird = next(module for module in manifest["modules"] if module["name"] == "Ladybird")
-          ladybird["config-opts"].append(f"-DLADYBIRD_VERSION={os.environ['RELEASE_VERSION']}")
+          ladybird["config-opts"].append(f"-DLADYFLOCK_VERSION={os.environ['RELEASE_VERSION']}")
           with open(path, "w") as file:
               json.dump(manifest, file, indent=4)
           SCRIPT
@@ -370,7 +370,7 @@ jobs:
         with:
           bundle: ${{ env.BUNDLE }}
           build-debug-bundle: true
-          manifest-path: Meta/CMake/flatpak/org.ladybird.Ladybird.json
+          manifest-path: Meta/CMake/flatpak/io.github.kayyo321.Ladyflock.json
           arch: ${{ matrix.arch }}
           cache: false
           upload-artifact: false
@@ -379,7 +379,7 @@ jobs:
       - name: Package the source code of the LGPL libraries
         if: ${{ inputs.version != '' }}
         run: |
-          python3 Meta/generate-licenses.py --flatpak-manifest Meta/CMake/flatpak/org.ladybird.Ladybird.json \
+          python3 Meta/generate-licenses.py --flatpak-manifest Meta/CMake/flatpak/io.github.kayyo321.Ladyflock.json \
             --third-party-sources "$THIRD_PARTY_SOURCES"
 
       - name: Attest

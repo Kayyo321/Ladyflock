@@ -73,7 +73,7 @@ CrashReportReviewWidget::CrashReportReviewWidget(QString exit_text, QWidget* par
 
     auto* contents = new QWidget(m_review_page);
     auto* contents_layout = create_group_layout(contents);
-    auto* contents_summary = create_label(tr("Includes technical crash details, your Ladybird version and platform."), contents);
+    auto* contents_summary = create_label(tr("Includes technical crash details, your Ladyflock version and platform."), contents);
     contents_summary->setForegroundRole(QPalette::PlaceholderText);
     contents_layout->addWidget(contents_summary);
     m_details = create_details_panel(contents);
@@ -93,19 +93,25 @@ CrashReportReviewWidget::CrashReportReviewWidget(QString exit_text, QWidget* par
     contents_layout->addWidget(m_details);
     review_layout->addWidget(contents);
 
+    m_submission_disabled_note = create_label(tr("Sending crash reports is disabled in this build of Ladyflock. You can still inspect and copy the local report."), m_review_page);
+    m_submission_disabled_note->setObjectName("CrashReportSubmissionDisabledNote");
+    m_submission_disabled_note->setForegroundRole(QPalette::PlaceholderText);
+    m_submission_disabled_note->hide();
+    review_layout->addWidget(m_submission_disabled_note);
+
     m_validation = create_label({}, m_review_page);
     m_validation->setObjectName("CrashReportValidation");
     m_validation->hide();
     review_layout->addWidget(m_validation);
 
-    auto* send_button = new QPushButton(tr("Send report"), m_review_page);
-    send_button->setObjectName("CrashReportSendButton");
-    send_button->setDefault(true);
+    m_send_button = new QPushButton(tr("Send report"), m_review_page);
+    m_send_button->setObjectName("CrashReportSendButton");
+    m_send_button->setDefault(true);
     auto* decline_button = new QPushButton(tr("Don’t send"), m_review_page);
     decline_button->setObjectName("CrashReportDeclineButton");
     auto* review_buttons = new QHBoxLayout;
     review_buttons->setSpacing(button_spacing);
-    review_buttons->addWidget(send_button);
+    review_buttons->addWidget(m_send_button);
     review_buttons->addWidget(decline_button);
     review_buttons->addStretch();
     auto* review_exit_button = new QPushButton(exit_text, m_review_page);
@@ -165,7 +171,7 @@ CrashReportReviewWidget::CrashReportReviewWidget(QString exit_text, QWidget* par
     });
     layout->addWidget(m_report_text_page);
 
-    QObject::connect(send_button, &QPushButton::clicked, this, [this] { send(); });
+    QObject::connect(m_send_button, &QPushButton::clicked, this, [this] { send(); });
     QObject::connect(decline_button, &QPushButton::clicked, this, [this] {
         if (WebView::CrashReportOutbox::the().is_sending(m_review.report_name())) {
             show_already_sending();
@@ -200,7 +206,17 @@ CrashReportReviewWidget::CrashReportReviewWidget(QString exit_text, QWidget* par
     m_review.on_sent = [this] { show_sent(); };
     m_review.on_failed = [this](auto failure, String const& reason) { show_failure(failure, reason); };
 
+    update_submission_availability();
     update_chrome_style();
+}
+
+void CrashReportReviewWidget::update_submission_availability()
+{
+    auto can_send = WebView::ReportSubmission::is_configured();
+    m_send_button->setEnabled(can_send);
+    m_send_button->setDefault(can_send);
+    m_retry_button->setEnabled(can_send);
+    m_submission_disabled_note->setVisible(!can_send);
 }
 
 bool CrashReportReviewWidget::focusNextPrevChild(bool next)
@@ -244,12 +260,17 @@ ErrorOr<void> CrashReportReviewWidget::open_report(ByteString const& name, Optio
 
     m_description_edit->clear();
     m_validation->hide();
+    update_submission_availability();
     show_page(*m_review_page);
     return {};
 }
 
 void CrashReportReviewWidget::send()
 {
+    if (!WebView::ReportSubmission::is_configured()) {
+        update_submission_availability();
+        return;
+    }
     m_description = ak_string_from_qstring(m_description_edit->toPlainText());
     m_url.clear();
     if (m_include_website->isChecked()) {
@@ -336,7 +357,7 @@ void CrashReportReviewWidget::show_retry(String const& reason, u32 retry_number,
 void CrashReportReviewWidget::show_sent()
 {
     m_progress->setValue(100);
-    show_outcome(tr("Report sent"), tr("Thank you for helping Ladybird."));
+    show_outcome(tr("Report sent"), tr("Thank you for helping Ladyflock."));
 }
 
 void CrashReportReviewWidget::show_declined()

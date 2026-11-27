@@ -30,16 +30,18 @@ void DeviceActor::handle_message(Message const& message)
     if (message.type == "getDescription"sv) {
         auto build_id = Core::Version::read_long_version_string();
 
-        static auto& browser_name = *new String(String::from_utf8_without_validation({ BROWSER_NAME, __builtin_strlen(BROWSER_NAME) }));
+        static auto& engine_name = *new String(String::from_utf8_without_validation({ BROWSER_ENGINE_NAME, __builtin_strlen(BROWSER_ENGINE_NAME) }));
+        static auto& browser_name = *new String(String::from_utf8_without_validation({ BROWSER_INTERNAL_NAME, __builtin_strlen(BROWSER_INTERNAL_NAME) }));
+        static auto& brand_name = *new String(String::from_utf8_without_validation({ BROWSER_BRAND_NAME, __builtin_strlen(BROWSER_BRAND_NAME) }));
         static auto& browser_version = *new String(String::from_utf8_without_validation({ BROWSER_VERSION, __builtin_strlen(BROWSER_VERSION) }));
         static auto& platform_name = *new String(String::from_utf8_without_validation({ OS_STRING, __builtin_strlen(OS_STRING) }));
         static auto& arch = *new String(String::from_utf8_without_validation({ CPU_STRING, __builtin_strlen(CPU_STRING) }));
 
         // https://github.com/mozilla/gecko-dev/blob/master/devtools/shared/system.js
         JsonObject value;
-        value.set("apptype"sv, browser_name.to_ascii_lowercase());
+        value.set("apptype"sv, engine_name.to_ascii_lowercase());
         value.set("name"sv, browser_name);
-        value.set("brandName"sv, browser_name);
+        value.set("brandName"sv, brand_name);
         value.set("version"sv, browser_version);
         value.set("appbuildid"sv, build_id);
         value.set("platformbuildid"sv, build_id);

@@ -1,8 +1,8 @@
-# Ladybird "Quiet" UI Design Guidelines
+# Ladyflock "Quiet" UI Design Guidelines
 
-This document describes how Ladybird's browser UI looks, moves and reads, so that new UI
+This document describes how Ladyflock's browser UI looks, moves and reads, so that new UI
 work stays consistent with what already exists. It covers the browser chrome (tab strip,
-toolbar, sidebar), its menus and panels, and Ladybird's own pages (`about:` pages).
+toolbar, sidebar), its menus and panels, and Ladyflock's own pages (`about:` pages).
 
 The reference design lives on the "Quiet" design canvas. When this document and the canvas
 disagree, fix whichever one is wrong in the same change, so they never drift apart.
@@ -160,7 +160,7 @@ Use the platform UI font. Never ship a custom UI font.
 | 13 px | Default UI text: menus, address field, sidebar rows, buttons, body text on pages |
 | 15 px | Section headings inside panels and pages |
 | 22 px | Page titles (Settings section names, History, Bookmarks, error pages, welcome) |
-| 40 px | The "Ladybird" wordmark on About only |
+| 40 px | The "Ladyflock" wordmark on About only |
 
 Weights: 400 for almost everything, including active tab titles (the active tab is shown by
 its background, not by bold text). 500 for primary button labels. 600 for headings and the
@@ -196,7 +196,7 @@ Numbers that change in place (zoom, counts, sizes, times) use tabular figures.
 | Token | Use | Light | Dark |
 |---|---|---|---|
 | `pop` | Menus, panels | `#FBFBFC` | `#333336` |
-| `page` | Ladybird pages, blank tab | `#FFFFFF` | `#1C1C1E` |
+| `page` | Ladyflock pages, blank tab | `#FFFFFF` | `#1C1C1E` |
 | `body` | Body text in panels | `#3A3A40` | `#DCDCE1` |
 | `sep` | Dividers in panels | `#DCDCE0` | `#3D3D42` |
 | `sep-soft` | Row dividers, list groups | `#ECECEF` | `#333337` |
@@ -219,7 +219,7 @@ used for:
 - switches that are on, checked checkboxes, primary buttons
 
 Nothing else is accent-colored. Specifically not: bookmarked stars, active tabs, links in
-chrome, icons. Actions written as text in the chrome and on Ladybird pages ("Clear finished",
+chrome, icons. Actions written as text in the chrome and on Ladyflock pages ("Clear finished",
 "Reset permissions", "Add filter list…") are in the `text` color at weight 500, underlined on
 hover. Blue `link` text is only for links inside a sentence ("See everything", "Show
 report"), so the eye never mistakes an action for focus or progress.
@@ -232,10 +232,12 @@ Selection values for the default blue accent:
 | Selected card | Tint `rgba(10,102,208,0.08)` + inset 1.5 px `#0A66D0` | Tint `rgba(61,139,255,0.16)` + inset 1.5 px `#3D8BFF` |
 | Focus ring | `0 0 0 1px #0A7AFF, 0 0 0 3px rgba(10,122,255,0.16)` | `0 0 0 1px rgba(64,140,255,0.75), 0 0 0 3px rgba(64,140,255,0.16)` |
 
-### Profiles
+### Profiles and color themes
 
-Each profile has a color. It is the only brand color in the chrome, and it appears only on
-the Ladybird button.
+Neutral keeps Ladyflock's signature purple (`#4B22AD` light, `#A684FF` dark) on the
+Ladyflock button and full shaded purple on `about:version` and `about:welcome`. The nine
+named themes (Harbor through Lavender) tint both the toolbar mark (at least 4.5:1 against
+strip and toolbar) and the shaded page emblem live.
 
 | Profile | Mark (light) | Mark (dark) |
 |---|---|---|
@@ -276,8 +278,8 @@ is darker and its hover is 6%. That makes strip, hovered tab and active tab abou
 because violet tones are harder to tell apart than neutral grays. The Ladybird button keeps
 its own hover and press fills everywhere.
 
-The Ladybird button shows a filled domino mask (20 px, eye holes cut out) instead of the logomark. The window is titled
-"Ladybird (Private)" in the Window menu, app switcher and taskbar. There is no "Private"
+The Ladyflock button shows a filled domino mask (20 px, eye holes cut out) instead of the logomark. The window is titled
+"Ladyflock (Private)" in the Window menu, app switcher and taskbar. There is no "Private"
 text badge in the toolbar.
 
 ### Status colors
@@ -348,30 +350,29 @@ Don't invent new shadows. Pick a level.
 
 ### The logomark
 
-- The mark is a 2:3 Lissajous figure (x = sin 2t, y = sin 3t), scaled 179 : 145, drawn as
-  one continuous line on a 22 × 18.4 grid.
-- It is always one flat color. No gradients, no two-tone versions, no shadows inside the
-  window.
-- Line weight is 1.55 on the 22-unit grid wherever the mark is shown at 20 px or larger:
-  the Ladybird button, the app icon at 64 px and up, the Dock and taskbar. Don't let the
-  weights drift apart; they should look like the same drawing.
-- Shown large (the About page, about 170 px wide), the mark uses a lighter 0.95 line. At
-  1.55 it would look much heavier than the page's bold title.
-- Very small renderings (app icon at 32 and 16 px) use a heavier line (2.1 and 2.4) so the
-  crossings don't break up. They keep the same breathing room as the big icon.
-- The mark appears in the window only on the Ladybird button. Ladybird pages may show it
-  large (About, welcome).
+- The mark is the Ladyflock emblem: two intertwined orbital ribbons framing three ascending
+  flying birds, sourced from `UI/Icons/ladyflock-emblem.svg` (`240 × 196` viewBox).
+- In the toolbar (the Ladyflock button, fitted at ~20 × 16.3 px), it is rendered as a flat
+  single-color silhouette from `Theme::logomark()` with explicit crossing knockouts so it
+  stays crisp at 1× and 2× DPR. No gradients or shadows in the chrome.
+- On `about:version` (168 px wide) and `about:welcome` (56 px wide), it uses the shaded
+  multi-stop SVG treatment with explicit crossing gaps, full signature purple in Neutral,
+  live theme-derived tonal ramps across Harbor through Lavender, and a solid high-contrast
+  treatment under `prefers-contrast: more`.
+- The mark appears in the window only on the Ladyflock button. Ladyflock pages may show it
+  large (About, Welcome).
 
 ### App icon
 
-- A soft lavender-grey tile (`#F5F2FB` to `#E9E5F2`, top to bottom) with a hairline edge,
-  and the mark in Ladybird purple `#6A39DB` at about 60% of the tile width.
-- No shine, no shadow on the mark.
-- macOS: Apple's rounded-square grid, built in Icon Composer so the system's Dark, Clear
-  and Tinted icon styles apply automatically.
-- Windows: no tile. Just the mark in `#8A5CF0`, which reads on light and dark taskbars.
-- Linux: the tile with a thin, slightly darker bottom edge (GNOME style).
-- Private windows: a violet-dark tile (`#2F2347` to `#1D1430`) with the mark in `#C9B5FF`.
+- A soft lavender-white to pale-lavender diagonal squircle tile with the shaded Ladyflock
+  ribbon-and-flock emblem in signature purple (`#4D0B9E` → `#833ECC` → `#C674F8`).
+- macOS: Apple's rounded-square grid, built in Icon Composer (`UI/Icons/macos/AppIcon.icon`)
+  with light, dark, and monochrome layers so Dark, Clear, and Tinted icon styles apply.
+- Windows: no tile. The transparent shaded Ladyflock emblem tuned for contrast on both light
+  and dark Windows taskbars (`UI/Icons/windows/ladyflock.ico`).
+- Linux: GNOME-style rounded squircle tile with a subtle bottom rim (`io.github.kayyo321.Ladyflock.svg`).
+- Private windows: a violet-dark tile (`#352852` to `#19112B`) with the emblem in soft
+  lavender (`#EEE3FF` / `#B99DFF`).
 
 ---
 
@@ -513,7 +514,7 @@ settings.
   lists" sit at the bottom of the drill-in.
 - "Cookies and site data" drill-in.
 - Footer: "Reset permissions", "All site settings".
-- A page that is not from a website (Ladybird's own pages, files, a new tab) shows the same
+- A page that is not from a website (Ladyflock's own pages, files, a new tab) shows the same
   icon, and the panel shows only the page's icon and title, one line saying it has no site
   settings, and "All site settings".
 
@@ -526,7 +527,7 @@ settings.
 - Rows: file type tile, name, progress bar while active, then status ("12.4 of 19.3 MB · 8
   seconds left", "4.2 MB", "Failed · The connection was interrupted"). Actions are icon
   buttons: pause, cancel, show in Finder/Explorer/Files, retry.
-- Downloads are also in the Ladybird menu. The Ladybird button itself never shows download
+- Downloads are also in the Ladyflock menu. The Ladyflock button itself never shows download
   state.
 
 ### Feedback (alpha and nightly builds)
@@ -621,15 +622,15 @@ sandbox one when both show: "Pages are painted on the CPU, which can be slow."
 - Closing it in one window closes it in every window until the browser is started again.
   Nothing remembers it, so a browser that keeps painting on the CPU keeps saying so.
 
-### Ladybird menu
+### Ladyflock menu
 
 - 280 px wide, 6 px padding, 26 px rows. Groups, in order:
   1. Profile row (current profile, opens the profile submenu)
   2. New Tab, New Window, New Private Window, Reopen Closed Tab
   3. History ▸, Bookmarks ▸, Downloads
   4. Zoom (− 100% +), Find in Page…
-  5. Settings, Inspect ▸, Help ▸ (Report Website Issue…, About Ladybird), then Quit on
-     Linux and Windows only. macOS has Quit in the app menu, so the Ladybird menu leaves it
+  5. Settings, Inspect ▸, Help ▸ (Report Website Issue…, About Ladyflock), then Quit on
+     Linux and Windows only. macOS has Quit in the app menu, so the Ladyflock menu leaves it
      out.
 - One right edge: shortcuts are right-aligned, submenu chevrons and the zoom control end at
   the same 10 px inset as the shortcuts.
@@ -679,15 +680,16 @@ New tabs are blank (`about:newtab` styled in the `page` color, so dark mode neve
 white). The tab is titled "New Tab", the address field is focused and empty, and the field
 never shows "about:newtab".
 
-### Ladybird pages
+### Ladyflock pages
 
 - Page titles are 22 px weight 600.
 - Content sits in a centered column. Settings uses a 232 px sidebar and a 600 px content
   column, centered in the space to the right of the sidebar, so wide windows don't leave
   the page leaning left.
-- About: the logomark, "Ladybird" in 40 px with the release badge, one tagline, and a card
-  with version, build and platform plus a Copy button. Nothing else.
-- Welcome (`about:welcome`): the logomark at 56 px (0.85 line, so it doesn't get heavy), the title, then one centered column, in this order: search engine (optional,
+- About: the shaded Ladyflock logomark, "Ladyflock" in 40 px with the release badge when
+  applicable, one tagline, and a card with Version, Engine, Built, and Platform plus a Copy
+  button.
+- Welcome (`about:welcome`): the shaded Ladyflock logomark at 56 px (recolored live by the color swatches), the title, then one centered column, in this order: search engine (optional,
   nothing preselected, engines in alphabetical order; shown by name only in a five-column
   grid, never with logos or letter tiles, which
   would mean shipping other companies' trademarks or contacting their servers before anyone
@@ -777,7 +779,7 @@ never shows "about:newtab".
 | Downloads | The arrow drops in from 4 px above when the button appears; bobs 2 px once when a download finishes |
 | Feedback | The waiting-reports dot scales in (0 → 100%, base, enter) when the first report is saved. Later reports while the dot is showing change nothing, and the icon itself never moves, so a crash loop can't animate the toolbar. |
 | New tab (+) | No motion. The new tab appearing is the feedback. |
-| Ladybird button | No motion. Only its fill changes on hover, press and while the menu is open. |
+| Ladyflock button | No motion. Only its fill changes on hover, press and while the menu is open. |
 
 ### Sidebar collapse with everything in the sidebar
 
@@ -830,7 +832,7 @@ zoom chip, drag and drop) is on the canvas's motion spec board.
 
 ### Focus order
 
-Ladybird button → tabs (one stop; arrow keys move between tabs) → back, forward, reload →
+Ladyflock button → tabs (one stop; arrow keys move between tabs) → back, forward, reload →
 address field → page. F6 moves between the chrome and the page. In a split view, F6 goes from the
 chrome to the focused side, then the other side, then back to the chrome (Shift+F6 goes the other
 way); the narrow-window fallback skips the side that doesn't show. Tab order in a split view runs
@@ -859,7 +861,7 @@ through the start side's page, the divider, then the end side's pane bar and pag
 | History | ⌘Y | Ctrl+H |
 | Downloads | ⌥⌘L | Ctrl+J |
 | Show or hide sidebar | ⌥⌘S | Ctrl+Shift+S |
-| Ladybird menu | (menu bar) | Alt+F |
+| Ladyflock menu | (menu bar) | Alt+F |
 | Settings | ⌘, | Ctrl+, |
 | Move between chrome and page | F6 | F6 |
 
@@ -885,7 +887,7 @@ exclamation marks, no apologies, no jokes in errors.
 
 | Concept | Name | Not |
 |---|---|---|
-| The menu button | Ladybird button / Ladybird menu | app menu, profile button, hamburger |
+| The menu button | Ladyflock button / Ladyflock menu | app menu, profile button, hamburger |
 | Blocking ads, trackers and more | Content blocking | tracker blocking, ad blocker, shield |
 | The panel from the left of the field | Site settings | site info, page info |
 | Windows that keep nothing | Private window | incognito, InPrivate |

@@ -133,8 +133,22 @@ QColor primary();
 // The fill of the selected row of a menu or a list navigated with the keyboard.
 QColor selected_row();
 
-// The color of Ladybird's logomark on the chrome: Ladybird purple in the neutral theme, and a tinted theme's base color,
-// so the window shows a single hue.
+// The color of Ladyflock's logomark on the chrome: signature purple in the neutral theme, and a tinted theme's base
+// color, so the window shows a single hue.
 QColor logomark();
+
+// The shaded emblem palette for built-in pages (about:version, about:welcome) in light or dark page appearance:
+// signature Ladyflock purple in the neutral theme, or derived from the selected color theme with WCAG contrast
+// against the page background.
+struct PageMarkColors {
+    QColor light;
+    QColor back;
+    QColor mid;
+    QColor deep;
+    QColor bird;
+    QColor shadow;
+    QColor solid;
+};
+PageMarkColors page_mark_colors(bool dark);
 
 }

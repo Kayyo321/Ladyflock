@@ -10,6 +10,7 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/ScopeGuard.h>
 #include <LibCore/BrowserVersion.h>
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
@@ -76,7 +77,7 @@ void verify_diagnostics()
     VERIFY(!report.has_page_dumps());
 
     auto diagnostics = report.diagnostics(WebCompatReport::IncludePageDumps::Yes);
-    VERIFY(diagnostics.starts_with("Ladybird web compatibility report, format 1\n"sv));
+    VERIFY(diagnostics.starts_with("Ladyflock (Ladybird) web compatibility report, format 1\n"sv));
     VERIFY(diagnostics.contains("\nURL: https://example.com/broken?query\n"sv));
     VERIFY(diagnostics.contains("\nUser agent: Mozilla/5.0 Ladybird/1.0\n"sv));
     VERIFY(diagnostics.contains("\nViewport size: 1280x720\n"sv));
@@ -109,6 +110,7 @@ void verify_diagnostics()
     VERIFY(details[0].value == "https://example.com/broken?query"sv);
     VERIFY(details[1].label == "User agent"sv);
     VERIFY(details[1].is_code);
+    VERIFY(details[5].label == "Ladyflock version"sv);
 }
 
 }
@@ -125,8 +127,42 @@ TEST_CASE(web_compat_report)
     verify_validation();
     verify_diagnostics();
 
+    // A legacy collector setting leaves manual web compatibility reports and retries local.
+    ReportServer legacy_server;
+    configure_legacy_report_endpoint(legacy_server);
+    {
+        size_t post_calls = 0;
+        ReportSubmission::set_post_function([&](auto const&, auto, auto, auto) -> Function<void()> {
+            ++post_calls;
+            return {};
+        });
+        ScopeGuard clear_post = [] { ReportSubmission::set_post_function({}); };
+
+        WebCompatReport unconfigured_report { test_page() };
+        Outcome unconfigured_outcome;
+        track(unconfigured_report, unconfigured_outcome);
+        VERIFY(!unconfigured_report.send("No collector configured"_string, {}, WebCompatReport::IncludePageDumps::No).has_value());
+        VERIFY(unconfigured_outcome.failure == ReportSubmission::Failure::Sending);
+        VERIFY(post_calls == 0u);
+
+        track(unconfigured_report, unconfigured_outcome);
+        unconfigured_report.retry();
+        VERIFY(unconfigured_outcome.failure == ReportSubmission::Failure::Sending);
+        VERIFY(post_calls == 0u);
+
+        // Upstream Ladybird collector endpoints are also rejected at the submission boundary.
+        for (auto endpoint : { "https://reports.app.ladybird.org"sv, "https://reports.app.LADYBIRD.ORG./"sv, "https://ladybird.org./"sv }) {
+            MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, endpoint, Core::Environment::Overwrite::Yes));
+            VERIFY(!ReportSubmission::is_configured());
+            track(unconfigured_report, unconfigured_outcome);
+            unconfigured_report.retry();
+            VERIFY(unconfigured_outcome.failure == ReportSubmission::Failure::Sending);
+            VERIFY(post_calls == 0u);
+        }
+    }
+
     ReportServer server;
-    MUST(Core::Environment::set("LADYBIRD_REPORTS_ENDPOINT"sv, server.endpoint(), Core::Environment::Overwrite::Yes));
+    MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, server.endpoint(), Core::Environment::Overwrite::Yes));
 
     // A report with a screenshot and the page's dumps carries both, next to the fields that tell pages apart.
     WebCompatReport report { test_page() };
@@ -225,6 +261,7 @@ TEST_CASE(web_compat_report)
     VERIFY(!outcome.is_finished());
     VERIFY(server.requests.size() == 1);
 
+    VERIFY(legacy_server.requests.is_empty());
     outln("PASS: Web compatibility reports reach the report server in the format it expects");
 }
 
@@ -232,8 +269,8 @@ TEST_CASE(new_bug_report_url)
 {
     auto plain_url = WebView::new_bug_report_url({}).serialize();
     auto plain = plain_url.bytes_as_string_view();
-    EXPECT(plain.starts_with("https://github.com/LadybirdBrowser/ladybird/issues/new?template=bug_report.yml&"sv));
-    EXPECT(plain.contains("&build-flags=Ladybird%20"sv));
+    EXPECT(plain.starts_with("https://github.com/Kayyo321/Ladyflock/issues/new?template=bug_report.yml&"sv));
+    EXPECT(plain.contains("&build-flags=Ladyflock%20(Ladybird)%20"sv));
     EXPECT(!plain.contains("sandbox"sv));
     EXPECT(!plain.contains("painting"sv));
 

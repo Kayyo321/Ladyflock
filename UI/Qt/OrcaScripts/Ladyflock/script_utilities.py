@@ -1,4 +1,4 @@
-"""Orca custom-script utilities for Ladybird."""
+"""Orca custom-script utilities for Ladyflock."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ _sayall_patched = False
 _flat_review_dedup_patched = False
 
 
-def _ladybird_is_active():
+def _ladyflock_is_active():
     """True when the active Orca script is the Ladybird one. The monkey-patches below reassign methods on
     Orca-global classes, so each applies its custom behavior only while Ladybird is the focused application and
     otherwise delegates to the original method. That keeps them from changing how Orca behaves in other apps."""
@@ -71,7 +71,7 @@ def _ladybird_is_active():
         from orca import script_manager
 
         script = script_manager.get_manager().get_active_script()
-        return script is not None and script.get_toolkit_name() == "Ladybird"
+        return script is not None and script.get_toolkit_name() == "Ladyflock"
     except Exception:
         return False
 
@@ -99,7 +99,7 @@ def _install_scroll_patch():
 
         @staticmethod
         def _patched_scroll_to_center(obj, start_offset=None, end_offset=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_scroll_to_center(obj, start_offset, end_offset)
             _orig_scroll_to_center(obj, start_offset, end_offset)
             try:
@@ -139,7 +139,7 @@ def _install_sayall_patch():
         _orig_say_all = presenter.say_all
 
         def _patched_say_all(script, event=None, notify_user=True, obj=None, offset=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_say_all(script, event, notify_user, obj, offset)
             if obj is None and hasattr(script, "utilities"):
                 candidate = focus_manager.get_manager().get_locus_of_focus()
@@ -180,7 +180,7 @@ def _install_collection_fallback_patch():
 
         @staticmethod
         def _patched_find_all_with_role(root, role_list, pred=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _original_find_all_with_role(root, role_list, pred)
             try:
                 results = _original_find_all_with_role(root, role_list, pred)
@@ -196,7 +196,7 @@ def _install_collection_fallback_patch():
 
         @staticmethod
         def _patched_find_all_with_role_and_all_states(root, role_list, state_list, pred=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _original_find_all_with_role_and_all_states(root, role_list, state_list, pred)
             try:
                 results = _original_find_all_with_role_and_all_states(root, role_list, state_list, pred)
@@ -242,7 +242,7 @@ def _install_flat_review_dedup_patch():
 
         @staticmethod
         def _patched_get_on_screen_objects(root, cancellation_event, bounding_box=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig(root, cancellation_event, bounding_box)
             objects = _orig(root, cancellation_event, bounding_box)
             if not objects:
@@ -337,7 +337,7 @@ def _install_flat_review_document_scope_patch():
             return AXObject.find_descendant(root, AXUtilities.is_document_web)
 
         def _patched_get_showing_zones(self, root, boundingbox=None):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_get_showing_zones(self, root, boundingbox)
             if boundingbox is None:
                 boundingbox = self._rect
@@ -412,7 +412,7 @@ def _install_flat_review_scroll_patch():
 
             def wrapper(self, *args, **kwargs):
                 advanced = orig(self, *args, **kwargs)
-                if advanced and _ladybird_is_active():
+                if advanced and _ladyflock_is_active():
                     _scroll_current_zone(self)
                 return advanced
 
@@ -498,7 +498,7 @@ def _install_hypertext_fallback_patch():
 
         @staticmethod
         def _patched_find_child(obj, offset):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_find_child(obj, offset)
             child = _orig_find_child(obj, offset)
             if child is not None:
@@ -526,7 +526,7 @@ def _install_hypertext_fallback_patch():
 
         @staticmethod
         def _patched_link_start(obj):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_link_start(obj)
             result = _orig_link_start(obj)
             if result >= 0:
@@ -538,7 +538,7 @@ def _install_hypertext_fallback_patch():
 
         @staticmethod
         def _patched_link_end(obj):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_link_end(obj)
             result = _orig_link_end(obj)
             if result >= 0:
@@ -551,7 +551,7 @@ def _install_hypertext_fallback_patch():
 
         @staticmethod
         def _patched_char_offset(obj):
-            if not _ladybird_is_active():
+            if not _ladyflock_is_active():
                 return _orig_char_offset(obj)
             result = _orig_char_offset(obj)
             if result >= 0:

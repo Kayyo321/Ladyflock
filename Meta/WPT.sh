@@ -43,7 +43,7 @@ sudo_and_ask() {
 
 default_binary_path() {
     if [ "$(uname -s)" = "Darwin" ]; then
-        echo "${BUILD_DIR}/bin/Ladybird.app/Contents/MacOS"
+        echo "${BUILD_DIR}/bin/Ladyflock.app/Contents/MacOS"
     else
         echo "${BUILD_DIR}/bin"
     fi
@@ -89,7 +89,7 @@ ensure_run_dir() {
     echo "$runpath/merged"
 }
 
-LADYBIRD_BINARY=${LADYBIRD_BINARY:-"$(default_binary_path)/Ladybird"}
+LADYBIRD_BINARY=${LADYBIRD_BINARY:-"$(default_binary_path)/Ladyflock"}
 WEBDRIVER_BINARY=${WEBDRIVER_BINARY:-"$(default_binary_path)/WebDriver"}
 TEST_WEB_BINARY=${TEST_WEB_BINARY:-"${BUILD_DIR}/bin/test-web"}
 WPT_PROCESSES=${WPT_PROCESSES:-$(get_number_of_processing_units)}

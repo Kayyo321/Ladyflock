@@ -239,7 +239,7 @@ static bool matches_platform_name(StringView requested_platform_name, StringView
 static JsonValue match_capabilities(JsonObject const& capabilities, SessionFlags flags)
 {
     static auto& browser_name = *new String(String::from_utf8_without_validation({ BROWSER_NAME, __builtin_strlen(BROWSER_NAME) }).to_ascii_lowercase());
-    static auto& browser_version = *new String(String::from_utf8_without_validation({ BROWSER_VERSION, __builtin_strlen(BROWSER_VERSION) }));
+    static auto& browser_version = *new String(String::from_utf8_without_validation({ BROWSER_COMPATIBILITY_VERSION, __builtin_strlen(BROWSER_COMPATIBILITY_VERSION) }));
     static auto& platform_name = *new String(String::from_utf8_without_validation({ OS_STRING, __builtin_strlen(OS_STRING) }).to_ascii_lowercase());
 
     // 1. Let matched capabilities be a JSON Object with the following entries:
