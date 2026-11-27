@@ -1073,6 +1073,12 @@ TEST_CASE(inspector_reads_the_source_of_a_sheet_linked_in_a_shadow_tree)
         const outcome = await sendCommand("getStyleSheetSource", rule.ruleId).then(result => result?.source, error => error.message);
         return outcome === ".linked { color: rgb(7, 7, 7); }" ? null : { outcome, ruleId: rule.ruleId };
     )JS"sv);
+    expect_holds(*fixture.frontend, "The shadow tree's sheets are listed"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const sheets = (await sendCommand("listStyleSheets"))?.styleSheets || [];
+        const types = sheets.filter(sheet => sheet.url?.startsWith("data:text/css")).map(sheet => sheet.type).sort();
+        return types.join() === "ImportRule,LinkElement" ? null : sheets;
+    )JS"sv);
 }
 
 // The CSS overview reads the page as it is now, shadow trees included, even while the page is not rendering.

@@ -42,6 +42,7 @@
 #include <LibWeb/DOM/MutationType.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NodeList.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Editing/WritingSuggestionController.h>
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
@@ -3061,6 +3062,13 @@ Vector<Web::CSS::StyleSheetIdentifier> PageClient::list_style_sheets() const
         for (auto& sheet : document->style_scope().style_sheets()) {
             gather_style_sheets(results, sheet);
         }
+        // A shadow tree's <style> and <link> elements are in its own sheets, not the document's.
+        document->for_each_shadow_root([&](Web::DOM::ShadowRoot& shadow_root) {
+            if (!shadow_root.is_connected())
+                return;
+            for (auto& sheet : shadow_root.style_scope().style_sheets())
+                gather_style_sheets(results, sheet);
+        });
     }
 
     // User style
