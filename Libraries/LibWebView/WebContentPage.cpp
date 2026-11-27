@@ -1291,13 +1291,16 @@ void WebContentPage::did_list_style_sheets(u64 request_id, Vector<Web::CSS::Styl
     }
 }
 
-void WebContentPage::did_get_style_sheet_source(u64 request_id, Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Optional<Utf16String> source)
+// A sheet WebContent cannot find comes with neither a source nor a base URL.
+void WebContentPage::did_get_style_sheet_source(u64 request_id, Web::CSS::StyleSheetIdentifier identifier, Optional<URL::URL> base_url, Optional<Utf16String> source)
 {
+    if (!base_url.has_value())
+        source.clear();
     if (displays_tab()) {
         if (auto handler = view().m_pending_style_sheet_source_requests.take(request_id); handler.has_value())
-            (*handler)(source, base_url);
+            (*handler)(source, base_url.value_or(URL::URL {}));
         if (source.has_value() && view().on_received_style_sheet_source)
-            view().on_received_style_sheet_source(identifier, base_url, *source);
+            view().on_received_style_sheet_source(identifier, *base_url, *source);
     }
 }
 

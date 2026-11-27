@@ -1071,6 +1071,16 @@ TEST_CASE(inspector_reads_and_edits_each_get_their_own_answer)
         const late = Date.now() - started > 5000;
         return outcome === "The node is no longer in the document." && !late ? null : { outcome, late };
     )JS"sv);
+
+    expect_holds(frontend, "A read of a stylesheet the page does not have fails at once"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const sheets = (await sendCommand("listStyleSheets"))?.styleSheets || [];
+        const read = identifier => sendCommand("getStyleSheetSource", identifier).then(result => typeof result?.source === "string" ? "source" : result, error => error.message);
+        const results = { present: await read(sheets[0]), missing: await read({ ...sheets[0], domElementUniqueId: 1, url: undefined }) };
+        return results.present === "source" && results.missing === "The stylesheet is no longer available." ? null : { sheets, results };
+    )JS"sv);
+    // NB: The answer for a missing sheet crosses to the browser without a base URL, which the page outlives.
+    run_in_target(*fixture.target, R"JS(document.title = "Still here";)JS"sv, "Still here"sv);
 }
 
 // An Inspector that could not take the debugger from remote DevTools still gives back what it took before.

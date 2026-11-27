@@ -167,7 +167,7 @@ endpoint WebContentClient routed by Web::PageId page_id
     did_get_dom_node_html(Web::PageId page_id, u64 request_id, Optional<String> html) =|
 
     did_list_style_sheets(Web::PageId page_id, u64 request_id, Vector<Web::CSS::StyleSheetIdentifier> style_sheets) =|
-    did_get_style_sheet_source(Web::PageId page_id, u64 request_id, Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Optional<Utf16String> source) =|
+    did_get_style_sheet_source(Web::PageId page_id, u64 request_id, Web::CSS::StyleSheetIdentifier identifier, Optional<URL::URL> base_url, Optional<Utf16String> source) =|
     did_list_devtools_sources(Web::PageId page_id, u64 request_id, Vector<Web::HTML::ScriptRegistryDescription> sources) =|
     did_get_devtools_source(Web::PageId page_id, Web::HTML::ScriptRegistryIdentifier source_id, Optional<Web::HTML::ScriptRegistryContent> source) =|
     did_add_devtools_source(Web::PageId page_id, Web::HTML::ScriptRegistryDescription source) =|

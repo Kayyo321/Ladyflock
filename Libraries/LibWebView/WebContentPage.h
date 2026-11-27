@@ -247,7 +247,7 @@ private:
     virtual void did_get_hovered_node_id(Web::UniqueNodeID node_id) override;
     virtual void did_get_node_id_at_position(u64 request_id, Web::UniqueNodeID node_id) override;
     virtual void did_list_style_sheets(u64 request_id, Vector<Web::CSS::StyleSheetIdentifier> stylesheets) override;
-    virtual void did_get_style_sheet_source(u64 request_id, Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Optional<Utf16String> source) override;
+    virtual void did_get_style_sheet_source(u64 request_id, Web::CSS::StyleSheetIdentifier identifier, Optional<URL::URL> base_url, Optional<Utf16String> source) override;
     virtual void did_list_devtools_sources(u64 request_id, Vector<Web::HTML::ScriptRegistryDescription> sources) override;
     virtual void did_get_devtools_source(Web::HTML::ScriptRegistryIdentifier source_id, Optional<Web::HTML::ScriptRegistryContent> source) override;
     virtual void did_add_devtools_source(Web::HTML::ScriptRegistryDescription source) override;
