@@ -1137,6 +1137,21 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             root->define_direct_property("cookies"_utf16_fly_string, cookies, JS::default_attributes);
         }
 
+        if (manifest_has_permission(manifest, "theme"sv)) {
+            static constexpr Array theme_methods { "getCurrent"sv, "update"sv, "reset"sv };
+            auto theme = create_namespace_object("theme"sv, theme_methods.span(), is_chrome);
+            theme.as_object().define_direct_property("onUpdated"_utf16_fly_string, create_event_object("theme"sv, "onUpdated"sv), JS::default_attributes);
+            root->define_direct_property("theme"_utf16_fly_string, theme, JS::default_attributes);
+        }
+
+        if (manifest.is_object() && manifest.as_object().has("omnibox"sv)) {
+            static constexpr Array omnibox_methods { "setDefaultSuggestion"sv };
+            auto omnibox = create_namespace_object("omnibox"sv, omnibox_methods.span(), is_chrome);
+            for (auto event : Array { "onInputStarted"sv, "onInputChanged"sv, "onInputEntered"sv, "onInputCancelled"sv, "onDeleteSuggestion"sv })
+                omnibox.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("omnibox"sv, event), JS::default_attributes);
+            root->define_direct_property("omnibox"_utf16_fly_string, omnibox, JS::default_attributes);
+        }
+
         if (manifest_has_permission(manifest, "idle"sv)) {
             static constexpr Array idle_methods { "queryState"sv, "setDetectionInterval"sv };
             auto idle = create_namespace_object("idle"sv, idle_methods.span(), is_chrome);

@@ -42,6 +42,7 @@ static constexpr Array s_supported_manifest_keys {
     "incognito"sv,
     "developer"sv,
     "storage"sv,
+    "omnibox"sv,
 };
 
 // Manifest keys Firefox reads that Ladyflock does not implement. An extension that declares one is refused, since
@@ -54,7 +55,6 @@ static constexpr Array s_firefox_unsupported_manifest_keys {
     "experiment_apis"sv,
     "hidden"sv,
     "l10n_resources"sv,
-    "omnibox"sv,
     "page_action"sv,
     "protocol_handlers"sv,
     "telemetry"sv,
@@ -145,6 +145,7 @@ static constexpr Array s_supported_permissions {
     "scripting"sv,
     "storage"sv,
     "tabs"sv,
+    "theme"sv,
     "unlimitedStorage"sv,
     "webNavigation"sv,
     "webRequest"sv,
@@ -360,6 +361,8 @@ static constexpr Array s_supported_api_methods {
     "downloads.onChanged"sv,
     "downloads.onErased"sv,
     "navigator.clipboard (clipboardWrite, clipboardRead)"sv,
+    "theme.getCurrent (no theme; update and reset are refused)"sv,
+    "omnibox events (the keyword is not bound to the address bar)"sv,
 };
 
 // Each entry must have a verified package and a passing behavior test for the same bytes.
@@ -459,8 +462,9 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
 {
     CompatibilityEvaluation evaluation;
 
+    // As in Firefox, a policy that would loosen where scripts come from is ignored, and the default one applies.
     if (manifest.has_invalid_csp())
-        evaluation.unsupported_reasons.append("Invalid or unsafe content_security_policy"_string);
+        evaluation.warnings.append("Ignored content_security_policy, which allows scripts from where Firefox does not; the default applies"_string);
 
     for (auto const& key : manifest.top_level_keys()) {
         if (is_manifest_key_supported(key))
@@ -505,8 +509,10 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
     if (auto scripts = root.get_array("content_scripts"sv); scripts.has_value()) {
         for (auto const& script : scripts->values()) {
             auto const& options = script.as_object();
-            if (options.has("match_origin_as_fallback"sv) && options.get_bool("match_origin_as_fallback"sv) != false)
+            if (options.has("match_origin_as_fallback"sv) && !options.get_bool("match_origin_as_fallback"sv).has_value())
                 reject("content_scripts.match_origin_as_fallback"sv);
+            else if (options.get_bool("match_origin_as_fallback"sv) == true)
+                evaluation.warnings.append("content_scripts.match_origin_as_fallback reaches about: frames, not blob: or data: ones"_string);
             if (options.has("css_origin"sv)) {
                 auto css_origin = options.get_string("css_origin"sv);
                 if (!css_origin.has_value() || !css_origin->equals_ignoring_ascii_case("author"sv))
@@ -516,9 +522,10 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
     }
     for (auto const& perm : manifest.permissions())
         check_permission(evaluation, perm);
+    // File, WebSocket and FTP access is not granted; the extension's web access does not depend on it.
     for (auto const& pattern : manifest.host_permissions()) {
         if (!pattern.is_web_host_permission())
-            evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported host permission '{}'", pattern.raw())));
+            evaluation.warnings.append(MUST(String::formatted("Host permission '{}' is not granted", pattern.raw())));
     }
 
     if (manifest.has_permission("webRequestBlocking"sv) && !manifest.has_permission("webRequest"sv))

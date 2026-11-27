@@ -3625,6 +3625,30 @@ void ExtensionManager::handle_api_call(
         return;
     }
 
+    // Ladyflock does not apply extension themes: no theme is current, and one can't be set.
+    if (namespace_name == "theme"sv) {
+        if (!ext->manifest.has_permission("theme"sv)) {
+            reply_err("Extension lacks the theme permission");
+            return;
+        }
+        if (method_name == "getCurrent"sv) {
+            JsonObject theme;
+            theme.set("colors"sv, JsonValue {});
+            theme.set("images"sv, JsonValue {});
+            theme.set("properties"sv, JsonValue {});
+            reply_ok(move(theme));
+            return;
+        }
+        reply_err("Ladyflock does not apply extension themes");
+        return;
+    }
+
+    // The omnibox keyword is not bound to the address bar, so there is no suggestion to show.
+    if (namespace_name == "omnibox"sv && method_name == "setDefaultSuggestion"sv) {
+        reply_ok(JsonValue {});
+        return;
+    }
+
     if (namespace_name == "idle"sv) {
         if (!ext->manifest.has_permission("idle"sv)) {
             reply_err("Extension lacks the idle permission");

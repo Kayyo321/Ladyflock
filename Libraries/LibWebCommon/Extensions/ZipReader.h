@@ -19,7 +19,9 @@ namespace Web::Extensions {
 // Hardened ZIP/XPI reader for untrusted extension archives.
 class WEBCOMMON_API ZipReader {
 public:
-    static constexpr size_t max_entries = 8192;
+    // Large extensions on Mozilla Add-ons, such as Wappalyzer's with its icon library, hold over 13,000 files. The total
+    // size and compression limits below bound what an archive can unpack.
+    static constexpr size_t max_entries = 32768;
     static constexpr u64 max_entry_uncompressed_bytes = 32 * MiB;
     static constexpr u64 max_total_uncompressed_bytes = 128 * MiB;
     static constexpr u64 max_compression_ratio = 200;
