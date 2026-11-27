@@ -972,6 +972,44 @@ TEST_CASE(inspector_edits_a_sheet_two_shadow_trees_share)
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(1, 1, 1)/rgb(2, 2, 2)"sv);
 }
 
+constexpr auto slotted_html = R"HTML(<!doctype html><title>Slotted</title>
+<div id="first-host"><span id="first-span">First</span></div>
+<div id="second-host"><span id="second-span">Second</span></div>
+<script>
+  for (const id of ["first-host", "second-host"])
+    document.getElementById(id).attachShadow({ mode: "open" }).innerHTML = "<style>::slotted(span) { color: rgb(5, 5, 5); }</style><slot></slot>";
+  document.title = "Slotted ready";
+</script>
+)HTML"sv;
+
+// A ::slotted() rule styles a span from the shadow tree of the host it is slotted into, so it is that tree's copy of
+// the sheet the rule names.
+TEST_CASE(inspector_edits_the_slotted_rule_of_the_tree_a_span_is_slotted_into)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorSlottedSheets"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { slotted_html, "Slotted ready"sv, 8 });
+
+    expect_holds(*fixture.frontend, "The slotted rule names the second host's copy"sv, R"JS(
+        const slottedRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes("::slotted(span)"));
+        await select(n => n.attributes?.id === "second-span", () => slottedRule());
+        const rule = slottedRule();
+        if (!rule.sheetId)
+            return rule;
+        const declaration = rule.declarations.find(d => d.name === "color");
+        await app.stylesPane.commitDeclarationEdit(rule, declaration, rule.declarations.indexOf(declaration), "color", "rgb(6, 6, 6)");
+        app.refreshSelectedNodeProperties();
+        await until(() => app.state.lastComputedStyle?.color === "rgb(6, 6, 6)");
+        return null;
+    )JS"sv);
+    run_in_target(*fixture.target, R"JS(
+        const color = id => getComputedStyle(document.getElementById(id)).color;
+        document.title = "Colors:" + color("first-span") + "/" + color("second-span");
+    )JS"sv,
+        "Colors:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(5, 5, 5)/rgb(6, 6, 6)"sv);
+}
+
 // The CSS overview reads the page as it is now, shadow trees included, even while the page is not rendering.
 TEST_CASE(inspector_css_overview_reads_current_styles)
 {
@@ -1083,44 +1121,6 @@ TEST_CASE(inspector_reads_and_edits_each_get_their_own_answer)
     run_in_target(*fixture.target, R"JS(document.title = "Still here";)JS"sv, "Still here"sv);
 }
 
-// An Inspector that could not take the debugger from remote DevTools still gives back what it took before.
-TEST_CASE(inspector_releases_the_debugger_after_remote_devtools_held_it)
-{
-    Test::HeadlessTestEnvironment environment { "TestInspectorDebuggerOwner"sv };
-    auto app = TRY_OR_FAIL(environment.create_application());
-    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
-    auto& target = *fixture.target;
-
-    expect_holds(*fixture.frontend, "The Inspector attaches the debugger"sv, R"JS(
-        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
-        await sendCommand("attachDebugger");
-        return null;
-    )JS"sv);
-    target.attach_debugger({}, {});
-    expect_holds(*fixture.frontend, "Pausing is refused while remote DevTools has the debugger"sv, R"JS(
-        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
-        const outcome = await sendCommand("interruptDebugger").then(() => "applied", error => error.message);
-        return outcome === "Remote DevTools controls the debugger." ? null : outcome;
-    )JS"sv);
-    fixture.session->detach_frontend();
-    target.detach_debugger();
-    EXPECT(target.debugger_owner() == WebView::ViewImplementation::InteractiveOwner::None);
-}
-
-// A page can go away while the Inspector has it in device mode, without the Inspector asking the page's view for its
-// viewport as the view is destroyed.
-TEST_CASE(inspector_target_closes_in_device_mode)
-{
-    Test::HeadlessTestEnvironment environment { "TestInspectorTargetCloses"sv };
-    auto app = TRY_OR_FAIL(environment.create_application());
-    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
-
-    expect_holds(*fixture.frontend, "Device mode is on"sv, R"JS(
-        const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
-        await sendEngineCommand("setDeviceMode", { enabled: true, width: 390, height: 844, dpr: 2 });
-        return null;
-    )JS"sv);
-    {
 constexpr auto controls_html = R"HTML(<!doctype html><title>Controls</title>
 <div id="target" class="one two three" role="note" aria-hidden="true">Target</div>
 <script>
@@ -1181,6 +1181,44 @@ TEST_CASE(inspector_controls_edit_what_they_show)
     )JS"sv);
 }
 
+// An Inspector that could not take the debugger from remote DevTools still gives back what it took before.
+TEST_CASE(inspector_releases_the_debugger_after_remote_devtools_held_it)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorDebuggerOwner"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+    auto& target = *fixture.target;
+
+    expect_holds(*fixture.frontend, "The Inspector attaches the debugger"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendCommand("attachDebugger");
+        return null;
+    )JS"sv);
+    target.attach_debugger({}, {});
+    expect_holds(*fixture.frontend, "Pausing is refused while remote DevTools has the debugger"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const outcome = await sendCommand("interruptDebugger").then(() => "applied", error => error.message);
+        return outcome === "Remote DevTools controls the debugger." ? null : outcome;
+    )JS"sv);
+    fixture.session->detach_frontend();
+    target.detach_debugger();
+    EXPECT(target.debugger_owner() == WebView::ViewImplementation::InteractiveOwner::None);
+}
+
+// A page can go away while the Inspector has it in device mode, without the Inspector asking the page's view for its
+// viewport as the view is destroyed.
+TEST_CASE(inspector_target_closes_in_device_mode)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorTargetCloses"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+
+    expect_holds(*fixture.frontend, "Device mode is on"sv, R"JS(
+        const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendEngineCommand("setDeviceMode", { enabled: true, width: 390, height: 844, dpr: 2 });
+        return null;
+    )JS"sv);
+    {
         auto closing_target = move(fixture.target);
     }
     // NB: The view's destruction runs in this process, which would have stopped at the call into the destroyed view.
