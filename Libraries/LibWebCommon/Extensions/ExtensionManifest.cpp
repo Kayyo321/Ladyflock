@@ -318,6 +318,12 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
             if (cs_obj.has("match_about_blank"sv) && !cs_obj.get_bool("match_about_blank"sv).has_value())
                 return Error::from_string_literal("content_scripts.match_about_blank must be a boolean");
             rule.match_about_blank = cs_obj.get_bool("match_about_blank"sv).value_or(false);
+            if (cs_obj.has("world"sv)) {
+                auto world = cs_obj.get_string("world"sv);
+                if (!world.has_value() || !world->is_one_of("ISOLATED"sv, "MAIN"sv))
+                    return Error::from_string_literal("content_scripts.world must be ISOLATED or MAIN");
+                rule.main_world = world == "MAIN"sv;
+            }
 
             manifest.m_content_scripts.append(move(rule));
         }
@@ -456,6 +462,11 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
     }
 
     return manifest;
+}
+
+bool uses_declarative_net_request(ExtensionManifest const& manifest)
+{
+    return manifest.has_permission("declarativeNetRequest"sv) || manifest.has_permission("declarativeNetRequestWithHostAccess"sv);
 }
 
 bool ExtensionManifest::has_permission(StringView name) const

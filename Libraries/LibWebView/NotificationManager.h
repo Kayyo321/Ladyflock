@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <AK/Function.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Optional.h>
+#include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
@@ -45,6 +47,18 @@ public:
     // The page's document is gone: The notification stays up, and a click on it opens the site in a new tab.
     void abandon(WebContentPage&, u64 page_notification_id);
     void click_handled(WebContentPage&, u64 page_notification_id, bool into_focus);
+
+    // A notification an extension shows through its notifications API. It has no page or origin of its own: the
+    // extension hears what becomes of it through these handlers, which run until it closes.
+    struct ExtensionHandlers {
+        AK_ALLOC_WITH_KMALLOC;
+        Function<void()> on_shown;
+        Function<void()> on_clicked;
+        Function<void(bool by_user)> on_closed;
+    };
+    u64 show_for_extension(String attribution, Web::NotificationsAPI::NotificationData, ExtensionHandlers);
+    // Takes the notification down without telling its extension, which asked for this itself.
+    void close_for_extension(u64 id);
     void page_did_close(WebContentPage&);
     // Drops everything a page's tests left behind: its live notifications and the clicks it owes an answer for.
     void reset_page_for_testing(WebContentPage&);
@@ -73,6 +87,7 @@ private:
         // Tag replacement and the per-origin cap never reach across sessions, so a private window's notification
         // can't close a normal window's and the other way around.
         IsPrivate is_private { IsPrivate::No };
+        OwnPtr<ExtensionHandlers> extension_handlers {};
     };
 
     NotificationManager() = default;

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/HashMap.h>
 #include <AK/JsonObject.h>
 #include <LibWeb/Bindings/ExtensionWorld.h>
 #include <LibWeb/DOM/Document.h>
@@ -15,6 +16,22 @@
 namespace Web::Extensions {
 
 GC_DEFINE_ALLOCATOR(ExtensionContentScriptHost);
+
+static HashMap<String, ExtensionContentScriptHost::ExtensionMetadata>& extension_metadata_by_id()
+{
+    static auto& metadata = *new HashMap<String, ExtensionContentScriptHost::ExtensionMetadata>;
+    return metadata;
+}
+
+void ExtensionContentScriptHost::set_extension_metadata(String extension_id, String manifest_json, String locale_messages_json)
+{
+    extension_metadata_by_id().set(move(extension_id), { move(manifest_json), move(locale_messages_json) });
+}
+
+Optional<ExtensionContentScriptHost::ExtensionMetadata const&> ExtensionContentScriptHost::extension_metadata(StringView extension_id)
+{
+    return extension_metadata_by_id().get(extension_id);
+}
 
 GC::Ref<ExtensionContentScriptHost> ExtensionContentScriptHost::create(DOM::Document& document)
 {
@@ -68,6 +85,11 @@ void ExtensionContentScriptHost::initialize_extension_page_context(String extens
         move(locale_messages_json));
 }
 
+bool ExtensionContentScriptHost::is_extension_page_with_permission(StringView permission) const
+{
+    return m_extension_page_context && !m_extension_page_context->is_revoked() && m_extension_page_context->has_manifest_permission(permission);
+}
+
 void ExtensionContentScriptHost::attach_scripts(Vector<AttachedContentScript> scripts)
 {
     for (auto& script : scripts) {
@@ -94,6 +116,8 @@ void ExtensionContentScriptHost::attach_scripts(Vector<AttachedContentScript> sc
 
 void ExtensionContentScriptHost::run_scripts_for(RunAt run_at)
 {
+    run_deferred_main_world_scripts();
+
     switch (run_at) {
     case RunAt::DocumentStart:
         if (m_ran_document_start)
@@ -129,6 +153,12 @@ void ExtensionContentScriptHost::inject_attached_script(AttachedContentScript co
     if (script.run_in_main_world) {
         // MAIN is an explicit registration choice. It deliberately gets regular page APIs.
         auto& settings = m_document->relevant_settings_object();
+        // A document_start script reaches a document before its scripts may run. It runs once the document is made
+        // active, which is still before any script of the page's own.
+        if (!settings.execution_ready) {
+            m_deferred_main_world_scripts.append(script);
+            return;
+        }
         for (auto const& js : script.js_files)
             (void)HTML::ClassicScript::create(js.path.to_byte_string(), Utf16String::from_utf8(js.content), settings, settings.api_base_url())->run();
         return;
@@ -137,6 +167,15 @@ void ExtensionContentScriptHost::inject_attached_script(AttachedContentScript co
     auto realm_ctx = ensure_content_script_realm(script.extension_id, script.extension_uuid, script.grant_generation);
     for (auto const& js : script.js_files)
         realm_ctx->evaluate_script(js.content, js.path);
+}
+
+void ExtensionContentScriptHost::run_deferred_main_world_scripts()
+{
+    if (m_deferred_main_world_scripts.is_empty() || !m_document->relevant_settings_object().execution_ready)
+        return;
+    auto scripts = move(m_deferred_main_world_scripts);
+    for (auto const& script : scripts)
+        inject_attached_script(script);
 }
 
 void ExtensionContentScriptHost::execute_script_dynamically(

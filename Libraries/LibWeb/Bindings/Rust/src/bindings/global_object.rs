@@ -26,6 +26,11 @@ unsafe extern "C" {
     fn web_bindings_window_realm(window: *mut c_void) -> *mut c_void;
     fn web_bindings_window_page_id(window: *mut c_void) -> u64;
     fn web_bindings_window_has_transient_activation(window: *mut c_void) -> bool;
+    fn web_bindings_window_is_extension_page_with_permission(
+        window: *mut c_void,
+        permission: *const u8,
+        permission_length: usize,
+    ) -> bool;
     fn web_bindings_window_consume_user_activation(window: *mut c_void);
     fn web_bindings_window_give_transient_activation(window: *mut c_void);
     fn web_bindings_is_service_worker_global_scope(global_object: *mut c_void) -> bool;
@@ -160,6 +165,18 @@ impl CppWindow {
     pub(crate) fn has_transient_activation(&self) -> bool {
         // SAFETY: The Window is live.
         unsafe { web_bindings_window_has_transient_activation(self.0.as_ptr()) }
+    }
+
+    /// Whether the Window shows an extension's own page whose manifest asks for the permission.
+    pub(crate) fn is_extension_page_with_permission(&self, permission: &str) -> bool {
+        // SAFETY: The Window is live, and the permission is valid UTF-8 for the length given.
+        unsafe {
+            web_bindings_window_is_extension_page_with_permission(
+                self.0.as_ptr(),
+                permission.as_ptr(),
+                permission.len(),
+            )
+        }
     }
 
     /// https://html.spec.whatwg.org/multipage/interaction.html#consume-user-activation

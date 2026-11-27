@@ -40,6 +40,7 @@ set(SOURCES
     Extensions/ExtensionSidebarController.cpp
     Extensions/ExtensionStorage.cpp
     Extensions/ExtensionVerifierClient.cpp
+    Extensions/NativeMessaging.cpp
     Extensions/RevocationList.cpp
     Extensions/WebRequestCoordinator.cpp
     ExternalURLHandler.cpp
@@ -94,6 +95,7 @@ set(SOURCES
     SiteCompatibility.cpp
     StorageAreaRegistry.cpp
     StorageJar.cpp
+    SystemIdle.cpp
     SystemProbeClient.cpp
     TestSpellChecker.cpp
     TestTranslator.cpp
@@ -215,7 +217,7 @@ if (LINUX)
 endif()
 
 if (APPLE)
-    target_link_libraries(LibWebView PRIVATE "-framework AppKit" "-framework CoreServices" "-framework Foundation" "-framework MediaPlayer" "-framework UserNotifications")
+    target_link_libraries(LibWebView PRIVATE "-framework AppKit" "-framework CoreGraphics" "-framework CoreServices" "-framework Foundation" "-framework MediaPlayer" "-framework UserNotifications")
 endif()
 
 if (LINUX OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")

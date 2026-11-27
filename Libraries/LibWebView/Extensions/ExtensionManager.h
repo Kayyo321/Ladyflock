@@ -38,7 +38,14 @@
 #include <LibWebView/Extensions/ExtensionStorage.h>
 #include <LibWebView/Extensions/RevocationList.h>
 #include <LibWebView/Extensions/WebRequestCoordinator.h>
+#include <LibWebView/FileDownloader.h>
 #include <LibWebView/Forward.h>
+
+namespace HTTP::Cookie {
+
+struct Cookie;
+
+}
 
 namespace Requests {
 
@@ -103,6 +110,8 @@ public:
 
     ExtensionStorage& storage() { return *m_storage; }
     ExtensionStorage const& storage() const { return *m_storage; }
+    ExtensionStorage& sync_storage() { return *m_sync_storage; }
+    ExtensionStorage const& sync_storage() const { return *m_sync_storage; }
     bool network_prediction_enabled() const;
     void global_privacy_control_changed();
     ExtensionActionController& action_controller() { return m_action_controller; }
@@ -166,6 +175,24 @@ public:
 
     // Pre-activation content scripts & world revocation.
     void attach_content_scripts_for_document(WebContentPage&, CanonicalNavigable const&, CanonicalDocument&, URL::URL const& document_url) const;
+    void send_content_script_metadata(WebContentClient&, InstalledExtension const&) const;
+    JsonObject management_info(InstalledExtension const&) const;
+    void notify_management_event(StringView event, InstalledExtension const& subject);
+    static String idle_state_for(u32 detection_interval_seconds);
+    void close_extension_notifications(StringView extension_id);
+    static String native_application_error(StringView name, StringView extension_id);
+    bool extension_may_use_cookie(InstalledExtension const&, HTTP::Cookie::Cookie const&) const;
+    static JsonObject serialize_extension_cookie(HTTP::Cookie::Cookie const&);
+    bool is_extension_visible_download(u64 id) const;
+    static ErrorOr<LexicalPath> extension_download_destination(Optional<String> const& filename, URL::URL const&, StringView conflict_action);
+    JsonObject serialize_extension_download(FileDownloader::Download const&) const;
+    void ensure_download_events();
+    void dispatch_to_extensions_with_permission(StringView permission, StringView namespace_name, StringView event_name, String const& arguments);
+    class DownloadEvents;
+    friend class DownloadEvents;
+    // Extensions run in the default profile only, whose cookies Firefox calls this store.
+    static constexpr StringView cookie_store_id = "firefox-default"sv;
+    void start_idle_polling();
     void revoke_document_worlds(WebContentPage& page, Web::HTML::CrossProcessId document_id);
 
     // Tab views (excluding hidden background pages and private views).
@@ -179,6 +206,10 @@ public:
 
     // Background / non-persistent event page management.
     void set_event_page_idle_timeout_ms(u32 timeout_ms) { m_event_page_idle_timeout_ms = timeout_ms; }
+    // Checks the system idle state now, as the periodic check does.
+    void poll_idle_state();
+    // Tells the extensions that may use the cookie about a change to it in their profile's cookie jar.
+    void cookie_changed(HTTP::Cookie::Cookie const&, bool removed);
     bool is_background_running(StringView extension_id) const;
     void ensure_background_started(StringView extension_id, Function<void(bool ready)> on_ready);
     void notify_background_document_loaded(StringView extension_id, WebContentPage&);
@@ -241,7 +272,7 @@ public:
     static void push_watch_filter_to_request_server(Requests::RequestControlClient&, Web::Extensions::WebRequestWatchSnapshot const&);
 
 private:
-    ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<ExtensionStorage>);
+    ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<ExtensionStorage> storage, NonnullOwnPtr<ExtensionStorage> sync_storage);
 
     ErrorOr<void> load_registry();
     ErrorOr<void> save_registry(InstalledExtension const* replacement = nullptr) const;
@@ -313,6 +344,19 @@ private:
     u32 m_event_page_idle_timeout_ms { 30000 };
 
     NonnullOwnPtr<ExtensionStorage> m_storage;
+    NonnullOwnPtr<ExtensionStorage> m_sync_storage;
+    HashMap<String, URL::URL> m_uninstall_urls;
+    struct ExtensionNotification {
+        u64 platform_id { 0 };
+        JsonObject options;
+    };
+    HashMap<String, HashMap<String, ExtensionNotification>> m_notifications;
+    u64 m_next_notification_number { 1 };
+    HashMap<u64, String> m_extension_downloads;
+    OwnPtr<DownloadEvents> m_download_events;
+    HashMap<String, u32> m_idle_detection_intervals;
+    HashMap<String, String> m_idle_reported_states;
+    RefPtr<Core::Timer> m_idle_poll_timer;
     NonnullOwnPtr<ExtensionStorage> m_session_storage { ExtensionStorage::create() };
     HashTable<String> m_content_script_session_storage_access;
     ExtensionActionController m_action_controller;

@@ -152,6 +152,15 @@ public:
 
     Optional<String> const& hosted_extension_id() const { return m_hosted_extension_id; }
     void set_hosted_extension_id(String extension_id) { m_hosted_extension_id = move(extension_id); }
+
+    // Whether this renderer still needs an extension's content script metadata for the given version of it.
+    bool needs_extension_metadata(String const& extension_id, String const& version_token)
+    {
+        if (m_sent_extension_metadata.get(extension_id) == version_token)
+            return false;
+        m_sent_extension_metadata.set(extension_id, version_token);
+        return true;
+    }
     // A process can take in a tab of an origin only if all it has ever hosted, and so may still hold, is tabs of that
     // origin with their same-site and data: URL iframes. An origin-keyed tab keeps apart from the other origins of
     // its site, so it only joins origin-keyed tabs of its origin, in a process that has not hosted iframes of those
@@ -294,6 +303,7 @@ private:
     bool m_has_hosted_local_file_content { false };
     Optional<String> m_hosted_web_ui;
     Optional<String> m_hosted_extension_id;
+    HashMap<String, String> m_sent_extension_metadata;
     Optional<URL::Origin> m_origin_of_hosted_tabs;
     bool m_hosted_tabs_are_origin_keyed { false };
     bool m_has_hosted_more_than_tabs_of_one_origin { false };

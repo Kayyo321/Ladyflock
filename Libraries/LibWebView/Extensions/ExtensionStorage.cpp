@@ -11,15 +11,24 @@
 
 namespace WebView::Extensions {
 
-static constexpr u32 EXTENSION_STORAGE_SCHEMA_VERSION = 1u;
-
 ErrorOr<Database::MigrationOutcome> ExtensionStorage::migrate_schema(Database::Database& database, Database::MigrationMode mode)
 {
     auto migrations = to_array<Database::Migration>({
         {
-            .version = EXTENSION_STORAGE_SCHEMA_VERSION,
+            .version = 1u,
             .sql = R"#(
                 CREATE TABLE IF NOT EXISTS ExtensionLocalStorage (
+                    extension_id TEXT NOT NULL,
+                    storage_key TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    PRIMARY KEY(extension_id, storage_key)
+                );
+            )#"sv,
+        },
+        {
+            .version = 2u,
+            .sql = R"#(
+                CREATE TABLE IF NOT EXISTS ExtensionSyncStorage (
                     extension_id TEXT NOT NULL,
                     storage_key TEXT NOT NULL,
                     value_json TEXT NOT NULL,
@@ -32,15 +41,16 @@ ErrorOr<Database::MigrationOutcome> ExtensionStorage::migrate_schema(Database::D
     return database.migrate("ExtensionLocalStorage"sv, migrations, mode);
 }
 
-ErrorOr<NonnullOwnPtr<ExtensionStorage>> ExtensionStorage::create(Database::Database& database)
+ErrorOr<NonnullOwnPtr<ExtensionStorage>> ExtensionStorage::create(Database::Database& database, Area area)
 {
+    auto table = area == Area::Sync ? "ExtensionSyncStorage"sv : "ExtensionLocalStorage"sv;
     Statements statements {};
-    statements.get_item = TRY(database.prepare_statement("SELECT value_json FROM ExtensionLocalStorage WHERE extension_id = ? AND storage_key = ?;"sv));
-    statements.get_all = TRY(database.prepare_statement("SELECT storage_key, value_json FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
-    statements.get_size = TRY(database.prepare_statement("SELECT COALESCE(SUM(length(CAST(storage_key AS BLOB)) + length(CAST(value_json AS BLOB))), 0) FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
-    statements.set_item = TRY(database.prepare_statement("INSERT OR REPLACE INTO ExtensionLocalStorage (extension_id, storage_key, value_json) VALUES (?, ?, ?);"sv));
-    statements.delete_item = TRY(database.prepare_statement("DELETE FROM ExtensionLocalStorage WHERE extension_id = ? AND storage_key = ?;"sv));
-    statements.clear_extension = TRY(database.prepare_statement("DELETE FROM ExtensionLocalStorage WHERE extension_id = ?;"sv));
+    statements.get_item = TRY(database.prepare_statement(ByteString::formatted("SELECT value_json FROM {} WHERE extension_id = ? AND storage_key = ?;", table)));
+    statements.get_all = TRY(database.prepare_statement(ByteString::formatted("SELECT storage_key, value_json FROM {} WHERE extension_id = ?;", table)));
+    statements.get_size = TRY(database.prepare_statement(ByteString::formatted("SELECT COALESCE(SUM(length(CAST(storage_key AS BLOB)) + length(CAST(value_json AS BLOB))), 0) FROM {} WHERE extension_id = ?;", table)));
+    statements.set_item = TRY(database.prepare_statement(ByteString::formatted("INSERT OR REPLACE INTO {} (extension_id, storage_key, value_json) VALUES (?, ?, ?);", table)));
+    statements.delete_item = TRY(database.prepare_statement(ByteString::formatted("DELETE FROM {} WHERE extension_id = ? AND storage_key = ?;", table)));
+    statements.clear_extension = TRY(database.prepare_statement(ByteString::formatted("DELETE FROM {} WHERE extension_id = ?;", table)));
 
     return adopt_own(*new ExtensionStorage(NonnullRefPtr { database }, statements));
 }
@@ -244,7 +254,9 @@ ErrorOr<JsonObject> ExtensionStorage::set(StringView extension_id, JsonObject co
         return changes;
 
     auto apply_changes = [&]() -> ErrorOr<void> {
-        auto previous_size = quota == Quota::Limited ? TRY(get_bytes_in_use(extension_id)) : 0;
+        bool limited = quota != Quota::Unlimited;
+        auto previous_size = limited ? TRY(get_bytes_in_use(extension_id)) : 0;
+        auto item_count = quota == Quota::Sync ? read_all_raw(extension_id).size() : 0;
         auto next_size = previous_size;
         struct PendingWrite {
             String key;
@@ -257,11 +269,16 @@ ErrorOr<JsonObject> ExtensionStorage::set(StringView extension_id, JsonObject co
             if (old_raw == new_raw)
                 return {};
 
-            if (quota == Quota::Limited) {
-                if (old_raw.has_value())
+            // Firefox counts a storage.sync item as its key plus its JSON text.
+            if (quota == Quota::Sync && key.byte_count() + new_raw.byte_count() > sync_quota_bytes_per_item)
+                return Error::from_string_literal("QuotaExceededError: storage.sync API call exceeded its quota limitations.");
+            if (limited) {
+                if (old_raw.has_value()) {
                     next_size -= old_raw->byte_count();
-                else
+                } else {
                     next_size += key.byte_count();
+                    ++item_count;
+                }
                 next_size += new_raw.byte_count();
             }
 
@@ -274,8 +291,12 @@ ErrorOr<JsonObject> ExtensionStorage::set(StringView extension_id, JsonObject co
             return {};
         }));
         // Existing over-quota data remains readable and can be reduced after a permission is lost.
-        if (next_size > default_quota_bytes && next_size > previous_size)
+        if (quota == Quota::Sync) {
+            if ((next_size > sync_quota_bytes && next_size > previous_size) || item_count > sync_max_items)
+                return Error::from_string_literal("QuotaExceededError: storage.sync API call exceeded its quota limitations.");
+        } else if (next_size > default_quota_bytes && next_size > previous_size) {
             return Error::from_string_literal("Extension storage quota exceeded");
+        }
 
         for (auto const& write : writes)
             TRY(write_raw(extension_id, write.key, write.value));

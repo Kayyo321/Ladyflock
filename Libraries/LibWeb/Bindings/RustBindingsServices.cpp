@@ -17,6 +17,7 @@
 #include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/HTML/CrossOrigin/AbstractOperations.h>
 #include <LibWeb/HTML/CustomElements/CustomElementReactions.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
@@ -111,6 +112,7 @@ DOM::Document* web_bindings_window_associated_document(HTML::Window*);
 JS::Realm* web_bindings_window_realm(HTML::Window*);
 u64 web_bindings_window_page_id(HTML::Window*);
 bool web_bindings_window_has_transient_activation(HTML::Window*);
+bool web_bindings_window_is_extension_page_with_permission(HTML::Window*, u8 const* permission, size_t permission_length);
 void web_bindings_window_consume_user_activation(HTML::Window*);
 void web_bindings_window_give_transient_activation(HTML::Window*);
 bool web_bindings_is_service_worker_global_scope(JSObject* global_object);
@@ -243,6 +245,12 @@ DOM::Document* web_bindings_window_associated_document(HTML::Window* window)
 u64 web_bindings_window_page_id(HTML::Window* window)
 {
     return window->page().client().id().value();
+}
+
+bool web_bindings_window_is_extension_page_with_permission(HTML::Window* window, u8 const* permission, size_t permission_length)
+{
+    auto* host = window->associated_document().extension_content_script_host();
+    return host && host->is_extension_page_with_permission(StringView { permission, permission_length });
 }
 
 bool web_bindings_window_has_transient_activation(HTML::Window* window)

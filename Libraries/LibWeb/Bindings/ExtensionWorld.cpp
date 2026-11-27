@@ -9,6 +9,7 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <AK/Platform.h>
 #include <AK/Random.h>
 #include <AK/RefCounted.h>
 #include <AK/ScopeGuard.h>
@@ -36,6 +37,7 @@
 #include <LibWeb/Bindings/Wrappable.h>
 #include <LibWeb/Bindings/WrapperWorld.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
@@ -45,6 +47,7 @@
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <LibWebCommon/Extensions/ExtensionManifest.h>
+#include <LibWebCommon/Extensions/SupportMatrix.h>
 
 namespace Web::Bindings {
 
@@ -208,18 +211,24 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_content_script(
     cache_global_object_wrapper(extension_realm);
     MUST(initialize_window_web_interfaces(*window, extension_realm));
 
+    auto metadata = Extensions::ExtensionContentScriptHost::extension_metadata(extension_id);
+    auto manifest_json = metadata.has_value() ? metadata->manifest_json : "{}"_string;
+    auto locale_messages = metadata.has_value() ? JsonValue::from_string(metadata->locale_messages_json) : ErrorOr<JsonValue> { JsonValue {} };
+
     auto context = vm.heap().allocate<ExtensionRealmContext>(
         document,
         move(extension_id),
         move(extension_uuid),
         grant_generation,
         Extensions::ContextType::ContentScript,
-        "{}"_string,
+        move(manifest_json),
         extension_world,
         move(execution_context),
         extension_realm,
         true);
 
+    if (!locale_messages.is_error() && locale_messages.value().is_object())
+        context->m_locale_messages = locale_messages.release_value().as_object();
     context->install_extension_namespaces(false);
     return context;
 }
@@ -405,6 +414,12 @@ Optional<String> ExtensionRealmContext::evaluate_script(StringView source, Strin
     else
         ok_obj.set("result"sv, JsonValue {});
     return ok_obj.serialized();
+}
+
+bool ExtensionRealmContext::has_manifest_permission(StringView permission) const
+{
+    auto manifest = JsonValue::from_string(m_manifest_json);
+    return !manifest.is_error() && manifest_has_permission(manifest.value(), permission);
 }
 
 JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringView event_name)
@@ -669,6 +684,21 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::connect_runtime_port(JS:
     return port;
 }
 
+JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::connect_native_port(JS::VM& vm)
+{
+    if (m_revoked || m_runtime_ports.size() >= 128)
+        return vm.throw_completion<JS::TypeError>("Extension port is unavailable"_utf16);
+    if (!vm.argument(0).is_string())
+        return vm.throw_completion<JS::TypeError>("runtime.connectNative requires an application name"_utf16);
+    auto application = vm.argument(0).as_string().utf16_string().to_utf8();
+    if (application.byte_count() > 1024)
+        return vm.throw_completion<JS::TypeError>("Native application name is too long"_utf16);
+    auto id = generate_random_uuid();
+    auto port = create_runtime_port(id, application, JS::js_undefined());
+    notify_runtime_port("connectNativePort"sv, id, application);
+    return port;
+}
+
 JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& vm, StringView ns_name, StringView method_name, bool is_chrome)
 {
     auto promise = WebIDL::create_promise(*m_realm);
@@ -795,6 +825,80 @@ JS::Value ExtensionRealmContext::create_namespace_object(StringView ns_name, Rea
     return ns_obj;
 }
 
+JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::answer_locally(JS::VM& vm, bool is_chrome, StringView result_json)
+{
+    auto value = json_value_to_js_value(vm, *m_realm, result_json);
+    auto argument_count = vm.argument_count();
+    if (is_chrome && argument_count > 0 && vm.argument(argument_count - 1).is_function()) {
+        TRY(JS::call(vm, vm.argument(argument_count - 1).as_function(), JS::js_undefined(), value));
+        return JS::js_undefined();
+    }
+    auto promise = WebIDL::create_promise(*m_realm);
+    WebIDL::resolve_promise(*m_realm, *promise, value);
+    return promise->promise();
+}
+
+void ExtensionRealmContext::define_local_method(JS::Object& object, StringView name, bool is_chrome, LocalAnswer answer)
+{
+    auto& vm = main_thread_vm();
+    auto function = JS::NativeFunction::create(
+        *m_realm,
+        GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }, is_chrome, answer), [](auto& self, bool is_chrome, auto answer, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+            return self->answer_locally(vm, is_chrome, answer(*self));
+        }),
+        0, Utf16FlyString::from_utf8(name), m_realm);
+    object.define_direct_property(Utf16FlyString::from_utf8(name), function, JS::default_attributes);
+}
+
+static void define_string_enum(JS::VM& vm, JS::Realm& realm, JS::Object& object, StringView name, ReadonlySpan<StringView> values)
+{
+    auto values_object = JS::Object::create(realm, realm.intrinsics().object_prototype());
+    for (auto value : values) {
+        auto key = value.to_byte_string().to_uppercase().replace("-"sv, "_"sv, ReplaceMode::All);
+        values_object->define_direct_property(Utf16FlyString::from_utf8(key), JS::PrimitiveString::create(vm, Utf16String::from_utf8(value)), JS::Attribute::Enumerable);
+    }
+    object.define_direct_property(Utf16FlyString::from_utf8(name), values_object, JS::default_attributes);
+}
+
+// What runtime.getPlatformInfo() reports, with Firefox's names for each operating system and processor.
+static String platform_info_json()
+{
+#if defined(AK_OS_MACOS)
+    auto os = "mac"sv;
+#elif defined(AK_OS_WINDOWS)
+    auto os = "win"sv;
+#elif defined(AK_OS_ANDROID)
+    auto os = "android"sv;
+#elif defined(AK_OS_OPENBSD)
+    auto os = "openbsd"sv;
+#else
+    auto os = "linux"sv;
+#endif
+#if ARCH(AARCH64)
+    auto arch = "aarch64"sv;
+#elif ARCH(X86_64)
+    auto arch = "x86-64"sv;
+#elif ARCH(I386)
+    auto arch = "x86-32"sv;
+#else
+    auto arch = "noarch"sv;
+#endif
+    JsonObject info;
+    info.set("os"sv, os);
+    info.set("arch"sv, arch);
+    return info.serialized();
+}
+
+static String browser_info_json()
+{
+    JsonObject info;
+    info.set("name"sv, Extensions::SupportMatrix::browser_name);
+    info.set("vendor"sv, Extensions::SupportMatrix::browser_vendor);
+    info.set("version"sv, Extensions::SupportMatrix::firefox_api_version);
+    info.set("buildID"sv, Extensions::SupportMatrix::browser_build_id);
+    return info.serialized();
+}
+
 static void append_localized_text(StringBuilder& output, StringView text, Vector<String> const& substitutions, Optional<JsonObject const&> placeholders)
 {
     for (size_t i = 0; i < text.length(); ++i) {
@@ -893,8 +997,9 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         auto root = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
 
         // runtime
-        static constexpr Array runtime_methods { "sendMessage"sv, "openOptionsPage"sv };
-        auto runtime_obj = create_namespace_object("runtime"sv, runtime_methods.span(), is_chrome);
+        static constexpr Array content_runtime_methods { "sendMessage"sv };
+        static constexpr Array page_runtime_methods { "sendMessage"sv, "openOptionsPage"sv, "setUninstallURL"sv, "reload"sv };
+        auto runtime_obj = create_namespace_object("runtime"sv, full_extension_page_apis ? page_runtime_methods.span() : content_runtime_methods.span(), is_chrome);
         auto& runtime_js_obj = runtime_obj.as_object();
         runtime_js_obj.define_direct_property("id"_utf16_fly_string, JS::PrimitiveString::create(vm, Utf16String::from_utf8(m_extension_id)), JS::default_attributes);
 
@@ -953,13 +1058,106 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         auto session = create_namespace_object("storage.session"sv, session_methods, is_chrome);
         session.as_object().define_direct_property("QUOTA_BYTES"_utf16_fly_string, JS::Value(10 * MiB), JS::Attribute::Enumerable);
         storage_obj->define_direct_property("session"_utf16_fly_string, session, JS::default_attributes);
+        // Without a sync service, storage.sync keeps its data on this device under Firefox's sync quotas.
+        auto sync = create_namespace_object("storage.sync"sv, storage_area_methods.span(), is_chrome);
+        sync.as_object().define_direct_property("QUOTA_BYTES"_utf16_fly_string, JS::Value(102400), JS::Attribute::Enumerable);
+        sync.as_object().define_direct_property("QUOTA_BYTES_PER_ITEM"_utf16_fly_string, JS::Value(8192), JS::Attribute::Enumerable);
+        sync.as_object().define_direct_property("MAX_ITEMS"_utf16_fly_string, JS::Value(512), JS::Attribute::Enumerable);
+        sync.as_object().define_direct_property("MAX_WRITE_OPERATIONS_PER_HOUR"_utf16_fly_string, JS::Value(1800), JS::Attribute::Enumerable);
+        sync.as_object().define_direct_property("MAX_WRITE_OPERATIONS_PER_MINUTE"_utf16_fly_string, JS::Value(120), JS::Attribute::Enumerable);
+        storage_obj->define_direct_property("sync"_utf16_fly_string, sync, JS::default_attributes);
+        static constexpr Array managed_methods { "get"sv, "getKeys"sv, "getBytesInUse"sv };
+        auto managed = create_namespace_object("storage.managed"sv, managed_methods.span(), is_chrome);
+        storage_obj->define_direct_property("managed"_utf16_fly_string, managed, JS::default_attributes);
+        for (auto area : Array { "local"sv, "session"sv, "sync"sv, "managed"sv }) {
+            auto area_object = MUST(storage_obj->get(Utf16FlyString::from_utf8(area)));
+            area_object.as_object().define_direct_property("onChanged"_utf16_fly_string, create_event_object(MUST(String::formatted("storage.{}", area)), "onChanged"sv), JS::default_attributes);
+        }
         storage_obj->define_direct_property("onChanged"_utf16_fly_string, create_event_object("storage"sv, "onChanged"sv), JS::default_attributes);
         root->define_direct_property("storage"_utf16_fly_string, storage_obj, JS::default_attributes);
+
+        root->define_direct_property("i18n"_utf16_fly_string, create_i18n_object(), JS::default_attributes);
+
+        // extension: the parts Firefox keeps besides runtime. Extensions never run in private windows here.
+        auto extension_obj = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
+        extension_obj->define_direct_property("getURL"_utf16_fly_string, get_url_fn, JS::default_attributes);
+        extension_obj->define_direct_property("inIncognitoContext"_utf16_fly_string, JS::Value(false), JS::default_attributes);
+        root->define_direct_property("extension"_utf16_fly_string, extension_obj, JS::default_attributes);
 
         if (!full_extension_page_apis)
             return root;
 
-        root->define_direct_property("i18n"_utf16_fly_string, create_i18n_object(), JS::default_attributes);
+        define_local_method(*extension_obj, "isAllowedIncognitoAccess"sv, is_chrome, [](ExtensionRealmContext&) { return "false"_string; });
+        define_local_method(*extension_obj, "isAllowedFileSchemeAccess"sv, is_chrome, [](ExtensionRealmContext&) { return "false"_string; });
+        static constexpr Array view_types { "tab"sv, "popup"sv, "sidebar"sv };
+        define_string_enum(vm, *m_realm, *extension_obj, "ViewType"sv, view_types.span());
+
+        if (manifest_has_permission(manifest, "nativeMessaging"sv)) {
+            auto connect_native = JS::NativeFunction::create(*m_realm,
+                GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM& vm) -> JS::ThrowCompletionOr<JS::Value> {
+                    return self->connect_native_port(vm);
+                }),
+                1, "connectNative"_utf16_fly_string, m_realm);
+            runtime_js_obj.define_direct_property("connectNative"_utf16_fly_string, connect_native, JS::default_attributes);
+            static constexpr Array native_methods { "sendNativeMessage"sv };
+            auto native = create_namespace_object("runtime"sv, native_methods.span(), is_chrome);
+            runtime_js_obj.define_direct_property("sendNativeMessage"_utf16_fly_string, MUST(native.as_object().get("sendNativeMessage"_utf16_fly_string)), JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "notifications"sv)) {
+            static constexpr Array notification_methods { "create"sv, "clear"sv, "getAll"sv };
+            auto notifications = create_namespace_object("notifications"sv, notification_methods.span(), is_chrome);
+            for (auto event : Array { "onShown"sv, "onClicked"sv, "onClosed"sv, "onButtonClicked"sv })
+                notifications.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("notifications"sv, event), JS::default_attributes);
+            static constexpr Array template_types { "basic"sv, "image"sv, "list"sv, "progress"sv };
+            define_string_enum(vm, *m_realm, notifications.as_object(), "TemplateType"sv, template_types.span());
+            root->define_direct_property("notifications"_utf16_fly_string, notifications, JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "downloads"sv)) {
+            static constexpr Array download_methods { "download"sv, "search"sv, "cancel"sv, "pause"sv, "resume"sv };
+            auto downloads = create_namespace_object("downloads"sv, download_methods.span(), is_chrome);
+            for (auto event : Array { "onCreated"sv, "onChanged"sv, "onErased"sv })
+                downloads.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("downloads"sv, event), JS::default_attributes);
+            static constexpr Array states { "in_progress"sv, "interrupted"sv, "complete"sv };
+            static constexpr Array conflict_actions { "uniquify"sv, "overwrite"sv, "prompt"sv };
+            define_string_enum(vm, *m_realm, downloads.as_object(), "State"sv, states.span());
+            define_string_enum(vm, *m_realm, downloads.as_object(), "FilenameConflictAction"sv, conflict_actions.span());
+            root->define_direct_property("downloads"_utf16_fly_string, downloads, JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "cookies"sv)) {
+            static constexpr Array cookie_methods { "get"sv, "getAll"sv, "set"sv, "remove"sv, "getAllCookieStores"sv };
+            auto cookies = create_namespace_object("cookies"sv, cookie_methods.span(), is_chrome);
+            cookies.as_object().define_direct_property("onChanged"_utf16_fly_string, create_event_object("cookies"sv, "onChanged"sv), JS::default_attributes);
+            static constexpr Array same_site_values { "no_restriction"sv, "lax"sv, "strict"sv };
+            static constexpr Array change_causes { "evicted"sv, "expired"sv, "explicit"sv, "expired_overwrite"sv, "overwrite"sv };
+            define_string_enum(vm, *m_realm, cookies.as_object(), "SameSiteStatus"sv, same_site_values.span());
+            define_string_enum(vm, *m_realm, cookies.as_object(), "OnChangedCause"sv, change_causes.span());
+            root->define_direct_property("cookies"_utf16_fly_string, cookies, JS::default_attributes);
+        }
+
+        if (manifest_has_permission(manifest, "idle"sv)) {
+            static constexpr Array idle_methods { "queryState"sv, "setDetectionInterval"sv };
+            auto idle = create_namespace_object("idle"sv, idle_methods.span(), is_chrome);
+            idle.as_object().define_direct_property("onStateChanged"_utf16_fly_string, create_event_object("idle"sv, "onStateChanged"sv), JS::default_attributes);
+            static constexpr Array idle_states { "active"sv, "idle"sv, "locked"sv };
+            define_string_enum(vm, *m_realm, idle.as_object(), "IdleState"sv, idle_states.span());
+            root->define_direct_property("idle"_utf16_fly_string, idle, JS::default_attributes);
+        }
+
+        define_local_method(runtime_js_obj, "getPlatformInfo"sv, is_chrome, [](ExtensionRealmContext&) { return platform_info_json(); });
+        define_local_method(runtime_js_obj, "getBrowserInfo"sv, is_chrome, [](ExtensionRealmContext&) { return browser_info_json(); });
+        for (auto event : Array { "onStartup"sv, "onSuspend"sv, "onSuspendCanceled"sv, "onMessageExternal"sv, "onConnectExternal"sv })
+            runtime_js_obj.define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("runtime"sv, event), JS::default_attributes);
+        static constexpr Array platform_os { "mac"sv, "win"sv, "android"sv, "cros"sv, "linux"sv, "openbsd"sv, "fuchsia"sv };
+        static constexpr Array platform_arch { "aarch64"sv, "arm"sv, "ppc64"sv, "s390x"sv, "sparc64"sv, "x86-32"sv, "x86-64"sv, "noarch"sv };
+        static constexpr Array installed_reasons { "install"sv, "update"sv, "browser_update"sv };
+        static constexpr Array restart_reasons { "app_update"sv, "os_update"sv, "periodic"sv };
+        define_string_enum(vm, *m_realm, runtime_js_obj, "PlatformOs"sv, platform_os.span());
+        define_string_enum(vm, *m_realm, runtime_js_obj, "PlatformArch"sv, platform_arch.span());
+        define_string_enum(vm, *m_realm, runtime_js_obj, "OnInstalledReason"sv, installed_reasons.span());
+        define_string_enum(vm, *m_realm, runtime_js_obj, "OnRestartRequiredReason"sv, restart_reasons.span());
 
         static constexpr Array command_methods { "getAll"sv };
         auto commands = create_namespace_object("commands"sv, command_methods.span(), is_chrome);
@@ -981,7 +1179,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             root->define_direct_property("dns"_utf16_fly_string, create_namespace_object("dns"sv, dns_methods.span(), is_chrome), JS::default_attributes);
         }
 
-        if (manifest_has_permission(manifest, "declarativeNetRequest"sv)) {
+        if (manifest_has_permission(manifest, "declarativeNetRequest"sv) || manifest_has_permission(manifest, "declarativeNetRequestWithHostAccess"sv)) {
             static constexpr Array request_methods { "getEnabledRulesets"sv, "updateEnabledRulesets"sv, "getAvailableStaticRuleCount"sv,
                 "getDynamicRules"sv, "updateDynamicRules"sv, "getSessionRules"sv, "updateSessionRules"sv, "isRegexSupported"sv };
             auto declarative_api = create_namespace_object("declarativeNetRequest"sv, request_methods.span(), is_chrome);
@@ -1007,7 +1205,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         }
 
         // tabs
-        static constexpr Array tabs_methods { "query"sv, "get"sv, "create"sv, "update"sv, "reload"sv, "remove"sv, "sendMessage"sv, "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
+        static constexpr Array tabs_methods { "query"sv, "get"sv, "getCurrent"sv, "create"sv, "update"sv, "reload"sv, "remove"sv, "sendMessage"sv, "executeScript"sv, "insertCSS"sv, "removeCSS"sv };
         auto tabs_obj = create_namespace_object("tabs"sv, tabs_methods.span(), is_chrome);
         auto& tabs_js_obj = tabs_obj.as_object();
         tabs_js_obj.define_direct_property("TAB_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::Attribute::Enumerable);
@@ -1015,6 +1213,8 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         tabs_js_obj.define_direct_property("onActivated"_utf16_fly_string, create_event_object("tabs"sv, "onActivated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onCreated"_utf16_fly_string, create_event_object("tabs"sv, "onCreated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onRemoved"_utf16_fly_string, create_event_object("tabs"sv, "onRemoved"sv), JS::default_attributes);
+        // Ladyflock never swaps one tab's page for another's, as prerendering does, so onReplaced has nothing to report.
+        tabs_js_obj.define_direct_property("onReplaced"_utf16_fly_string, create_event_object("tabs"sv, "onReplaced"sv), JS::default_attributes);
         root->define_direct_property("tabs"_utf16_fly_string, tabs_obj, JS::default_attributes);
 
         if (manifest_has_permission(manifest, "webNavigation"sv)) {
@@ -1025,10 +1225,26 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             root->define_direct_property("webNavigation"_utf16_fly_string, navigation, JS::default_attributes);
         }
 
-        static constexpr Array window_methods { "getCurrent"sv };
+        static constexpr Array window_methods { "getCurrent"sv, "getLastFocused"sv, "get"sv, "getAll"sv };
         auto windows = create_namespace_object("windows"sv, window_methods.span(), is_chrome);
         windows.as_object().define_direct_property("onFocusChanged"_utf16_fly_string, create_event_object("windows"sv, "onFocusChanged"sv), JS::default_attributes);
         windows.as_object().define_direct_property("WINDOW_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::default_attributes);
+        windows.as_object().define_direct_property("WINDOW_ID_CURRENT"_utf16_fly_string, JS::Value(-2), JS::default_attributes);
+        static constexpr Array window_types { "normal"sv, "popup"sv, "panel"sv, "devtools"sv };
+        static constexpr Array window_states { "normal"sv, "minimized"sv, "maximized"sv, "fullscreen"sv, "docked"sv };
+        define_string_enum(vm, *m_realm, windows.as_object(), "WindowType"sv, window_types.span());
+        define_string_enum(vm, *m_realm, windows.as_object(), "WindowState"sv, window_states.span());
+
+        // management: an extension may always describe or remove itself; the rest needs the management permission.
+        static constexpr Array self_management_methods { "getSelf"sv, "uninstallSelf"sv };
+        static constexpr Array management_methods { "getSelf"sv, "uninstallSelf"sv, "getAll"sv, "get"sv };
+        bool can_manage = manifest_has_permission(manifest, "management"sv);
+        auto management = create_namespace_object("management"sv, can_manage ? management_methods.span() : self_management_methods.span(), is_chrome);
+        if (can_manage) {
+            for (auto event : Array { "onInstalled"sv, "onUninstalled"sv, "onEnabled"sv, "onDisabled"sv })
+                management.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("management"sv, event), JS::default_attributes);
+        }
+        root->define_direct_property("management"_utf16_fly_string, management, JS::default_attributes);
         root->define_direct_property("windows"_utf16_fly_string, windows, JS::default_attributes);
 
         // scripting
@@ -1088,6 +1304,15 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
     global.define_direct_property("chrome"_utf16_fly_string, build_root(true), JS::default_attributes);
 }
 
+// The browser sends an error as a JSON string; the extension sees its text, as Firefox gives it.
+static String api_error_message(StringView error_json)
+{
+    auto parsed = JsonValue::from_string(error_json);
+    if (!parsed.is_error() && parsed.value().is_string())
+        return parsed.value().as_string();
+    return MUST(String::from_utf8(error_json));
+}
+
 void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, StringView result_or_error_json)
 {
     auto pending = m_pending_calls.take(call_id);
@@ -1142,7 +1367,7 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
                 (void)JS::call(vm, *pending->callback, JS::js_undefined(), arg);
             }
         } else {
-            m_last_error = MUST(String::from_utf8(result_or_error_json));
+            m_last_error = api_error_message(result_or_error_json);
             (void)JS::call(vm, *pending->callback, JS::js_undefined());
             m_last_error = {};
         }
@@ -1152,7 +1377,7 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
     // menus.create returns its ID synchronously, with completion optionally delivered to a callback.
     if (pending->creates_menu) {
         if (!success) {
-            auto error = JS::Error::create(*m_realm, Utf16String::from_utf8(result_or_error_json));
+            auto error = JS::Error::create(*m_realm, Utf16String::from_utf8(api_error_message(result_or_error_json)));
             HTML::report_exception_to_console(error, *m_realm, HTML::ErrorInPromise::No);
         }
         return;
@@ -1162,7 +1387,7 @@ void ExtensionRealmContext::handle_api_response(u64 call_id, bool success, Strin
         auto val = decode_response();
         WebIDL::resolve_promise(*m_realm, *pending->promise, val);
     } else {
-        auto err = JS::Error::create(*m_realm, Utf16String::from_utf8(result_or_error_json));
+        auto err = JS::Error::create(*m_realm, Utf16String::from_utf8(api_error_message(result_or_error_json)));
         WebIDL::reject_promise(*m_realm, *pending->promise, err);
     }
 }
@@ -1192,6 +1417,33 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
         if (port_disconnect && runtime_port_id.has_value())
             forget_runtime_port(*runtime_port_id);
     };
+    // Each storage area's own onChanged hears the changes to that area, without the area's name.
+    if (event_key == "storage.onChanged"sv) {
+        auto arguments = JsonValue::from_string(args_json);
+        if (!arguments.is_error() && arguments.value().is_array() && arguments.value().as_array().size() == 2 && arguments.value().as_array().at(1).is_string()) {
+            auto area_key = MUST(String::formatted("storage.{}.onChanged", arguments.value().as_array().at(1).as_string()));
+            if (auto area_listeners = m_event_listeners.get(area_key); area_listeners.has_value() && !area_listeners->is_empty()) {
+                auto listeners = *area_listeners;
+                auto& vm = main_thread_vm();
+                HTML::TemporaryExecutionContext entry_context(*m_realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+                if (m_execution_context)
+                    vm.push_execution_context(*m_execution_context);
+                ScopeGuard pop_context = [&] {
+                    if (m_execution_context) {
+                        auto* popped = vm.pop_execution_context();
+                        VERIFY(popped == m_execution_context.ptr());
+                    }
+                };
+                auto changes = json_value_to_js_value(vm, *m_realm, arguments.value().as_array().at(0).serialized());
+                for (auto const& listener : listeners) {
+                    auto result = JS::call(vm, *listener.callback, JS::js_undefined(), changes);
+                    if (result.is_throw_completion())
+                        HTML::report_exception_to_console(result.release_error().value(), *m_realm, HTML::ErrorInPromise::No);
+                }
+            }
+        }
+    }
+
     auto it = m_event_listeners.find(event_key);
     if (it == m_event_listeners.end() || it->value.is_empty()) {
         if (reply_id.has_value())

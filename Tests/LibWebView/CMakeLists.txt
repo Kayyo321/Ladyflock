@@ -159,6 +159,7 @@ if (NOT WIN32)
         TestCompositorStartup.cpp
         TestCrashOverlay.cpp
         TestCrashReportSubmission.cpp
+        TestExtensionCompat.cpp
         TestExtensionCore.cpp
         TestExtensionInstaller.cpp
         TestExtensionPopupSizing.cpp

@@ -1,0 +1,512 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+// The APIs that the most-used Firefox extensions need beyond Ladyflock's first ones, each checked in a real browser
+// against what the extension's own code sees. None of them reaches the network.
+
+#include "HeadlessTest.h"
+#include <AK/JsonObject.h>
+#include <AK/LexicalPath.h>
+#include <LibCore/Directory.h>
+#include <LibCore/EventLoop.h>
+#include <LibCore/File.h>
+#include <LibCore/StandardPaths.h>
+#include <LibCore/Timer.h>
+#include <LibFileSystem/FileSystem.h>
+#include <LibHTTP/Cookie/ParsedCookie.h>
+#include <LibTest/TestCase.h>
+#include <LibURL/Parser.h>
+#include <LibWebView/Application.h>
+#include <LibWebView/BrowsingSession.h>
+#include <LibWebView/CookieJar.h>
+#include <LibWebView/Extensions/ExtensionManager.h>
+#include <LibWebView/Extensions/NativeMessaging.h>
+#include <LibWebView/NotificationManager.h>
+#include <LibWebView/RecordingNotificationBackend.h>
+#include <LibWebView/SystemIdle.h>
+
+namespace {
+
+class CompatTestApp : public Test::HeadlessApplication {
+    WEB_VIEW_APPLICATION(CompatTestApp)
+
+public:
+    explicit CompatTestApp(Optional<ByteString> ladybird_binary_path)
+        : Test::HeadlessApplication(move(ladybird_binary_path))
+    {
+    }
+
+    virtual void create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions& request_server_options, WebView::WebContentOptions&) override
+    {
+        browser_options.headless_mode = WebView::HeadlessMode::Test;
+        browser_options.disable_sql_database = WebView::DisableSQLDatabase::No;
+        browser_options.enable_extensions = true;
+        browser_options.enable_content_blocker = WebView::EnableContentBlocker::No;
+        request_server_options.http_disk_cache_mode = WebView::HTTPDiskCacheMode::Testing;
+    }
+};
+
+void write_file(ByteString const& dir, StringView rel, StringView content)
+{
+    auto path = LexicalPath::join(dir, rel).string();
+    MUST(Core::Directory::create(LexicalPath::dirname(path), Core::Directory::CreateDirectories::Yes));
+    auto file = MUST(Core::File::open(path, Core::File::OpenMode::Write));
+    MUST(file->write_until_depleted(content.bytes()));
+}
+
+// Waits for the extension's background page to store `done`, and returns what it stored.
+JsonObject wait_for_results(WebView::Extensions::ExtensionManager& manager, StringView extension_id, StringView key = "done"sv, int seconds = 10)
+{
+    bool expired = false;
+    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(seconds), [&] { expired = true; });
+    timer->start();
+    Core::EventLoop::current().spin_until([&] {
+        return expired || manager.storage().get(extension_id, JsonValue { MUST(String::from_utf8(key)) }).has(key);
+    });
+    timer->stop();
+    EXPECT(!expired);
+    auto results = manager.storage().get(extension_id, JsonValue {});
+    if (expired)
+        warnln("Extension stored: {}", results.serialized());
+    if (auto error = results.get_string("error"sv); error.has_value())
+        warnln("Extension reported: {}", *error);
+    return results;
+}
+
+void spin_until(Function<bool()> condition, int seconds = 10)
+{
+    bool expired = false;
+    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(seconds), [&] { expired = true; });
+    timer->start();
+    Core::EventLoop::current().spin_until([&] { return expired || condition(); });
+    timer->stop();
+    EXPECT(!expired);
+}
+
+}
+
+TEST_CASE(environment_apis_report_ladyflock_and_keep_sync_storage_on_this_device)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatEnvironment"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "environment"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Environment fixture", "version": "2.5",
+        "browser_specific_settings": {"gecko": {"id": "environment@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]},
+        "incognito": "not_allowed", "developer": {"name": "Fixture"}, "storage": {"managed_schema": "schema.json"},
+        "externally_connectable": {"matches": ["https://example.com/*"]}, "version_name": "2.5 beta",
+        "commands": {"toggle": {"suggested_key": {"default": "Ctrl+Shift+Y"}, "description": "Toggle"}}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        async function rejection(promise) {
+            try { await promise; return "resolved"; } catch (error) { return error.message; }
+        }
+        (async () => {
+            const results = {};
+            results.platform = await browser.runtime.getPlatformInfo();
+            results.browser = await browser.runtime.getBrowserInfo();
+            results.enums = [browser.runtime.PlatformOs.MAC, browser.runtime.PlatformArch.X86_64, browser.runtime.OnInstalledReason.INSTALL];
+            results.incognito = [browser.extension.inIncognitoContext, await browser.extension.isAllowedIncognitoAccess()];
+            results.extensionURL = browser.extension.getURL("page.html") === browser.runtime.getURL("page.html");
+
+            const areaChanges = [];
+            browser.storage.sync.onChanged.addListener(changes => areaChanges.push(Object.keys(changes)));
+            const allChanges = [];
+            browser.storage.onChanged.addListener((changes, area) => allChanges.push(area));
+            await browser.storage.sync.set({ theme: "dark" });
+            results.sync = await browser.storage.sync.get("theme");
+            results.syncKept = (await browser.storage.local.get("theme")).theme === undefined;
+            results.syncQuota = [browser.storage.sync.QUOTA_BYTES, browser.storage.sync.QUOTA_BYTES_PER_ITEM, browser.storage.sync.MAX_ITEMS];
+            results.syncItemLimit = await rejection(browser.storage.sync.set({ big: "x".repeat(9000) }));
+            results.managed = await rejection(browser.storage.managed.get());
+            await new Promise(resolve => setTimeout(resolve, 100));
+            results.areaChanges = areaChanges;
+            results.allChanges = allChanges;
+
+            const self = await browser.management.getSelf();
+            results.self = [self.id, self.name, self.version, self.installType, self.enabled];
+            results.currentTab = await browser.tabs.getCurrent();
+            results.windows = Array.isArray(await browser.windows.getAll());
+            results.commands = await browser.commands.getAll();
+            results.hasManagementList = typeof browser.management.getAll;
+            await browser.storage.local.set({ results, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    EXPECT_EQ(installed.compatibility_status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+    auto stored = wait_for_results(manager, installed.extension_id);
+    auto results = stored.get_object("results"sv);
+    EXPECT(results.has_value());
+    if (!results.has_value())
+        return;
+
+    auto platform = results->get_object("platform"sv).value();
+#if defined(AK_OS_MACOS)
+    EXPECT_EQ(platform.get_string("os"sv).value(), "mac"sv);
+#endif
+#if ARCH(AARCH64)
+    EXPECT_EQ(platform.get_string("arch"sv).value(), "aarch64"sv);
+#endif
+    auto browser_info = results->get_object("browser"sv).value();
+    EXPECT_EQ(browser_info.get_string("name"sv).value(), "Ladyflock"sv);
+    EXPECT_EQ(browser_info.get_string("vendor"sv).value(), "Ladyflock"sv);
+    EXPECT_EQ(browser_info.get_string("version"sv).value(), "156.0"sv);
+    EXPECT_EQ(results->get_array("enums"sv)->serialized(), R"(["mac","x86-64","install"])"sv);
+    EXPECT_EQ(results->get_array("incognito"sv)->serialized(), "[false,false]"sv);
+    EXPECT(results->get_bool("extensionURL"sv) == true);
+
+    EXPECT_EQ(results->get_object("sync"sv)->serialized(), R"({"theme":"dark"})"sv);
+    EXPECT(results->get_bool("syncKept"sv) == true);
+    EXPECT_EQ(results->get_array("syncQuota"sv)->serialized(), "[102400,8192,512]"sv);
+    EXPECT(results->get_string("syncItemLimit"sv)->contains("QuotaExceededError"sv));
+    EXPECT_EQ(results->get_string("managed"sv).value(), "Managed storage manifest not found"sv);
+    EXPECT_EQ(results->get_array("areaChanges"sv)->serialized(), R"([["theme"]])"sv);
+    EXPECT_EQ(results->get_array("allChanges"sv)->serialized(), R"(["sync"])"sv);
+    EXPECT_EQ(manager.sync_storage().get(installed.extension_id, JsonValue { "theme"_string }).get_string("theme"sv).value(), "dark"sv);
+
+    EXPECT_EQ(results->get_array("self"sv)->serialized(), R"(["environment@example.test","Environment fixture","2.5","development",true])"sv);
+    EXPECT(!results->has("currentTab"sv) || results->get("currentTab"sv)->is_null());
+    EXPECT(results->get_bool("windows"sv) == true);
+    EXPECT_EQ(results->get_array("commands"sv)->size(), 1u);
+    EXPECT_EQ(results->get_string("hasManagementList"sv).value(), "undefined"sv);
+
+    // Removing the extension removes what it kept in storage.sync.
+    TRY_OR_FAIL(manager.remove_extension(installed.extension_id));
+    EXPECT(manager.sync_storage().get(installed.extension_id, JsonValue {}).is_empty());
+}
+
+TEST_CASE(install_check_ignores_what_firefox_ignores_and_refuses_what_firefox_would_do)
+{
+    auto evaluate = [](StringView json) {
+        auto manifest = MUST(Web::Extensions::ExtensionManifest::parse(json));
+        return Web::Extensions::SupportMatrix::evaluate_manifest(manifest);
+    };
+    // Chrome's keys and permissions are ignored with a warning, as Firefox ignores them.
+    auto chrome_only = evaluate(R"({"manifest_version": 2, "name": "A", "version": "1",
+        "permissions": ["storage", "background", "offscreen"], "externally_connectable": {}, "key": "abc", "update_url": "https://example.com"})"sv);
+    EXPECT_EQ(chrome_only.status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+    EXPECT_EQ(chrome_only.warnings.size(), 5u);
+    EXPECT(chrome_only.unsupported_reasons.is_empty());
+
+    // A permission or key Firefox acts on, and Ladyflock doesn't implement, still refuses the install.
+    auto unsupported = evaluate(R"({"manifest_version": 2, "name": "A", "version": "1", "permissions": ["proxy"], "page_action": {}})"sv);
+    EXPECT_EQ(unsupported.status, Web::Extensions::CompatibilityStatus::Incompatible);
+    EXPECT_EQ(unsupported.unsupported_reasons.size(), 2u);
+
+    // The password managers' permissions are all implemented.
+    auto password_manager = evaluate(R"({"manifest_version": 3, "name": "A", "version": "1",
+        "permissions": ["alarms", "clipboardWrite", "clipboardRead", "contextMenus", "downloads", "idle", "management", "nativeMessaging",
+            "notifications", "privacy", "scripting", "storage", "tabs", "webNavigation", "webRequest", "webRequestBlocking",
+            "declarativeNetRequestWithHostAccess", "cookies"],
+        "background": {"scripts": ["bg.js"]},
+        "content_scripts": [{"matches": ["<all_urls>"], "js": ["a.js"], "world": "MAIN"}],
+        "commands": {"_execute_action": {"suggested_key": {"default": "Ctrl+Shift+X"}}}})"sv);
+    for (auto const& reason : password_manager.unsupported_reasons)
+        warnln("Unexpected refusal: {}", reason);
+    EXPECT_EQ(password_manager.status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+
+    // An unknown content script world is a manifest error, as in Firefox.
+    EXPECT(Web::Extensions::ExtensionManifest::parse(R"({"manifest_version": 2, "name": "A", "version": "1",
+        "content_scripts": [{"matches": ["<all_urls>"], "js": ["a.js"], "world": "USER_SCRIPT"}]})"sv)
+            .is_error());
+}
+
+TEST_CASE(notifications_reach_the_platform_and_report_clicks_and_dismissals)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatNotifications"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    WebView::NotificationManager::the().set_backend(make<WebView::RecordingNotificationBackend>());
+    auto& backend = *WebView::NotificationManager::the().backend().as_recording_backend();
+
+    auto directory = LexicalPath::join(env.directory(), "notifier"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Notifier", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "notifier@example.test"}},
+        "permissions": ["notifications", "storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        const events = [];
+        const record = async event => { events.push(event); await browser.storage.local.set({ events }); };
+        browser.notifications.onShown.addListener(id => record("shown:" + id));
+        browser.notifications.onClicked.addListener(id => record("clicked:" + id));
+        browser.notifications.onClosed.addListener((id, byUser) => record("closed:" + id + ":" + byUser));
+        (async () => {
+            const first = await browser.notifications.create("vault", { type: "basic", title: "Vault locked", message: "Unlock to fill" });
+            const second = await browser.notifications.create({ type: "basic", title: "Second", message: "Generated id" });
+            const all = await browser.notifications.getAll();
+            const cleared = await browser.notifications.clear(second);
+            const clearedAgain = await browser.notifications.clear(second);
+            const invalid = await browser.notifications.create({ type: "basic" }).then(() => "created", error => "rejected");
+            await browser.storage.local.set({ first, generated: second.length > 0, all: Object.keys(all).length, cleared, clearedAgain, invalid, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("first"sv).value(), "vault"sv);
+    EXPECT(results.get_bool("generated"sv) == true);
+    EXPECT_EQ(results.get_u32("all"sv).value(), 2u);
+    EXPECT(results.get_bool("cleared"sv) == true);
+    EXPECT(results.get_bool("clearedAgain"sv) == false);
+    EXPECT_EQ(results.get_string("invalid"sv).value(), "rejected"sv);
+
+    // The platform shows it under the extension's name, and the user's click and the close that follows reach it.
+    auto shown = backend.shown().first_matching([](auto const& notification) { return notification.data.title == "Vault locked"_utf16; });
+    EXPECT(shown.has_value());
+    if (!shown.has_value())
+        return;
+    EXPECT_EQ(shown->attribution, "Notifier"sv);
+    EXPECT_EQ(shown->data.body, "Unlock to fill"_utf16);
+    backend.click(shown->id);
+    auto events_of = [&] { return manager.storage().get(installed.extension_id, JsonValue { "events"_string }).get_array("events"sv).value_or({}).serialized(); };
+    spin_until([&] { return events_of().contains("closed:vault:true"sv); });
+    EXPECT(events_of().contains("shown:vault"sv));
+    EXPECT(events_of().contains("clicked:vault"sv));
+}
+
+TEST_CASE(idle_reports_the_system_state_and_its_changes)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatIdle"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    WebView::set_system_idle_status_for_testing(WebView::SystemIdleStatus { .idle_time = AK::Duration::from_seconds(120), .locked = false });
+    ScopeGuard restore = [] { WebView::set_system_idle_status_for_testing({}); };
+
+    auto directory = LexicalPath::join(env.directory(), "idle"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Idle", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "idle@example.test"}},
+        "permissions": ["idle", "storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        browser.idle.onStateChanged.addListener(state => browser.storage.local.set({ changed: state }));
+        (async () => {
+            const short = await browser.idle.queryState(60);
+            const long = await browser.idle.queryState(300);
+            const clamped = await browser.idle.queryState(1);
+            await browser.idle.setDetectionInterval(60);
+            await browser.storage.local.set({ short, long, clamped, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("short"sv).value(), "idle"sv);
+    EXPECT_EQ(results.get_string("long"sv).value(), "active"sv);
+    EXPECT_EQ(results.get_string("clamped"sv).value(), "idle"sv);
+
+    // The first check only learns the state; a change after it is reported.
+    manager.poll_idle_state();
+    WebView::set_system_idle_status_for_testing(WebView::SystemIdleStatus { .idle_time = AK::Duration::from_seconds(1), .locked = true });
+    manager.poll_idle_state();
+    auto changed = wait_for_results(manager, installed.extension_id, "changed"sv);
+    EXPECT_EQ(changed.get_string("changed"sv).value(), "locked"sv);
+}
+
+TEST_CASE(native_messaging_without_a_host_fails_as_in_firefox)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatNative"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    auto hosts = LexicalPath::join(env.directory(), "hosts"sv).string();
+    WebView::Extensions::NativeMessaging::set_manifest_directories_for_testing(Vector<ByteString> { hosts });
+    ScopeGuard restore = [] { WebView::Extensions::NativeMessaging::set_manifest_directories_for_testing({}); };
+    write_file(hosts, "com.example.other.json"sv, R"({"name": "com.example.other", "description": "", "path": "/bin/false", "type": "stdio", "allowed_extensions": ["someone@example.test"]})"sv);
+    write_file(hosts, "com.example.allowed.json"sv, R"({"name": "com.example.allowed", "description": "", "path": "/bin/false", "type": "stdio", "allowed_extensions": ["native@example.test"]})"sv);
+
+    auto directory = LexicalPath::join(env.directory(), "native"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Native", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "native@example.test"}},
+        "permissions": ["nativeMessaging", "storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        function disconnection(name) {
+            return new Promise(resolve => {
+                const port = browser.runtime.connectNative(name);
+                port.onDisconnect.addListener(p => resolve(p.error ? p.error.message : "no error"));
+            });
+        }
+        async function rejection(name) {
+            try { await browser.runtime.sendNativeMessage(name, { ping: 1 }); return "resolved"; } catch (error) { return error.message; }
+        }
+        (async () => {
+            await browser.storage.local.set({
+                missing: await disconnection("com.example.missing"),
+                notAllowed: await disconnection("com.example.other"),
+                allowed: await disconnection("com.example.allowed"),
+                message: await rejection("com.example.missing"),
+                done: true,
+            });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("missing"sv).value(), "No such native application com.example.missing"sv);
+    EXPECT_EQ(results.get_string("notAllowed"sv).value(), "No such native application com.example.other"sv);
+    EXPECT_EQ(results.get_string("allowed"sv).value(), "Ladyflock does not start native applications such as com.example.allowed"sv);
+    EXPECT_EQ(results.get_string("message"sv).value(), "No such native application com.example.missing"sv);
+}
+
+TEST_CASE(cookies_api_reaches_only_the_hosts_the_extension_may_access)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatCookies"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    auto& jar = *app->default_session().cookie_jar;
+    auto other = URL::Parser::basic_parse("http://other.example/"sv).release_value();
+    jar.set_cookie(other, HTTP::Cookie::parse_cookie(other, "hidden=1"sv).release_value(), HTTP::Cookie::Source::Http, {}, HTTP::Cookie::SameSiteContext::same_site());
+
+    auto directory = LexicalPath::join(env.directory(), "cookies"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Cookies", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "cookies@example.test"}},
+        "permissions": ["cookies", "storage", "http://site.example/*"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        const changes = [];
+        browser.cookies.onChanged.addListener(change => changes.push(change.cookie.name + ":" + change.removed));
+        async function rejection(promise) {
+            try { await promise; return "resolved"; } catch (error) { return "rejected"; }
+        }
+        (async () => {
+            const set = await browser.cookies.set({ url: "http://site.example/app", name: "session", value: "abc", expirationDate: 4102444800 });
+            const got = await browser.cookies.get({ url: "http://site.example/app/page", name: "session" });
+            const all = await browser.cookies.getAll({});
+            const domain = await browser.cookies.getAll({ domain: "site.example" });
+            const deniedSet = await rejection(browser.cookies.set({ url: "http://other.example/", name: "x", value: "y" }));
+            const deniedGet = await rejection(browser.cookies.get({ url: "http://other.example/", name: "hidden" }));
+            const stores = await browser.cookies.getAllCookieStores();
+            const removed = await browser.cookies.remove({ url: "http://site.example/app", name: "session" });
+            const after = await browser.cookies.get({ url: "http://site.example/app", name: "session" });
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await browser.storage.local.set({
+                set: [set.name, set.value, set.domain, set.hostOnly, set.path, set.session, set.storeId],
+                got: got && got.value, all: all.map(c => c.name), domain: domain.length, deniedSet, deniedGet,
+                stores: stores.map(s => s.id), removed: removed && removed.name, after, changes, done: true,
+            });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_array("set"sv)->serialized(), R"(["session","abc","site.example",true,"/",false,"firefox-default"])"sv);
+    EXPECT_EQ(results.get_string("got"sv).value(), "abc"sv);
+    EXPECT_EQ(results.get_array("all"sv)->serialized(), R"(["session"])"sv);
+    EXPECT_EQ(results.get_u32("domain"sv).value(), 1u);
+    EXPECT_EQ(results.get_string("deniedSet"sv).value(), "rejected"sv);
+    EXPECT_EQ(results.get_string("deniedGet"sv).value(), "rejected"sv);
+    EXPECT_EQ(results.get_array("stores"sv)->serialized(), R"(["firefox-default"])"sv);
+    EXPECT_EQ(results.get_string("removed"sv).value(), "session"sv);
+    EXPECT(!results.has("after"sv) || results.get("after"sv)->is_null());
+    EXPECT_EQ(results.get_array("changes"sv)->serialized(), R"(["session:false","session:true"])"sv);
+
+    // The cookie the extension may not see is untouched, and the one it removed is gone from the jar.
+    EXPECT(jar.get_named_cookie(other, "hidden"sv).has_value());
+    EXPECT(!jar.get_named_cookie(URL::Parser::basic_parse("http://site.example/app"sv).release_value(), "session"sv).has_value());
+}
+
+TEST_CASE(downloads_save_into_the_downloads_folder_and_report_their_progress)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatDownloads"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    auto downloads = Core::StandardPaths::downloads_directory();
+    EXPECT(downloads.starts_with(env.directory()));
+
+    auto directory = LexicalPath::join(env.directory(), "exporter"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Exporter", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "exporter@example.test"}},
+        "permissions": ["downloads", "storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        const events = [];
+        browser.downloads.onCreated.addListener(item => events.push("created:" + item.state));
+        browser.downloads.onChanged.addListener(delta => { if (delta.state) events.push("state:" + delta.state.current); });
+        async function rejection(promise) {
+            try { await promise; return "resolved"; } catch (error) { return "rejected"; }
+        }
+        (async () => {
+            const url = URL.createObjectURL(new Blob(["exported vault"], { type: "text/plain" }));
+            const id = await browser.downloads.download({ url, filename: "exports/vault.txt" });
+            const again = await browser.downloads.download({ url, filename: "exports/vault.txt" });
+            const escape = await rejection(browser.downloads.download({ url, filename: "../outside.txt" }));
+            const foreign = await rejection(browser.downloads.download({ url: "blob:https://example.com/abc" }));
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const [item] = await browser.downloads.search({ id });
+            const [second] = await browser.downloads.search({ id: again });
+            await browser.storage.local.set({
+                state: item.state, name: item.filename.split("/").slice(-2).join("/"), second: second.filename.split("/").pop(),
+                byExtension: item.byExtensionId, bytes: item.bytesReceived, escape, foreign, events, done: true,
+            });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("state"sv).value(), "complete"sv);
+    EXPECT_EQ(results.get_string("name"sv).value(), "exports/vault.txt"sv);
+    EXPECT_EQ(results.get_string("second"sv).value(), "vault(1).txt"sv);
+    EXPECT_EQ(results.get_string("byExtension"sv).value(), "exporter@example.test"sv);
+    EXPECT_EQ(results.get_u32("bytes"sv).value(), 14u);
+    EXPECT_EQ(results.get_string("escape"sv).value(), "rejected"sv);
+    EXPECT_EQ(results.get_string("foreign"sv).value(), "rejected"sv);
+    EXPECT(results.get_array("events"sv)->serialized().contains("created:"sv));
+    EXPECT(results.get_array("events"sv)->serialized().contains("state:complete"sv));
+
+    auto saved = LexicalPath::join(downloads, "exports/vault.txt"sv).string();
+    auto file = TRY_OR_FAIL(Core::File::open(saved, Core::File::OpenMode::Read));
+    auto contents = TRY_OR_FAIL(file->read_until_eof());
+    EXPECT_EQ(StringView { contents.bytes() }, "exported vault"sv);
+    EXPECT(!FileSystem::exists(LexicalPath::join(env.directory(), "outside.txt"sv).string()));
+}
+
+// A password manager copies a password from its background page, with no click to grant it, and later reads the
+// clipboard to clear it only if it still holds that password. Firefox allows both under clipboardWrite and clipboardRead.
+TEST_CASE(clipboard_permissions_let_extension_pages_use_the_clipboard_without_a_gesture)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatClipboard"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+    app->set_clipboard_text("user's own text"_string);
+
+    auto install = [&](StringView name, StringView permissions) {
+        auto directory = LexicalPath::join(env.directory(), name).string();
+        write_file(directory, "manifest.json"sv, MUST(String::formatted(R"({{
+            "manifest_version": 2, "name": "{}", "version": "1",
+            "browser_specific_settings": {{"gecko": {{"id": "{}@example.test"}}}},
+            "permissions": [{}], "background": {{"scripts": ["background.js"]}}
+        }})",
+                                                     name, name, permissions)));
+        write_file(directory, "background.js"sv, R"(
+            async function attempt(promise) {
+                try { return await promise; } catch (error) { return "denied"; }
+            }
+            (async () => {
+                const before = await attempt(navigator.clipboard.readText());
+                const write = await attempt(navigator.clipboard.writeText("copied password").then(() => "written"));
+                const after = await attempt(navigator.clipboard.readText());
+                await browser.storage.local.set({ before, write, after, done: true });
+            })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+        )"sv);
+        return MUST(manager.load_unpacked(directory)).extension_id;
+    };
+
+    auto unprivileged = install("unprivileged"sv, R"("storage")"sv);
+    auto plain = wait_for_results(manager, unprivileged);
+    EXPECT_EQ(plain.get_string("before"sv).value(), "denied"sv);
+    EXPECT_EQ(plain.get_string("write"sv).value(), "denied"sv);
+    EXPECT_EQ(app->clipboard_text(), "user's own text"_utf16);
+
+    auto privileged = install("privileged"sv, R"("storage", "clipboardWrite", "clipboardRead")"sv);
+    auto granted = wait_for_results(manager, privileged);
+    EXPECT_EQ(granted.get_string("before"sv).value(), "user's own text"sv);
+    EXPECT_EQ(granted.get_string("write"sv).value(), "written"sv);
+    EXPECT_EQ(granted.get_string("after"sv).value(), "copied password"sv);
+    EXPECT_EQ(app->clipboard_text(), "copied password"_utf16);
+}

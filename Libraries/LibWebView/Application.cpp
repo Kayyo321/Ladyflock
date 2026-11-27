@@ -33,6 +33,7 @@
 #include <LibHTTP/Cookie/IncludeCredentials.h>
 #include <LibHTTP/HeaderList.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibPrivacy/Storage/PartitionKey.h>
 #include <LibRequests/NetworkError.h>
 #include <LibRequests/Request.h>
 #include <LibRequests/RequestClient.h>
@@ -61,6 +62,7 @@
 #include <LibWebView/HSTSStore.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/HelperProcess.h>
+#include <LibWebView/IdentityManager.h>
 #include <LibWebView/ImageDecoderManager.h>
 #include <LibWebView/NoOpDefaultBrowser.h>
 #include <LibWebView/NoOpMicrophoneAuthorizer.h>
@@ -75,8 +77,6 @@
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/SiteCompatibility.h>
 #include <LibWebView/SpellChecker.h>
-#include <LibPrivacy/Storage/PartitionKey.h>
-#include <LibWebView/IdentityManager.h>
 #include <LibWebView/StorageAreaRegistry.h>
 #include <LibWebView/SystemProbeClient.h>
 #include <LibWebView/TabDiscarder.h>
@@ -2145,6 +2145,12 @@ ErrorOr<void> Application::launch_services()
         m_download_store = DownloadStore::create_disabled();
         m_default_session->extension_manager = TRY(Extensions::ExtensionManager::create(profile().paths().data, nullptr));
     }
+
+    // Extensions with the cookies permission hear of changes to the cookies of the profile they run in.
+    m_default_session->cookie_jar->on_cookie_changed = [manager = m_default_session->extension_manager->make_weak_ptr<Extensions::ExtensionManager>()](HTTP::Cookie::Cookie const& cookie, bool removed) {
+        if (auto* extension_manager = manager.ptr())
+            extension_manager->cookie_changed(cookie, removed);
+    };
 
     m_default_session->blob_url_store = make<BlobURLStore>();
     m_identity_manager->register_default_session(*m_default_session, move(browsing_database));

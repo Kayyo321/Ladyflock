@@ -409,9 +409,10 @@ TEST_CASE(support_matrix_classification)
     EXPECT_EQ(eval_bad.status, Web::Extensions::CompatibilityStatus::Incompatible);
     EXPECT(eval_bad.unsupported_reasons.size() >= 2);
 
-    auto unsupported_options = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
+    // A module background and a content script in the page's own world both run, as in Firefox.
+    auto execution_options = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
         "manifest_version": 3,
-        "name": "Unsupported execution settings",
+        "name": "Execution settings",
         "version": "1",
         "background": { "scripts": ["background.js"], "type": "module" },
         "content_scripts": [{
@@ -421,12 +422,12 @@ TEST_CASE(support_matrix_classification)
             "match_about_blank": true
         }]
     })"sv));
-    auto eval_options = Web::Extensions::SupportMatrix::evaluate_manifest(unsupported_options);
-    EXPECT_EQ(eval_options.status, Web::Extensions::CompatibilityStatus::Incompatible);
-    EXPECT_EQ(eval_options.unsupported_reasons.size(), 1u);
-    EXPECT(eval_options.unsupported_reasons.first().contains("content_scripts.world"sv));
-    EXPECT(unsupported_options.background()->is_module);
-    EXPECT(unsupported_options.content_scripts().first().match_about_blank);
+    auto eval_options = Web::Extensions::SupportMatrix::evaluate_manifest(execution_options);
+    EXPECT_EQ(eval_options.status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+    EXPECT(eval_options.unsupported_reasons.is_empty());
+    EXPECT(execution_options.background()->is_module);
+    EXPECT(execution_options.content_scripts().first().match_about_blank);
+    EXPECT(execution_options.content_scripts().first().main_world);
 
     auto unbound_commands = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
         "manifest_version": 3, "name": "Commands", "version": "1",
@@ -437,7 +438,9 @@ TEST_CASE(support_matrix_classification)
         "manifest_version": 3, "name": "Commands", "version": "1",
         "commands": { "bound": { "suggested_key": { "default": "Ctrl+Shift+Y" } } }
     })"sv));
-    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(bound_commands).status, Web::Extensions::CompatibilityStatus::Incompatible);
+    // A suggested shortcut is accepted. Ladyflock binds no shortcut yet, so commands.getAll reports none, as Firefox
+    // does for a command without one.
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(bound_commands).status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
 }
 
 TEST_CASE(zip_reader_hardening)

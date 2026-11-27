@@ -117,6 +117,44 @@ void NotificationManager::show(WebContentPage& page, u64 page_notification_id, W
     });
 }
 
+u64 NotificationManager::show_for_extension(String attribution, Web::NotificationsAPI::NotificationData data, ExtensionHandlers handlers)
+{
+    // An opaque origin is the same as no other, so an extension's notifications never replace or crowd out a site's.
+    Record record {
+        .id = m_next_id++,
+        .page = nullptr,
+        .page_id = {},
+        .page_notification_id = 0,
+        .document_id = {},
+        .origin = URL::Origin::create_opaque(),
+        .origin_url = {},
+        .traversable = {},
+        .tag = {},
+        .is_private = IsPrivate::No,
+        .extension_handlers = make<ExtensionHandlers>(move(handlers)),
+    };
+    auto id = record.id;
+    m_records.append(move(record));
+    backend().show(PlatformNotification {
+        .id = id,
+        .page_id = {},
+        .replaces = {},
+        .data = move(data),
+        .attribution = move(attribution),
+        .icon = nullptr,
+    });
+    return id;
+}
+
+void NotificationManager::close_for_extension(u64 id)
+{
+    auto index = index_of(id);
+    if (!index.has_value() || !m_records[*index].extension_handlers)
+        return;
+    m_records.remove(*index);
+    backend().close(id);
+}
+
 void NotificationManager::close(WebContentPage& page, u64 page_notification_id)
 {
     if (auto index = index_of(page, page_notification_id); index.has_value())
@@ -215,6 +253,11 @@ void NotificationManager::close_record_from_browser(size_t index)
 
 void NotificationManager::report_closed(Record const& record, bool by_user)
 {
+    if (record.extension_handlers) {
+        if (record.extension_handlers->on_closed)
+            record.extension_handlers->on_closed(by_user);
+        return;
+    }
     if (record.page && record.page->is_open())
         record.page->async_notification_closed(record.page_notification_id, by_user);
 }
@@ -225,6 +268,11 @@ void NotificationManager::backend_did_show(u64 id)
     if (!index.has_value())
         return;
     auto const& record = m_records[*index];
+    if (record.extension_handlers) {
+        if (record.extension_handlers->on_shown)
+            record.extension_handlers->on_shown();
+        return;
+    }
     if (record.page && record.page->is_open())
         record.page->async_notification_shown(record.page_notification_id);
 }
@@ -235,6 +283,10 @@ void NotificationManager::backend_did_fail(u64 id)
     if (!index.has_value())
         return;
     auto record = m_records.take(*index);
+    if (record.extension_handlers) {
+        report_closed(record, false);
+        return;
+    }
     if (record.page && record.page->is_open())
         record.page->async_notification_show_failed(record.page_notification_id);
 }
@@ -245,6 +297,12 @@ void NotificationManager::backend_did_click(u64 id)
     if (!index.has_value())
         return;
     auto const& record = m_records[*index];
+    // The platform takes the notification down after a click and reports that as the user's close.
+    if (record.extension_handlers) {
+        if (record.extension_handlers->on_clicked)
+            record.extension_handlers->on_clicked();
+        return;
+    }
     if (record.page && record.page->is_open()) {
         // The click is the user's, so the page may open a window from its handler: The UI process checks the
         // activation it granted, not the one the renderer reports.

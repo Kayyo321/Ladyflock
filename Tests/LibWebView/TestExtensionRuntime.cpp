@@ -283,9 +283,9 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
         target_titles.clear();
         target.load_from_browser_ui(url);
         if (!wait_for_page("complete navigation with no matching extension"sv, [&] {
-            auto const& document = target.traversable().active_document();
-            return document.creation_url() == url && document.is_completely_loaded();
-        }))
+                auto const& document = target.traversable().active_document();
+                return document.creation_url() == url && document.is_completely_loaded();
+            }))
             return;
 
         // Probe after document_idle so an early load notification cannot conceal an injection.
@@ -296,9 +296,9 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
                 : injected ? 'UNEXPECTED EXTENSION' : 'NO EXTENSION';
         )"_string);
         if (wait_for_page("extension DOM probe"sv, [&] {
-            return target_titles.contains_slow("NO EXTENSION"_utf16) || target_titles.contains_slow("UNEXPECTED EXTENSION"_utf16)
-                || target_titles.contains_slow("MISSING FIXTURE"_utf16);
-        }))
+                return target_titles.contains_slow("NO EXTENSION"_utf16) || target_titles.contains_slow("UNEXPECTED EXTENSION"_utf16)
+                    || target_titles.contains_slow("MISSING FIXTURE"_utf16);
+            }))
             EXPECT(target_titles.contains_slow("NO EXTENSION"_utf16));
     };
 
@@ -307,15 +307,14 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
     titles.clear();
     view->load_from_browser_ui(url_a);
     if (!wait_for_page("isolated script message"sv, [&] {
-        return loads > prev_loads && (titles.contains_slow("CLONED:ISOLATED"_utf16) || titles.contains_slow("CLONED:LEAKED"_utf16)
-            || titles.contains_slow("MESSAGE:BAD"_utf16) || titles.contains_slow("MESSAGE:ERROR"_utf16));
-    }))
+            return loads > prev_loads && (titles.contains_slow("CLONED:ISOLATED"_utf16) || titles.contains_slow("CLONED:LEAKED"_utf16) || titles.contains_slow("MESSAGE:BAD"_utf16) || titles.contains_slow("MESSAGE:ERROR"_utf16));
+        }))
         return;
     EXPECT(titles.contains_slow("CLONED:ISOLATED"_utf16));
     view->run_javascript("document.title = 'CSS:' + getComputedStyle(document.body).backgroundColor + ':PAGE:' + window.pageGlobal;"_string);
     if (!wait_for_page("injected CSS"sv, [&] {
-        return titles.contains_slow("CSS:rgb(12, 34, 56):PAGE:secret"_utf16);
-    }))
+            return titles.contains_slow("CSS:rgb(12, 34, 56):PAGE:secret"_utf16);
+        }))
         return;
 
     auto child_url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/child-documents", server.port()))).release_value();
@@ -937,7 +936,6 @@ TEST_CASE(web_navigation_reports_active_child_frames_and_document_replacement)
     EXPECT_EQ(target->get_string("url"sv), url.serialize());
     view->load_from_browser_ui(URL::Parser::basic_parse("http://127.0.0.1:1/error"sv).release_value());
     Core::EventLoop::current().spin_until([&] { return state().has("failed"sv); });
-
 }
 
 TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
@@ -1553,4 +1551,70 @@ TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
     // The extension's own page, framed by the turned-off site, runs its script.
     view->load_from_browser_ui(URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/framing", server.port()))).release_value());
     EXPECT(wait([&] { return extension_frame_ran.load(); }));
+}
+
+// Content scripts read their extension's manifest and messages, as in Firefox, and a script declared for the page's
+// own world runs there, where the page sees what it defines and it sees no extension APIs.
+TEST_CASE(content_scripts_read_their_manifest_and_messages_and_main_world_scripts_run_in_the_page)
+{
+    Test::HeadlessTestEnvironment env { "TestExtContentMetadata"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+        return { .body = "<!DOCTYPE html><title>Page</title><script>window.seenEarly = String(window.fromMainWorld);</script><p id='msg'>Page</p>" };
+    });
+
+    auto directory = LexicalPath::join(env.directory(), "metadata-ext"sv).string();
+    write_ext_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "__MSG_extensionName__", "version": "3.1.4", "default_locale": "en",
+        "browser_specific_settings": { "gecko": { "id": "metadata@ladyflock.example" } },
+        "content_scripts": [
+            { "matches": ["http://127.0.0.1/*"], "js": ["main.js"], "world": "MAIN", "run_at": "document_start" },
+            { "matches": ["http://127.0.0.1/*"], "js": ["isolated.js"], "run_at": "document_idle" }
+        ]
+    })"sv);
+    write_ext_file(directory, "_locales/en/messages.json"sv, R"({
+        "extensionName": { "message": "Metadata Fixture" },
+        "greeting": { "message": "Hello $1", "placeholders": {} }
+    })"sv);
+    write_ext_file(directory, "main.js"sv, R"(
+        window.fromMainWorld = typeof browser === "undefined" && typeof chrome === "undefined" ? "no-apis" : "apis-leaked";
+    )"sv);
+    write_ext_file(directory, "isolated.js"sv, R"(
+        const manifest = browser.runtime.getManifest();
+        document.documentElement.dataset.metadata = [manifest.version, browser.i18n.getMessage("greeting", ["there"]),
+            browser.i18n.getUILanguage().length > 0, browser.extension.inIncognitoContext, typeof window.fromMainWorld].join("|");
+    )"sv);
+
+    auto& manager = *app->default_session().extension_manager;
+    (void)TRY_OR_FAIL(manager.load_unpacked(directory, true));
+
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    Vector<Utf16String> titles;
+    view->on_title_change = [&](auto const& title) { titles.append(title); };
+    bool expired = false;
+    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [&] { expired = true; });
+    timeout->start();
+    auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/page", server.port()))).release_value();
+    view->load_from_browser_ui(url);
+    Core::EventLoop::current().spin_until([&] {
+        auto const& document = view->traversable().active_document();
+        return expired || (document.creation_url() == url && document.is_completely_loaded());
+    });
+    view->run_javascript(R"(
+        const timer = setInterval(() => {
+            const metadata = document.documentElement.dataset.metadata;
+            if (!metadata)
+                return;
+            clearInterval(timer);
+            document.title = metadata + "|" + window.fromMainWorld + "|" + window.seenEarly;
+        }, 20);
+    )"_string);
+    Core::EventLoop::current().spin_until([&] { return expired || any_of(titles, [](auto const& title) { return title.contains("|"sv); }); });
+    timeout->stop();
+    EXPECT(!expired);
+    // The isolated script can't see the page's globals, which the main-world script set before the page's own script ran.
+    EXPECT(titles.contains_slow("3.1.4|Hello there|true|false|undefined|no-apis|no-apis"_utf16));
+    if (!titles.is_empty())
+        warnln("Last title: {}", titles.last());
 }
