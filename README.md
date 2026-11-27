@@ -16,6 +16,8 @@ The Add-ons page lists supported manifest keys, permissions, and APIs. The **Tes
 
 To repeat the live check with a built browser, run `python3 Tests/LibWebView/test-amo-ublock.py /path/to/Ladybird`. It uses separate disposable profiles and a loopback HTTP server.
 
+[Firefox Extension Compatibility](Documentation/Extensions/Compatibility.md) covers the rest. It explains how the install check follows Firefox's rules, what each API does here, and its limits. It also has the results of checking and starting the 100 most-used extensions on Mozilla Add-ons, with the gaps that remain.
+
 ## Build from source
 
 Follow the [inherited build instructions](Documentation/BuildInstructionsLadybird.md). They still refer to Ladybird. See [Documentation](Documentation/) for the upstream engine and browser architecture.
