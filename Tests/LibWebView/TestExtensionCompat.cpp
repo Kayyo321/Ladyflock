@@ -660,6 +660,10 @@ TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
                 await browser.runtime.sendMessage('ping'),
                 await browser.runtime.sendMessage(id, 'ping'),
                 await browser.runtime.sendMessage({ ping: true }, {}),
+                // As in Firefox, a string and valid or nullish options are a message, not an extension ID.
+                await browser.runtime.sendMessage('ping', {}),
+                await browser.runtime.sendMessage('ping', undefined),
+                await browser.runtime.sendMessage('ping', null),
                 await browser.runtime.sendMessage(id, 'ping', {}),
                 await new Promise(resolve => browser.runtime.sendMessage('ping', resolve)),
             ].join(',');
@@ -670,10 +674,22 @@ TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
     bool started = false;
     manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
     spin_until([&] { return started; });
+    // The background page's console says its onBeforeSendHeaders listener can't change headers.
+    bool warned = false;
+    auto* background = manager.background_view_for_testing(installed.extension_id);
+    VERIFY(background);
+    background->on_console_message = [&](WebView::ConsoleOutput output) {
+        if (auto const* log = output.output.get_pointer<WebView::ConsoleLog>(); log && log->level == JS::ConsoleLogLevel::Warn
+            && any_of(log->arguments, [](auto const& argument) { return argument.is_string() && argument.as_string().contains("can't change the headers"sv); }))
+            warned = true;
+    };
+    background->start_sending_console_output(true, true);
 
     app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/page", server.port())).release_value(), WebView::IsPrivate::No);
     auto results = wait_for_results(manager, installed.extension_id);
-    EXPECT_EQ(results.get_string("forms"sv).value_or({}), "pong,pong,pong,pong,pong"sv);
+    spin_until([&] { return warned; });
+    background->on_console_message = nullptr;
+    EXPECT_EQ(results.get_string("forms"sv).value_or({}), "pong,pong,pong,pong,pong,pong,pong,pong"sv);
     EXPECT_EQ(results.get_string("top"sv).value_or({}), "from-content"sv);
     EXPECT_EQ(results.get_string("plain"sv).value_or({}), "from-content"sv);
     EXPECT_EQ(results.get_string("missingFrame"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
@@ -693,13 +709,26 @@ TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
         return ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.length(), body);
     };
     static Atomic<size_t> preflights { 0 };
+    static Atomic<bool> default_sent_cookie { false };
+    static Atomic<bool> include_sent_cookie { false };
+    static Atomic<u16> other_port { 0 };
     Server api(Server::Protocol::HTTP, Server::Family::IPv4, [&](ByteString const& request_head) {
         if (request_head.starts_with("OPTIONS "sv))
             preflights.fetch_add(1);
+        bool has_cookie = request_head.contains("\r\nCookie: visited=1"sv, CaseSensitivity::CaseInsensitive);
+        if (request_head.starts_with("GET /set-cookie "sv))
+            return ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: visited=1; Path=/\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        if (request_head.starts_with("GET /default "sv) && has_cookie)
+            default_sent_cookie = true;
+        if (request_head.starts_with("GET /include "sv) && has_cookie)
+            include_sent_cookie = true;
+        if (request_head.starts_with("GET /redirect "sv))
+            return ByteString::formatted("HTTP/1.1 302 Found\r\nLocation: http://[::1]:{}/data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", other_port.load());
         return respond("secret"sv);
     });
     auto api_url = ByteString::formatted("http://127.0.0.1:{}/data", api.port());
     Server other(Server::Protocol::HTTP, Server::Family::IPv6, [&](ByteString const&) { return respond("secret"sv); });
+    other_port = other.port();
     auto page_script = ByteString::formatted("<!DOCTYPE html><script>fetch('{}').then(r => r.text(), () => 'blocked').then(t => {{ document.title = 'page:' + t; }});</script>", api_url);
     Server site(Server::Protocol::HTTP, Server::Family::IPv4, [&](ByteString const&) { return respond(page_script); });
 
@@ -716,7 +745,9 @@ TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
             const allowed = await read(api);
             const unsafe = await read(api, { method: 'PUT', headers: { 'X-Custom': '1' } });
             const unpermitted = await read(other);
-            await browser.storage.local.set({ allowed, unsafe, unpermitted, done: true });
+            // A permitted host's redirect to one the extension may not access is not readable.
+            const redirected = await read(api.replace('/data', '/redirect'));
+            await browser.storage.local.set({ allowed, unsafe, unpermitted, redirected, done: true });
             // Keeps reading until the user withdraws the access.
             const timer = setInterval(async () => {
                 if (await read(api) === 'blocked') {
@@ -727,7 +758,8 @@ TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
         })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
     )"sv);
     write_file(directory, "content.js"sv, ByteString::formatted(R"(
-        fetch('{}').then(response => response.text(), () => 'blocked').then(content => browser.runtime.sendMessage({{ content }}));
+        if (location.pathname === '/page')
+            fetch('{}').then(response => response.text(), () => 'blocked').then(content => browser.runtime.sendMessage({{ content }}));
     )",
                                               api_url));
     // The background page gets the servers' addresses from urls.js.
@@ -747,7 +779,23 @@ TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
     EXPECT_EQ(results.get_string("allowed"sv).value_or({}), "secret"sv);
     EXPECT_EQ(results.get_string("unsafe"sv).value_or({}), "secret"sv);
     EXPECT_EQ(results.get_string("unpermitted"sv).value_or({}), "blocked"sv);
+    EXPECT_EQ(results.get_string("redirected"sv).value_or({}), "blocked"sv);
     EXPECT_EQ(preflights.load(), 0u);
+
+    // The site's cookie doesn't go with the extension's read by default. Even with credentials: 'include', the
+    // request is third-party to the site, so Ladyflock sends no cookie.
+    app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/set-cookie", api.port())).release_value(), WebView::IsPrivate::No);
+    spin_until([&] { return app->default_session().cookie_jar->get_all_cookies().size() > 0; });
+    auto* background = manager.background_view_for_testing(installed.extension_id);
+    VERIFY(background);
+    background->run_javascript(MUST(String::formatted(R"(
+        fetch('http://127.0.0.1:{}/default').then(() => fetch('http://127.0.0.1:{}/include', {{ credentials: 'include' }}))
+            .then(() => browser.storage.local.set({{ cookies: 'checked' }}));
+    )",
+        api.port(), api.port())));
+    wait_for_results(manager, installed.extension_id, "cookies"sv);
+    EXPECT(!default_sent_cookie.load());
+    EXPECT(!include_sent_cookie.load());
 
     // Neither the page nor the extension's content script in it reads the API's responses.
     app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/page", site.port())).release_value(), WebView::IsPrivate::No);
@@ -884,4 +932,35 @@ TEST_CASE(the_background_page_finds_itself_and_other_pages_do_not_look)
     EXPECT(results.get_bool("asynchronously"sv) == true);
     EXPECT_EQ(results.get_string("fromPage"sv).value_or({}), "undefined"sv);
     EXPECT_EQ(results.get_string("asyncFromPage"sv).value_or({}), "undefined"sv);
+}
+
+TEST_CASE(packaged_webassembly_compiles_as_it_streams_in)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatWasm"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "wasm"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Wasm", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "wasm@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    // The smallest module: its magic number and version.
+    constexpr u8 module[] = { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    write_file(directory, "module.wasm"sv, StringView { reinterpret_cast<char const*>(module), sizeof(module) });
+    write_file(directory, "background.js"sv, R"(
+        (async () => {
+            const type = (await fetch('module.wasm')).headers.get('content-type');
+            const compiled = await WebAssembly.compileStreaming(fetch('module.wasm')).then(() => 'compiled', error => error.message);
+            await browser.storage.local.set({ type, compiled, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("type"sv).value_or({}), "application/wasm"sv);
+    EXPECT_EQ(results.get_string("compiled"sv).value_or({}), "compiled"sv);
 }

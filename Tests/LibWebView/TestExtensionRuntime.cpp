@@ -1353,6 +1353,12 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
         "background": {"scripts": ["menu.js"]}
     })"sv);
     write_ext_file(ext_dir, "menu.js"sv, R"(
+        // Without host access, onShown says which items and contexts apply, but not what the page or selection is.
+        browser.menus.onShown.addListener((info, tab) => {
+            browser.storage.local.set({shown: JSON.stringify({ids: [...info.menuIds].sort(), contexts: info.contexts,
+                revealed: ['pageUrl', 'frameUrl', 'linkUrl', 'srcUrl', 'selectionText'].filter(key => key in info), tab: tab.id})});
+        });
+        browser.menus.onHidden.addListener(() => browser.storage.local.set({hidden: true}));
         let clicks = 0;
         browser.menus.onClicked.addListener(async (info, tab) => {
             await browser.storage.local.set({click: info.menuItemId, count: ++clicks, url: info.pageUrl, tab: tab.id,
@@ -1381,8 +1387,24 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
             await browser.storage.local.set({created: id === "inspect"});
         });
     )"sv);
+    // With host access, onShown also reports the page and the selection.
+    auto host_dir = LexicalPath::join(env.directory(), "menu-host-extension"sv).string();
+    write_ext_file(host_dir, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Menu observer", "version": "1.0",
+        "browser_specific_settings": {"gecko": {"id": "menu-observer@example.test"}},
+        "permissions": ["menus", "storage", "http://127.0.0.1/*"],
+        "background": {"scripts": ["observer.js"]}
+    })"sv);
+    write_ext_file(host_dir, "observer.js"sv, R"(
+        browser.menus.onShown.addListener(info => {
+            browser.storage.local.set({shown: JSON.stringify({ids: info.menuIds, page: info.pageUrl.startsWith('http://127.0.0.1:'), selection: info.selectionText})});
+        });
+    )"sv);
     auto& manager = *app->default_session().extension_manager;
     auto extension = TRY_OR_FAIL(manager.load_unpacked(ext_dir));
+    auto observer = TRY_OR_FAIL(manager.load_unpacked(host_dir));
+    bool observer_started = false;
+    manager.ensure_background_started(observer.extension_id, [&](bool ready) { observer_started = ready; });
     auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
     view->load_from_browser_ui(url);
     auto wait_until = [](auto condition) {
@@ -1423,6 +1445,17 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     selection.selection_text = "bonjour"_string;
     auto selection_menu = manager.page_menu_items(*view, document, selection);
     EXPECT_EQ(selection_menu.size(), 2u);
+    if (!wait_until([&] { return observer_started; }))
+        return;
+    manager.notify_page_menu_shown(*view, document, selection);
+    if (!wait_until([&] {
+            return storage().has("shown"sv) && manager.storage().get(observer.extension_id, JsonValue {}).has("shown"sv);
+        }))
+        return;
+    EXPECT_EQ(storage().get_string("shown"sv).value_or(String {}),
+        MUST(String::formatted(R"({{"ids":["inspect","translate"],"contexts":["selection"],"revealed":[],"tab":{}}})", view->view_id())));
+    EXPECT_EQ(manager.storage().get(observer.extension_id, JsonValue {}).get_string("shown"sv).value_or(String {}),
+        R"({"ids":[],"page":true,"selection":"bonjour"})"sv);
     auto translate = selection_menu.first_matching([](auto const& item) { return item.title.bytes_as_string_view().ends_with("Translate"sv); });
     EXPECT(translate.has_value());
     if (!translate.has_value())
@@ -1431,6 +1464,9 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     if (!wait_until([&] { return storage().get_string("click"sv) == "translate"sv; }))
         return;
     EXPECT_EQ(storage().get_string("selection"sv).value_or(String {}), "bonjour"sv);
+    // Choosing an item closed the menu.
+    if (!wait_until([&] { return storage().get_bool("hidden"sv) == true; }))
+        return;
     Web::HTML::CrossProcessId subdocument {};
     if (!wait_until([&] {
             view->traversable().for_each_in_inclusive_subtree([&](WebView::CanonicalNavigable const& frame) {

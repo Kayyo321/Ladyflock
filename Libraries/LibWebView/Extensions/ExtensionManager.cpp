@@ -16,6 +16,7 @@
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
+#include <LibCore/MimeData.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibCrypto/Hash/Hash.h>
@@ -83,7 +84,9 @@ static String mime_type_for_path(StringView path)
         return "image/jpeg"_string;
     if (path.ends_with(".woff2"sv, CaseSensitivity::CaseInsensitive))
         return "font/woff2"_string;
-    return "application/octet-stream"_string;
+    // Everything else, such as WebAssembly, which can only be compiled as it streams in when served as
+    // application/wasm, gets the type its extension names.
+    return MUST(String::from_utf8(Core::guess_mime_type_based_on_filename(path)));
 }
 
 static ErrorOr<String> read_utf8_file_bounded(ByteString const& path)

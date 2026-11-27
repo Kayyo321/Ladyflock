@@ -517,9 +517,12 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                     }
                 }
                 if (observes_only) {
-                    auto& console = self->m_realm->intrinsics().console_object()->console();
-                    console.output_debug_message(JS::Console::LogLevel::Warn,
-                        u"Ladyflock can't change the headers a request sends. This onBeforeSendHeaders listener sees them, but what it returns has no effect."sv);
+                    // Said in the extension's own console, with its console.warn.
+                    auto& console = *self->m_realm->intrinsics().console_object();
+                    if (auto warn = console.get("warn"_utf16_fly_string); !warn.is_error() && warn.value().is_function()) {
+                        (void)JS::call(vm, warn.value(), JS::Value(&console),
+                            JS::PrimitiveString::create(vm, "Ladyflock can't change the headers a request sends. This onBeforeSendHeaders listener sees them, but what it returns has no effect."_utf16));
+                    }
                 }
                 if (urls_arr.is_empty())
                     return vm.throw_completion<JS::TypeError>("webRequest filter requires at least one URL pattern"_utf16);
@@ -758,11 +761,25 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
     Optional<size_t> message_index;
     if (ns_name == "runtime"sv && method_name == "sendMessage"sv) {
         // Firefox's forms: (message), (extensionId, message), (message, options) and (extensionId, message, options).
+        // As in Firefox, two arguments are a message and options when the second is nullish or valid options, which
+        // have no keys other than toProxyScript.
         JS::Value extension_id = JS::js_undefined();
-        if (arguments.size() == 2 && arguments[0].is_string() && !arguments[0].as_string().utf16_string().is_empty()) {
-            extension_id = arguments.take_first();
-        } else if (arguments.size() == 2) {
+        auto are_options = [&](JS::Value value) -> JS::ThrowCompletionOr<bool> {
+            if (value.is_nullish())
+                return true;
+            if (!value.is_object())
+                return false;
+            auto keys = TRY(value.as_object().internal_own_property_keys());
+            for (auto const& key : keys) {
+                if (!key.is_string() || key.as_string().utf16_string() != u"toProxyScript"sv)
+                    return false;
+            }
+            return true;
+        };
+        if (arguments.size() == 2 && TRY(are_options(arguments[1]))) {
             arguments.take_last();
+        } else if (arguments.size() == 2) {
+            extension_id = arguments.take_first();
         } else if (arguments.size() == 3 || (arguments.size() == 4 && arguments[3].is_nullish())) {
             extension_id = arguments[0];
             arguments = { arguments[1] };

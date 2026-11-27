@@ -785,6 +785,7 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
             && request->current_url().scheme() == "file"sv
             && request->destination() == Infrastructure::Request::Destination::Font;
 
+        request->set_extension_cross_origin_read(false);
         if (
             (origin && request->current_url().origin().is_same_origin(*origin) && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic)
             || is_file_to_file_font_load
@@ -806,6 +807,8 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
             && Infrastructure::is_http_or_https_scheme(request->current_url().scheme())
             && extension_page_may_read_cross_origin(*request, *origin)) {
             request->set_response_tainting(Infrastructure::Request::ResponseTainting::Basic);
+            // Its credentials stay those of a cross-origin request: sent only when it asks for them.
+            request->set_extension_cross_origin_read(true);
             return scheme_fetch(realm, *fetch_params);
         }
 
@@ -2752,7 +2755,9 @@ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm& realm, Infrastru
             request->credentials_mode() == Infrastructure::Request::CredentialsMode::Include
             // - request’s credentials mode is "same-origin" and request’s response tainting is "basic"
             || (request->credentials_mode() == Infrastructure::Request::CredentialsMode::SameOrigin
-                && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic)
+                && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic
+                // AD-HOC: An extension page's read of another origin is not same-origin for credentials.
+                && !request->is_extension_cross_origin_read())
             // is true; otherwise false.
         ) {
             include_credentials = HTTP::Cookie::IncludeCredentials::Yes;

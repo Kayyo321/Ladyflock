@@ -239,9 +239,16 @@ bool is_error(WebView::ConsoleOutput const& output)
         [](auto const&) { return false; });
 }
 
+// Set when the extension registered a blocking onBeforeSendHeaders listener, whose header changes Ladyflock can't
+// make, as its console warns.
+bool s_header_listener_inert { false };
+
 void listen(WebView::ViewImplementation& view, JsonArray& errors)
 {
     view.on_console_message = [&errors](WebView::ConsoleOutput output) {
+        if (auto const* log = output.output.get_pointer<WebView::ConsoleLog>(); log && log->level == JS::ConsoleLogLevel::Warn
+            && any_of(log->arguments, [](auto const& argument) { return argument.is_string() && argument.as_string().contains("can't change the headers"sv); }))
+            s_header_listener_inert = true;
         if (is_error(output) && errors.size() < 40)
             errors.must_append(describe(output));
     };
@@ -299,6 +306,7 @@ TEST_CASE(real_extensions_start_and_report_their_errors)
             continue;
         }
         auto extension = installed.release_value();
+        s_header_listener_inert = false;
         report.set("compatibility"sv, MUST(String::from_utf8(Web::Extensions::to_string(extension.compatibility_status))));
 
         // The background page: its startup, which may already be over, comes from the console's buffer.
@@ -346,6 +354,7 @@ TEST_CASE(real_extensions_start_and_report_their_errors)
         for (auto const& host : proxy.take_refused_hosts())
             hosts.must_append(MUST(String::from_byte_string(host)));
         report.set("refused_hosts"sv, move(hosts));
+        report.set("header_listener_inert"sv, s_header_listener_inert);
         warnln("REPORT {}", report.serialized());
     }
 }
