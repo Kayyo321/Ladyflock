@@ -571,3 +571,38 @@ TEST_CASE(password_manager_startup_settings_and_popout_windows)
     if (!app->opened_window_urls.is_empty())
         EXPECT_EQ(app->opened_window_urls.first().serialize(), MUST(String::formatted("moz-extension://{}/popup.html", installed.uuid)));
 }
+
+TEST_CASE(action_icons_firefox_accepts_but_ladyflock_cannot_draw_keep_the_current_icon)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatIcons"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "icons"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Icons", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "icons@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]},
+        "browser_action": {"default_icon": "plain.png"}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        const outcome = promise => promise.then(() => "ok", error => error.message);
+        (async () => {
+            const png = await outcome(browser.browserAction.setIcon({ path: "/icons/lit.png" }));
+            const svg = await outcome(browser.browserAction.setIcon({ path: "/icons/toolbar.svg" }));
+            const svgSizes = await outcome(browser.browserAction.setIcon({ path: { 16: "a.svg", 32: "b.svg" } }));
+            const imageData = await outcome(browser.browserAction.setIcon({ imageData: new ImageData(16, 16) }));
+            const missing = await outcome(browser.browserAction.setIcon({}));
+            await browser.storage.local.set({ png, svg, svgSizes, imageData, missing, done: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("png"sv).value(), "ok"sv);
+    EXPECT_EQ(results.get_string("svg"sv).value(), "ok"sv);
+    EXPECT_EQ(results.get_string("svgSizes"sv).value(), "ok"sv);
+    EXPECT_EQ(results.get_string("imageData"sv).value(), "ok"sv);
+    EXPECT_EQ(results.get_string("missing"sv).value(), "setIcon requires a package path or size-to-path object"sv);
+    // The SVG and imageData calls left the PNG the extension set first.
+    EXPECT_EQ(manager.action_controller().resolved_state(installed.extension_id).icon_path, Optional<String> { "icons/lit.png"_string });
+}

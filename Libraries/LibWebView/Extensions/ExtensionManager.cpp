@@ -4354,17 +4354,30 @@ void ExtensionManager::handle_api_call(
         return true;
     };
 
-    auto icon_from_details = [&](JsonObject const& details) -> ErrorOr<Optional<String>> {
+    struct IconUpdate {
+        bool keep_current { false };
+        Optional<String> path;
+    };
+    auto icon_from_details = [&](JsonObject const& details) -> ErrorOr<IconUpdate> {
         auto path = details.get("path"sv);
-        if (!path.has_value())
-            return Error::from_string_literal("setIcon requires a package path or size-to-path object");
-        if (path->is_null())
-            return Optional<String> {};
+        if (!path.has_value() || path->is_null()) {
+            // The toolbar draws bitmaps from the package only, so an imageData icon leaves the current icon in place.
+            if (auto image_data = details.get("imageData"sv); image_data.has_value() && !image_data->is_null())
+                return IconUpdate { .keep_current = true, .path = {} };
+            if (!path.has_value())
+                return Error::from_string_literal("setIcon requires a package path or size-to-path object");
+            return IconUpdate {};
+        }
         auto icons = TRY(Web::Extensions::ExtensionManifest::parse_icon_map(*path));
         auto selected = Web::Extensions::ExtensionManifest::preferred_icon(icons);
-        if (!selected.has_value())
+        if (!selected.has_value()) {
+            // The isolated image decoder can't draw SVG. Firefox accepts SVG icons, so keep the current icon
+            // instead of refusing the call.
+            if (!icons.is_empty())
+                return IconUpdate { .keep_current = true, .path = {} };
             return Error::from_string_literal("No valid icon size was supplied");
-        return selected;
+        }
+        return IconUpdate { .path = move(selected) };
     };
 
     if (namespace_name == "action"sv || namespace_name == "browserAction"sv) {
@@ -4420,12 +4433,13 @@ void ExtensionManager::handle_api_call(
         } else if (method_name == "getPopup"sv) {
             reply_ok(JsonValue(m_action_controller.get_popup(extension_id, tab_id, window_id).value_or({})));
         } else if (method_name == "setIcon"sv) {
-            auto path = icon_from_details(arg_obj);
-            if (path.is_error()) {
+            auto update = icon_from_details(arg_obj);
+            if (update.is_error()) {
                 reply_err("setIcon requires a package path or size-to-path object");
                 return;
             }
-            m_action_controller.set_icon(extension_id, path.release_value(), tab_id, window_id);
+            if (!update.value().keep_current)
+                m_action_controller.set_icon(extension_id, update.value().path, tab_id, window_id);
             reply_ok(JsonValue {});
         } else if (method_name == "enable"sv) {
             Optional<u64> tid;
@@ -4488,12 +4502,13 @@ void ExtensionManager::handle_api_call(
         auto window_id = scope.value_or_lazy_evaluated(caller_window);
 
         if (method_name == "setIcon"sv) {
-            auto path = icon_from_details(arg_obj);
-            if (path.is_error()) {
+            auto update = icon_from_details(arg_obj);
+            if (update.is_error()) {
                 reply_err("setIcon requires a package path or size-to-path object");
                 return;
             }
-            m_sidebar_controller.set_icon(extension_id, path.release_value(), tab_id, scope);
+            if (!update.value().keep_current)
+                m_sidebar_controller.set_icon(extension_id, update.value().path, tab_id, scope);
             reply_ok(JsonValue {});
         } else if (method_name == "setPanel"sv) {
             m_sidebar_controller.set_panel(extension_id, copy_opt_string(arg_obj.get_string("panel"sv)), tab_id, scope);
