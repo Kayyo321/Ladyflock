@@ -301,7 +301,12 @@ export class StylesPaneController {
             value: nextClassValue,
             beforeValue: String(node.attributes?.class || ""),
             label: this.app.elementsTree.describeNodeShort(node),
-        }).then(() => this.app.refreshSelectedNodeProperties()).catch(() => {});
+        }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => {
+            // A change the page made, or one made before this pane caught up, is not overwritten; show the class as
+            // it is now.
+            this.app.showToast(err.message);
+            this.app.refreshSelectedNodeProperties();
+        });
     }
 
     buildCosmeticFilterPanel() {

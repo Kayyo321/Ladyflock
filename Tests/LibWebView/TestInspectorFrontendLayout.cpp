@@ -874,6 +874,52 @@ TEST_CASE(inspector_frames_and_shadow_trees)
     }
 }
 
+constexpr auto edits_html = R"HTML(<!doctype html><title>Edits</title>
+<style>div > p { color: rgb(9, 9, 9); }</style>
+<div><p id="para">Hello</p></div>
+<span id="labelled" data-x="one">Label</span>
+<div id="first-host"></div>
+<div id="second-host"></div>
+<script>
+  for (const id of ["first-host", "second-host"])
+    document.getElementById(id).attachShadow({ mode: "open" }).innerHTML = `<style>.item { color: rgb(1, 1, 1); }</style><span class="item" id="${id}-item">Item</span>`;
+  document.title = "Edits ready";
+</script>
+)HTML"sv;
+
+constexpr FixturePage edits_fixture { edits_html, "Edits ready"sv, 10 };
+
+// An edit names what the Inspector showed, and leaves alone what the page has changed since.
+TEST_CASE(inspector_edits_check_what_they_replace)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorEditChecks"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+    auto& frontend = *fixture.frontend;
+
+    expect_holds(frontend, "Text and attribute edits refuse to replace what they did not show"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const outcome = promise => promise.then(() => "applied", error => error.message);
+        const text = [...app.elementsTree.nodesById.values()].find(n => n.type === "text" && n.text === "Hello");
+        const labelled = findElement(n => n.attributes?.id === "labelled");
+        const results = {
+            staleText: await outcome(sendCommand("setNodeText", { nodeId: text.id, text: "Edited", beforeText: "Not what it says" })),
+            text: await outcome(sendCommand("setNodeText", { nodeId: text.id, text: "Edited", beforeText: "Hello" })),
+            staleAttribute: await outcome(sendCommand("setAttribute", { nodeId: labelled.id, name: "data-x", newName: "data-x", value: "two", beforeValue: "zero" })),
+            attribute: await outcome(sendCommand("setAttribute", { nodeId: labelled.id, name: "data-x", newName: "data-x", value: "two", beforeValue: "one" })),
+        };
+        const expected = {
+            staleText: "The node's text changed since this edit.",
+            text: "applied",
+            staleAttribute: "The attribute changed since the inspector last showed it.",
+            attribute: "applied",
+        };
+        return JSON.stringify(results) === JSON.stringify(expected) ? null : results;
+    )JS"sv);
+    run_in_target(*fixture.target, R"JS(document.title = "Edited:" + document.getElementById("para").textContent + "," + document.getElementById("labelled").dataset.x;)JS"sv, "Edited:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "Edited:Edited,two"sv);
+}
+
 // Answers every request on the loopback interface with the same small page.
 class TestPageServer {
 public:

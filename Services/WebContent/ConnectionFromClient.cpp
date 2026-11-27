@@ -3167,7 +3167,11 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                 return;
             }
             auto before = data->data().to_utf8();
-            if (auto expected = params.get_string("expectedText"sv); expected.has_value() && before != *expected) {
+            // An undo names the text it expects as expectedText; an edit, the text the inspector showed as beforeText.
+            auto expected = params.get_string("expectedText"sv);
+            if (!expected.has_value())
+                expected = params.get_string("beforeText"sv);
+            if (expected.has_value() && before != *expected) {
                 reply_err("The node's text changed since this edit."_string);
                 return;
             }
@@ -3193,6 +3197,11 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             auto before = element->get_attribute(old_attribute_name).map([](auto const& value) { return value.to_utf8(); });
             if (params.get_bool("isUndo"sv).value_or(false) && before != params.get_string("expectedValue"sv)) {
                 reply_err("The attribute changed since this edit."_string);
+                return;
+            }
+            // An edit carries the value the inspector showed, where a missing attribute shows as empty.
+            if (auto shown = params.get_string("beforeValue"sv); shown.has_value() && before.value_or(String {}) != *shown) {
+                reply_err("The attribute changed since the inspector last showed it."_string);
                 return;
             }
             auto value = params.get_string("value"sv);
