@@ -186,7 +186,8 @@ static Fixture open_inspector(Web::DevicePixelSize frontend_size, FixturePage co
         window.cspViolations = [];
         document.addEventListener("securitypolicyviolation", e => window.cspViolations.push(`${{e.violatedDirective}}: ${{e.target?.outerHTML?.slice(0, 120)}}`), true);
         await until(() => app.elementsTree.nodesById.size > {});
-    )JS", page.minimum_tree_size)));
+    )JS",
+                            page.minimum_tree_size)));
     return { move(target), move(frontend), move(session) };
 }
 
@@ -591,7 +592,8 @@ TEST_CASE(inspector_event_handler_listeners)
                 throw new Error("The handler's listener is not named onclick: " + row.textContent);
             [...row.querySelectorAll("button")].find(b => b.textContent === "Remove").click();
             await until(() => ![...document.querySelectorAll("#sidebar-listeners .listener-row")].some(r => r.querySelector(".listener-desc").textContent.includes("#{}")));
-        )JS", id, id, id, id)));
+        )JS",
+                               id, id, id, id)));
     }
 
     run_in_target(*fixture.target, R"JS(
@@ -605,7 +607,8 @@ TEST_CASE(inspector_event_handler_listeners)
             results.push(`${id}:${cleared}:${later}`);
         }
         document.title = "handlers:" + results.join(",") + ":" + (window.attributeClicks || 0);
-    )JS"sv, "handlers:"sv);
+    )JS"sv,
+        "handlers:"sv);
     EXPECT_EQ(fixture.target->title().to_byte_string(), "handlers:attr:true:1,prop:true:1:0"sv);
 }
 
@@ -652,7 +655,8 @@ TEST_CASE(inspector_resets_when_a_document_replaces_another)
     run_in_target(target, R"JS(
         document.getElementById("javascript-link").click();
         setTimeout(() => { document.title = "clicked"; }, 300);
-    )JS"sv, "clicked"sv);
+    )JS"sv,
+        "clicked"sv);
     expect_holds(frontend, "A javascript: link does not reset the Inspector"sv, R"JS(
         await new Promise(resolve => setTimeout(resolve, 300));
         const selected = app.state.selectedNode?.attributes?.id;
@@ -671,7 +675,8 @@ TEST_CASE(inspector_resets_when_a_document_replaces_another)
             window.previousIds = new Set([...app.elementsTree.nodesById.keys()]);
             window.treesSet = [];
             return stale.length ? stale.map(t => t.generation) : null;
-        )JS", expected, previous)));
+        )JS",
+                                                expected, previous)));
     };
 
     // NB: A file, not load_html(), whose navigation to about:srcdoc would replace the first page's history entry.
@@ -744,7 +749,8 @@ TEST_CASE(inspector_dom_breakpoints_pause_after_the_change)
         const other = document.getElementById("other");
         setTimeout(Element.prototype.setAttribute.bind(other, "data-changed", "yes"));
         setTimeout(function unrelated() { document.title = "unrelated:" + other.dataset.changed; }, 100);
-    )JS"sv, "unrelated:"sv);
+    )JS"sv,
+        "unrelated:"sv);
     EXPECT_EQ(target.title().to_byte_string(), "unrelated:yes"sv);
     expect_holds(frontend, "No later script stops for an earlier change"sv, "return window.pauses.length === 1 ? null : window.pauses.map(p => p.frames?.[0]?.displayName);"sv);
 }
@@ -780,7 +786,8 @@ TEST_CASE(inspector_styles_strike_what_the_cascade_overrides)
             const wrong = expected.filter(([selector, name, overridden]) => declarationIn(selector, name).overridden !== overridden);
             const userAgentRules = app.stylesPane.rules.filter(r => r.origin === "user-agent").length;
             return wrong.length || userAgentRules ? {{ wrong, userAgentRules }} : null;
-        )JS", expectations, element_id)));
+        )JS",
+                                                expectations, element_id)));
     };
 
     // NB: The h1's user-agent font-size wins over the inherited font-size, while the inherited font shorthand still
@@ -833,6 +840,7 @@ TEST_CASE(inspector_frames_and_shadow_trees)
             app.refreshSelectedNodeProperties();
             await until(() => app.state.lastComputedStyle?.color === "rgb(4, 5, 6)");
             return null;
-        )JS", id, id, id)));
+        )JS",
+                                                                                                                    id, id, id)));
     }
 }

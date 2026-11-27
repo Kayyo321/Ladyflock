@@ -622,9 +622,7 @@ void DevToolsDebugger::handle_pause(JS::Debugger::PauseInfo const& pause)
             }
             VERIFY_NOT_REACHED();
         }(),
-        .reason_message = condition_error.has_value()
-            ? move(condition_error)
-            : dom_breakpoint_message.map([](auto const& message) { return Utf16String::from_utf8(message); }),
+        .reason_message = condition_error.has_value() ? move(condition_error) : dom_breakpoint_message.map([](auto const& message) { return Utf16String::from_utf8(message); }),
         .exception = pause.exception.map([&](auto value) { return serialize_value(value); }),
         .frames = {},
     };

@@ -321,14 +321,12 @@ InspectorSession::InspectorSession(ViewImplementation& target_view)
                 payload.set("documentGeneration"sv, self->m_document_generation);
                 self->send_event("targetLoadFinished"sv, move(payload));
                 self->restore_dom_breakpoints(url);
-            }
-        },
+            } },
         // NB: Not on load start: until a load commits the old document is still the page's, and the load can
         //     still be cancelled, become a download, or answer 204.
         .on_active_document_change = [weak_this = make_weak_ptr()](URL::URL const& url) {
             if (auto self = weak_this.strong_ref())
-                self->target_did_navigate(url);
-        },
+                self->target_did_navigate(url); },
     });
 }
 
