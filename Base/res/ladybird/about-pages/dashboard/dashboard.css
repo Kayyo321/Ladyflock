@@ -34,13 +34,15 @@ body.dashboard-page {
     --tint-fill: var(--dash-accent-fill);
     --accent: var(--dash-accent);
     --brand: var(--dash-accent);
-    --link: color-mix(in srgb, var(--dash-accent) 80%, var(--text));
+    /* Text in the accent is mixed toward the text color, as --tint-ink is, so it stays
+       readable on light accents such as Saffron. */
+    --link: color-mix(in srgb, var(--dash-accent) 68%, var(--text));
     --primary: var(--dash-accent-fill);
     --primary-hover: color-mix(in srgb, var(--dash-accent-fill) 88%, #000000);
     --primary-pressed: color-mix(in srgb, var(--dash-accent-fill) 78%, #000000);
     --focus-edge: var(--dash-accent);
     --focus-ring: color-mix(in srgb, var(--dash-accent) 16%, transparent);
-    --choice: var(--dash-accent);
+    --choice: color-mix(in srgb, var(--dash-accent) 68%, var(--text));
     --choice-fill: color-mix(in srgb, var(--dash-accent) 9%, transparent);
 
     --dot-rgb: 29, 29, 31;
