@@ -283,9 +283,9 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
         target_titles.clear();
         target.load_from_browser_ui(url);
         if (!wait_for_page("complete navigation with no matching extension"sv, [&] {
-            auto const& document = target.traversable().active_document();
-            return document.creation_url() == url && document.is_completely_loaded();
-        }))
+                auto const& document = target.traversable().active_document();
+                return document.creation_url() == url && document.is_completely_loaded();
+            }))
             return;
 
         // Probe after document_idle so an early load notification cannot conceal an injection.
@@ -296,9 +296,9 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
                 : injected ? 'UNEXPECTED EXTENSION' : 'NO EXTENSION';
         )"_string);
         if (wait_for_page("extension DOM probe"sv, [&] {
-            return target_titles.contains_slow("NO EXTENSION"_utf16) || target_titles.contains_slow("UNEXPECTED EXTENSION"_utf16)
-                || target_titles.contains_slow("MISSING FIXTURE"_utf16);
-        }))
+                return target_titles.contains_slow("NO EXTENSION"_utf16) || target_titles.contains_slow("UNEXPECTED EXTENSION"_utf16)
+                    || target_titles.contains_slow("MISSING FIXTURE"_utf16);
+            }))
             EXPECT(target_titles.contains_slow("NO EXTENSION"_utf16));
     };
 
@@ -307,15 +307,14 @@ TEST_CASE(two_origin_content_scripts_revocation_and_private_exclusion)
     titles.clear();
     view->load_from_browser_ui(url_a);
     if (!wait_for_page("isolated script message"sv, [&] {
-        return loads > prev_loads && (titles.contains_slow("CLONED:ISOLATED"_utf16) || titles.contains_slow("CLONED:LEAKED"_utf16)
-            || titles.contains_slow("MESSAGE:BAD"_utf16) || titles.contains_slow("MESSAGE:ERROR"_utf16));
-    }))
+            return loads > prev_loads && (titles.contains_slow("CLONED:ISOLATED"_utf16) || titles.contains_slow("CLONED:LEAKED"_utf16) || titles.contains_slow("MESSAGE:BAD"_utf16) || titles.contains_slow("MESSAGE:ERROR"_utf16));
+        }))
         return;
     EXPECT(titles.contains_slow("CLONED:ISOLATED"_utf16));
     view->run_javascript("document.title = 'CSS:' + getComputedStyle(document.body).backgroundColor + ':PAGE:' + window.pageGlobal;"_string);
     if (!wait_for_page("injected CSS"sv, [&] {
-        return titles.contains_slow("CSS:rgb(12, 34, 56):PAGE:secret"_utf16);
-    }))
+            return titles.contains_slow("CSS:rgb(12, 34, 56):PAGE:secret"_utf16);
+        }))
         return;
 
     auto child_url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/child-documents", server.port()))).release_value();
@@ -754,6 +753,12 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
         let sent;
         let observed;
         let started;
+        let beforeSend;
+        // Ladyflock sends the headers as they were, so the extra header this listener returns changes nothing.
+        browser.webRequest.onBeforeSendHeaders.addListener(details => {
+            beforeSend = sent === undefined && details.requestHeaders.some(header => header.name.toLowerCase() === 'accept') && details.requestId;
+            return { requestHeaders: [...details.requestHeaders, { name: 'X-Ignored', value: '1' }] };
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['blocking', 'requestHeaders']);
         browser.webRequest.onSendHeaders.addListener(details => {
             sent = details.requestId;
         }, { urls: ["http://127.0.0.1/observe-headers"] }, ['requestHeaders']);
@@ -769,8 +774,9 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
             started = sent === details.requestId && !('responseHeaders' in details);
         }, { urls: ["http://127.0.0.1/observe-headers"] });
         browser.webRequest.onCompleted.addListener(details => {
-            browser.storage.local.set({ goodEvents: observed && started && sent === details.requestId });
-        }, { urls: ["http://127.0.0.1/observe-headers"] });
+            const completedHeaders = details.responseHeaders.some(header => header.name.toLowerCase() === 'cache-control' && header.value === 'no-cache');
+            browser.storage.local.set({ goodEvents: observed && started && sent === details.requestId && beforeSend === sent && completedHeaders });
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['responseHeaders']);
     )"sv);
 
     auto const& wr_ext = TRY_OR_FAIL(mgr.load_unpacked(wr_dir, true));
@@ -778,7 +784,7 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
     bool bg_ready = false;
     mgr.ensure_background_started(wr_ext.extension_id, [&](bool ready) { bg_ready = ready; });
     Core::EventLoop::current().spin_until([&] {
-        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 8;
+        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 9;
     });
 
     // 1. Allowed page loads and hits server; fetch('/blocked-fetch') cancels without hitting server.
@@ -937,7 +943,6 @@ TEST_CASE(web_navigation_reports_active_child_frames_and_document_replacement)
     EXPECT_EQ(target->get_string("url"sv), url.serialize());
     view->load_from_browser_ui(URL::Parser::basic_parse("http://127.0.0.1:1/error"sv).release_value());
     Core::EventLoop::current().spin_until([&] { return state().has("failed"sv); });
-
 }
 
 TEST_CASE(declarative_static_rules_block_before_cache_and_restore_on_disable)
@@ -1348,15 +1353,28 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
         "background": {"scripts": ["menu.js"]}
     })"sv);
     write_ext_file(ext_dir, "menu.js"sv, R"(
+        // Without host access, onShown says which items and contexts apply, but not what the page or selection is.
+        browser.menus.onShown.addListener((info, tab) => {
+            browser.storage.local.set({shown: JSON.stringify({ids: [...info.menuIds].sort(), contexts: info.contexts,
+                revealed: ['pageUrl', 'frameUrl', 'linkUrl', 'srcUrl', 'selectionText'].filter(key => key in info), tab: tab.id})});
+        });
+        browser.menus.onHidden.addListener(() => browser.storage.local.set({hidden: true}));
         let clicks = 0;
         browser.menus.onClicked.addListener(async (info, tab) => {
             await browser.storage.local.set({click: info.menuItemId, count: ++clicks, url: info.pageUrl, tab: tab.id,
-                link: info.linkUrl || "", frame: info.frameId, frameUrl: info.frameUrl || ""});
+                link: info.linkUrl || "", frame: info.frameId, frameUrl: info.frameUrl || "", selection: info.selectionText || ""});
             await browser.menus.remove(info.menuItemId);
         });
-        browser.menus.create({id: "unsupported", title: "Tab", contexts: ["tab"]}, () => {
+        // Firefox has no launcher menu; it refuses the item, and so does Ladyflock.
+        browser.menus.create({id: "unsupported", title: "Launcher", contexts: ["launcher"]}, () => {
             browser.storage.local.set({unsupported: !!browser.runtime.lastError});
         });
+        // Items for the tab strip or the toolbar button are kept, but Ladyflock shows extension items only in the
+        // page's menu. A separator and a hidden item are never items of their own there.
+        browser.menus.create({id: "tab-item", title: "Tab", contexts: ["tab", "browser_action"]});
+        browser.menus.create({id: "divider", type: "separator", contexts: ["all"]});
+        browser.menus.create({id: "hidden", title: "Hidden", contexts: ["all"], visible: false});
+        browser.menus.create({id: "translate", title: "Translate", contexts: ["selection"]});
         browser.menus.create({id: "subscribe", title: "Subscribe", contexts: ["link"],
             targetUrlPatterns: ["abp:*", "https://subscribe.example.test/*"]});
         browser.menus.create({id: "resource", title: "Resource", contexts: ["audio", "frame", "image", "video"],
@@ -1369,8 +1387,24 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
             await browser.storage.local.set({created: id === "inspect"});
         });
     )"sv);
+    // With host access, onShown also reports the page and the selection.
+    auto host_dir = LexicalPath::join(env.directory(), "menu-host-extension"sv).string();
+    write_ext_file(host_dir, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Menu observer", "version": "1.0",
+        "browser_specific_settings": {"gecko": {"id": "menu-observer@example.test"}},
+        "permissions": ["menus", "storage", "http://127.0.0.1/*"],
+        "background": {"scripts": ["observer.js"]}
+    })"sv);
+    write_ext_file(host_dir, "observer.js"sv, R"(
+        browser.menus.onShown.addListener(info => {
+            browser.storage.local.set({shown: JSON.stringify({ids: info.menuIds, page: info.pageUrl.startsWith('http://127.0.0.1:'), selection: info.selectionText})});
+        });
+    )"sv);
     auto& manager = *app->default_session().extension_manager;
     auto extension = TRY_OR_FAIL(manager.load_unpacked(ext_dir));
+    auto observer = TRY_OR_FAIL(manager.load_unpacked(host_dir));
+    bool observer_started = false;
+    manager.ensure_background_started(observer.extension_id, [&](bool ready) { observer_started = ready; });
     auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
     view->load_from_browser_ui(url);
     auto wait_until = [](auto condition) {
@@ -1404,6 +1438,35 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     WebView::ExtensionMenuTarget image;
     image.media_type = "image"_string;
     EXPECT_EQ(manager.page_menu_items(*view, document, image).size(), 2u);
+
+    // A selection gets its own item, whose click reports the selected text.
+    WebView::ExtensionMenuTarget selection;
+    selection.has_selection = true;
+    selection.selection_text = "bonjour"_string;
+    auto selection_menu = manager.page_menu_items(*view, document, selection);
+    EXPECT_EQ(selection_menu.size(), 2u);
+    if (!wait_until([&] { return observer_started; }))
+        return;
+    manager.notify_page_menu_shown(*view, document, selection);
+    if (!wait_until([&] {
+            return storage().has("shown"sv) && manager.storage().get(observer.extension_id, JsonValue {}).has("shown"sv);
+        }))
+        return;
+    EXPECT_EQ(storage().get_string("shown"sv).value_or(String {}),
+        MUST(String::formatted(R"({{"ids":["inspect","translate"],"contexts":["selection"],"revealed":[],"tab":{}}})", view->view_id())));
+    EXPECT_EQ(manager.storage().get(observer.extension_id, JsonValue {}).get_string("shown"sv).value_or(String {}),
+        R"({"ids":[],"page":true,"selection":"bonjour"})"sv);
+    auto translate = selection_menu.first_matching([](auto const& item) { return item.title.bytes_as_string_view().ends_with("Translate"sv); });
+    EXPECT(translate.has_value());
+    if (!translate.has_value())
+        return;
+    manager.activate_page_menu_item(*view, document, translate->token, selection);
+    if (!wait_until([&] { return storage().get_string("click"sv) == "translate"sv; }))
+        return;
+    EXPECT_EQ(storage().get_string("selection"sv).value_or(String {}), "bonjour"sv);
+    // Choosing an item closed the menu.
+    if (!wait_until([&] { return storage().get_bool("hidden"sv) == true; }))
+        return;
     Web::HTML::CrossProcessId subdocument {};
     if (!wait_until([&] {
             view->traversable().for_each_in_inclusive_subtree([&](WebView::CanonicalNavigable const& frame) {
@@ -1422,7 +1485,7 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     EXPECT_EQ(result.get_string("click"sv).value_or(String {}), "inspect"sv);
     EXPECT_EQ(result.get_string("url"sv).value_or(String {}), url.serialize());
     EXPECT_EQ(result.get_u64("tab"sv), view->view_id());
-    EXPECT_EQ(result.get_u64("count"sv), 1u);
+    EXPECT_EQ(result.get_u64("count"sv), 2u);
     EXPECT(result.get_i64("frame"sv).value_or(0) > 0);
     auto frame_url = result.get_string("frameUrl"sv);
     EXPECT(frame_url.has_value() && frame_url->bytes_as_string_view().ends_with("/frame"sv));
@@ -1553,4 +1616,70 @@ TEST_CASE(isolated_content_scripts_run_on_a_site_with_scripting_turned_off)
     // The extension's own page, framed by the turned-off site, runs its script.
     view->load_from_browser_ui(URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/framing", server.port()))).release_value());
     EXPECT(wait([&] { return extension_frame_ran.load(); }));
+}
+
+// Content scripts read their extension's manifest and messages, as in Firefox, and a script declared for the page's
+// own world runs there, where the page sees what it defines and it sees no extension APIs.
+TEST_CASE(content_scripts_read_their_manifest_and_messages_and_main_world_scripts_run_in_the_page)
+{
+    Test::HeadlessTestEnvironment env { "TestExtContentMetadata"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<RuntimeTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto theme = TRY_OR_FAIL(load_default_theme());
+    LoopbackHttpServer server([](ByteString const&) -> HttpResponseSpec {
+        return { .body = "<!DOCTYPE html><title>Page</title><script>window.seenEarly = String(window.fromMainWorld);</script><p id='msg'>Page</p>" };
+    });
+
+    auto directory = LexicalPath::join(env.directory(), "metadata-ext"sv).string();
+    write_ext_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "__MSG_extensionName__", "version": "3.1.4", "default_locale": "en",
+        "browser_specific_settings": { "gecko": { "id": "metadata@ladyflock.example" } },
+        "content_scripts": [
+            { "matches": ["http://127.0.0.1/*"], "js": ["main.js"], "world": "MAIN", "run_at": "document_start" },
+            { "matches": ["http://127.0.0.1/*"], "js": ["isolated.js"], "run_at": "document_idle" }
+        ]
+    })"sv);
+    write_ext_file(directory, "_locales/en/messages.json"sv, R"({
+        "extensionName": { "message": "Metadata Fixture" },
+        "greeting": { "message": "Hello $1", "placeholders": {} }
+    })"sv);
+    write_ext_file(directory, "main.js"sv, R"(
+        window.fromMainWorld = typeof browser === "undefined" && typeof chrome === "undefined" ? "no-apis" : "apis-leaked";
+    )"sv);
+    write_ext_file(directory, "isolated.js"sv, R"(
+        const manifest = browser.runtime.getManifest();
+        document.documentElement.dataset.metadata = [manifest.version, browser.i18n.getMessage("greeting", ["there"]),
+            browser.i18n.getUILanguage().length > 0, browser.extension.inIncognitoContext, typeof window.fromMainWorld].join("|");
+    )"sv);
+
+    auto& manager = *app->default_session().extension_manager;
+    (void)TRY_OR_FAIL(manager.load_unpacked(directory, true));
+
+    auto view = WebView::HeadlessWebView::create(theme, { 800, 600 }, WebView::IsPrivate::No);
+    Vector<Utf16String> titles;
+    view->on_title_change = [&](auto const& title) { titles.append(title); };
+    bool expired = false;
+    auto timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [&] { expired = true; });
+    timeout->start();
+    auto url = URL::Parser::basic_parse(MUST(String::formatted("http://127.0.0.1:{}/page", server.port()))).release_value();
+    view->load_from_browser_ui(url);
+    Core::EventLoop::current().spin_until([&] {
+        auto const& document = view->traversable().active_document();
+        return expired || (document.creation_url() == url && document.is_completely_loaded());
+    });
+    view->run_javascript(R"(
+        const timer = setInterval(() => {
+            const metadata = document.documentElement.dataset.metadata;
+            if (!metadata)
+                return;
+            clearInterval(timer);
+            document.title = metadata + "|" + window.fromMainWorld + "|" + window.seenEarly;
+        }, 20);
+    )"_string);
+    Core::EventLoop::current().spin_until([&] { return expired || any_of(titles, [](auto const& title) { return title.contains("|"sv); }); });
+    timeout->stop();
+    EXPECT(!expired);
+    // The isolated script can't see the page's globals, which the main-world script set before the page's own script ran.
+    EXPECT(titles.contains_slow("3.1.4|Hello there|true|false|undefined|no-apis|no-apis"_utf16));
+    if (!titles.is_empty())
+        warnln("Last title: {}", titles.last());
 }

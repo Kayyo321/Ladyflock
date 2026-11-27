@@ -58,6 +58,7 @@
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/Dump.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/Extensions/WebRequestClient.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/FileAPI/BlobURLStore.h>
@@ -4167,10 +4168,15 @@ void ConnectionFromClient::set_picture_in_picture_window_controls_in_use(Web::Pa
         page->page().set_picture_in_picture_window_controls_in_use(in_use);
 }
 
-void ConnectionFromClient::set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
+void ConnectionFromClient::set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page)
 {
     if (auto page = this->page(page_id); page.has_value())
-        page->page().set_hosted_extension_context(move(extension_id), move(extension_uuid), move(manifest_json), move(locale_messages_json));
+        page->page().set_hosted_extension_context(move(extension_id), move(extension_uuid), move(manifest_json), move(locale_messages_json), is_background_page);
+}
+
+void ConnectionFromClient::set_extension_content_script_metadata(String extension_id, String manifest_json, String locale_messages_json)
+{
+    Web::Extensions::ExtensionContentScriptHost::set_extension_metadata(move(extension_id), move(manifest_json), move(locale_messages_json));
 }
 
 void ConnectionFromClient::attach_extension_content_scripts(Web::PageId page_id, Web::HTML::CrossProcessId document_id, Vector<Web::Extensions::AttachedContentScript> scripts)

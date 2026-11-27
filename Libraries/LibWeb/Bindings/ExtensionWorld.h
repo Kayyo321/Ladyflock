@@ -42,7 +42,8 @@ public:
         String extension_id,
         String extension_uuid,
         String manifest_json,
-        String locale_messages_json = {});
+        String locale_messages_json = {},
+        bool is_background_page = false);
 
     virtual ~ExtensionRealmContext() override;
 
@@ -51,6 +52,7 @@ public:
     u64 grant_generation() const { return m_grant_generation; }
     void set_grant_generation(u64 generation) { m_grant_generation = generation; }
     bool is_revoked() const { return m_revoked; }
+    bool has_manifest_permission(StringView permission) const;
 
     JS::Realm& realm() const { return *m_realm; }
     WrapperWorld& wrapper_world() const { return *m_wrapper_world; }
@@ -93,11 +95,17 @@ private:
     JS::Value create_i18n_object();
     JS::Value create_runtime_port(String const& id, String const& name, JS::Value sender);
     JS::ThrowCompletionOr<JS::Value> connect_runtime_port(JS::VM&);
+    JS::ThrowCompletionOr<JS::Value> connect_native_port(JS::VM&);
     void notify_runtime_port(StringView method, String const& id, Optional<String> payload = {});
     void forget_runtime_port(String const& id);
     JS::Value create_namespace_object(StringView ns_name, ReadonlySpan<StringView> methods, bool is_chrome);
     JS::Value create_event_object(StringView ns_name, StringView event_name);
     JS::ThrowCompletionOr<JS::Value> invoke_api_call(JS::VM&, StringView ns_name, StringView method_name, bool is_chrome);
+
+    // A method the renderer answers itself, as a promise or through a chrome.* callback.
+    using LocalAnswer = String (*)(ExtensionRealmContext&);
+    JS::ThrowCompletionOr<JS::Value> answer_locally(JS::VM&, bool is_chrome, StringView result_json);
+    void define_local_method(JS::Object&, StringView name, bool is_chrome, LocalAnswer);
 
     GC::Ref<DOM::Document> m_document;
     String m_extension_id;

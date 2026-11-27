@@ -833,6 +833,7 @@ void ConnectionFromUI::extension_window_closed(u64 window_id)
     });
     manager->action_controller().clear_window_state(window_id);
     manager->sidebar_controller().clear_window_state(window_id);
+    manager->notify_window_removed(window_id);
 }
 
 void ConnectionFromUI::view_set_extension_window(u64 view_id, u64 window_id)

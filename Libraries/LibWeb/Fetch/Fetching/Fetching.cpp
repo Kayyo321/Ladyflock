@@ -649,6 +649,19 @@ void upgrade_request_to_https_for_known_hsts_host_if_appropriate(Page& page, Inf
     }
 }
 
+// The browser decides, since what the extension may access changes as the user grants and withdraws it.
+static bool extension_page_may_read_cross_origin(Infrastructure::Request const& request, URL::Origin const& origin)
+{
+    auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(request));
+    auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr;
+    if (!window)
+        return false;
+    auto& document = window->associated_document();
+    if (!document.origin().is_same_origin(origin))
+        return false;
+    return document.page().client().page_did_request_extension_cross_origin_access(document.id(), request.current_url());
+}
+
 // https://fetch.spec.whatwg.org/#concept-main-fetch
 GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, Recursive recursive)
 {
@@ -772,6 +785,7 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
             && request->current_url().scheme() == "file"sv
             && request->destination() == Infrastructure::Request::Destination::Font;
 
+        request->set_extension_cross_origin_read(false);
         if (
             (origin && request->current_url().origin().is_same_origin(*origin) && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic)
             || is_file_to_file_font_load
@@ -785,6 +799,17 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
 
             // NOTE: HTML assigns any documents and workers created from URLs whose scheme is "data" a unique
             //       opaque origin. Service workers can only be created from URLs whose scheme is an HTTP(S) scheme.
+        }
+
+        // AD-HOC: As in Firefox, an extension's own page may read responses from the hosts the extension has access to,
+        //         so its cross-origin request to one of them is fetched as a same-origin request would be.
+        if (origin && !origin->is_opaque() && origin->scheme() == "moz-extension"sv && request->mode() == Infrastructure::Request::Mode::CORS
+            && Infrastructure::is_http_or_https_scheme(request->current_url().scheme())
+            && extension_page_may_read_cross_origin(*request, *origin)) {
+            request->set_response_tainting(Infrastructure::Request::ResponseTainting::Basic);
+            // Its credentials stay those of a cross-origin request: sent only when it asks for them.
+            request->set_extension_cross_origin_read(true);
+            return scheme_fetch(realm, *fetch_params);
         }
 
         // -> request’s mode is "same-origin"
@@ -1151,7 +1176,7 @@ static void notify_web_request_event(Infrastructure::FetchParams const& params, 
     auto details = web_request_details(params, event);
     if (!details.has_value())
         return;
-    if (event == Extensions::WebRequestEvent::SendHeaders) {
+    if (event == Extensions::WebRequestEvent::BeforeSendHeaders || event == Extensions::WebRequestEvent::SendHeaders) {
         details->headers = params.request()->header_list()->headers();
         details->headers.remove_all_matching([](auto const& header) {
             return header.name.equals_ignoring_ascii_case("Authorization"sv)
@@ -1164,6 +1189,9 @@ static void notify_web_request_event(Infrastructure::FetchParams const& params, 
             details->error = response->network_error_message().value_or("Network error"_string);
         else
             details->status_code = response->status();
+        // Sent only to listeners that ask for responseHeaders, as for onHeadersReceived.
+        if (!response->is_network_error() && event != Extensions::WebRequestEvent::ErrorOccurred)
+            details->headers = response->header_list()->headers();
         if (event == Extensions::WebRequestEvent::BeforeRedirect) {
             auto target = response->location_url(params.request()->current_url().fragment());
             if (!target.is_error())
@@ -2727,7 +2755,9 @@ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm& realm, Infrastru
             request->credentials_mode() == Infrastructure::Request::CredentialsMode::Include
             // - request’s credentials mode is "same-origin" and request’s response tainting is "basic"
             || (request->credentials_mode() == Infrastructure::Request::CredentialsMode::SameOrigin
-                && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic)
+                && request->response_tainting() == Infrastructure::Request::ResponseTainting::Basic
+                // AD-HOC: An extension page's read of another origin is not same-origin for credentials.
+                && !request->is_extension_cross_origin_read())
             // is true; otherwise false.
         ) {
             include_credentials = HTTP::Cookie::IncludeCredentials::Yes;
@@ -3434,6 +3464,7 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
     auto transfer_lease = fetch_params.has_response_body_transfer_lease()
         ? Requests::RequestClient::TransferLease::Yes
         : Requests::RequestClient::TransferLease::No;
+    notify_web_request_event(fetch_params, Extensions::WebRequestEvent::BeforeSendHeaders);
     notify_web_request_event(fetch_params, Extensions::WebRequestEvent::SendHeaders);
     auto network_transport = ResourceLoader::the().load(load_request, on_headers_received, on_data_received, on_cached_body_available, on_complete, transfer_lease);
     if (network_transport) {

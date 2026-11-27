@@ -273,6 +273,12 @@ fn check_clipboard_read_permission(realm: Gc<Realm>, is_running_from_paste: bool
 
     let window = relevant_window(realm);
 
+    // AD-HOC: An extension's own page with the clipboardRead permission reads the clipboard at any time, as in Firefox.
+    //         It asks the UI process for the data, which checks the permission again and hands over all of it.
+    if window.is_extension_page_with_permission("clipboardRead") {
+        return ClipboardReadPermission::GrantedForOwnOriginData;
+    }
+
     // NB: "This API must not be available unless the script is executing in the context of a document that has focus."
     //     https://w3c.github.io/clipboard-apis/#privacy-async
     if !window.associated_document().has_focus() {
@@ -304,6 +310,11 @@ fn check_clipboard_write_permission(realm: Gc<Realm>) -> bool {
     // NOTE: The clipboard permission is undergoing a refactor because the clipboard-write permission was removed from
     //       the Permissions spec. So this partially implements the proposed update:
     //       https://pr-preview.s3.amazonaws.com/w3c/clipboard-apis/pull/164.html#write-permission
+
+    // AD-HOC: An extension's own page with the clipboardWrite permission writes at any time, as in Firefox.
+    if relevant_window(realm).is_extension_page_with_permission("clipboardWrite") {
+        return true;
+    }
 
     // 1. Let hasGesture be true if the relevant global object of this has transient activation, false otherwise.
     let has_gesture = relevant_window(realm).has_transient_activation();

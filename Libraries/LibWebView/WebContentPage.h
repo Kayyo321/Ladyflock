@@ -321,6 +321,7 @@ private:
     virtual void did_change_background_color(Gfx::Color color) override;
     virtual void did_change_preferred_size(Gfx::IntSize size) override;
     virtual void did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem item, String, Optional<Web::HTML::CrossProcessId> writing_document_id) override;
+    bool is_extension_page_with_permission(Optional<Web::HTML::CrossProcessId> document_id, StringView permission);
     virtual void did_change_media_session_state(Optional<Web::MediaSession::MediaSessionState>) override;
     virtual void did_change_screen_wake_lock_state(Web::ScreenWakeLockState wake_lock_state) override;
     virtual void did_start_using_gamepads() override;

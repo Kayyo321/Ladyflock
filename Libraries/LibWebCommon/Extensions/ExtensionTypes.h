@@ -63,6 +63,16 @@ enum class WebRequestResourceType : u8 {
     Ping,
     WebSocket,
     Other,
+    // Types Firefox reports that Ladyflock never issues, so that a filter or rule naming them matches nothing.
+    ObjectSubrequest,
+    Xslt,
+    Beacon,
+    XmlDtd,
+    CspReport,
+    Imageset,
+    WebManifest,
+    Speculative,
+    Json,
 };
 
 enum class WebRequestEvent : u8 {
@@ -73,6 +83,7 @@ enum class WebRequestEvent : u8 {
     ResponseStarted,
     Completed,
     ErrorOccurred,
+    BeforeSendHeaders,
 };
 
 struct WEBCOMMON_API NamedSource {

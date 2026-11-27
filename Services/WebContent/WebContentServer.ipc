@@ -367,7 +367,8 @@ endpoint WebContentServer routed by Web::PageId page_id
 
     media_session_action(Web::PageId page_id, Web::Bindings::MediaSessionAction action, Optional<double> seek_offset, Optional<double> seek_time, Optional<bool> fast_seek) =|
 
-    set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json) =|
+    set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page) =|
+    set_extension_content_script_metadata(String extension_id, String manifest_json, String locale_messages_json) =|
     attach_extension_content_scripts(Web::PageId page_id, Web::HTML::CrossProcessId document_id, Vector<Web::Extensions::AttachedContentScript> scripts) =|
     execute_extension_script(Web::PageId page_id, u64 execution_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json, Optional<Web::HTML::CrossProcessId> document_id) =|
     inject_extension_css(Web::PageId page_id, String extension_id, String key, String css, bool remove, Optional<Web::HTML::CrossProcessId> document_id) =|

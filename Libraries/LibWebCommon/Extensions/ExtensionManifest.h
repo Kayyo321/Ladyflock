@@ -30,6 +30,8 @@ struct WEBCOMMON_API ContentScriptRule {
     RunAt run_at { RunAt::DocumentIdle };
     bool all_frames { false };
     bool match_about_blank { false };
+    // world: "MAIN" runs the script in the page's own realm, without extension APIs.
+    bool main_world { false };
 };
 
 struct WEBCOMMON_API BackgroundConfig {
@@ -67,6 +69,11 @@ struct WEBCOMMON_API WebAccessibleResourceRule {
     Vector<MatchPattern> matches;
     Vector<String> extension_ids;
 };
+
+class ExtensionManifest;
+// Whether the extension may use declarative rules: with declarativeNetRequest, or with
+// declarativeNetRequestWithHostAccess, under which every rule needs host access.
+WEBCOMMON_API bool uses_declarative_net_request(ExtensionManifest const&);
 
 class WEBCOMMON_API ExtensionManifest {
 public:

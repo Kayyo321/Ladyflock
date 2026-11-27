@@ -46,6 +46,9 @@ public:
 
     StringView identity_id() const { return m_identity_id.bytes_as_string_view(); }
 
+    // Every cookie this jar adds, changes or removes, after its pages have heard of it.
+    Function<void(HTTP::Cookie::Cookie const&, bool removed)> on_cookie_changed;
+
     // A context of nothing stands for a first-party context, as for the UI process's own requests. A third-party context
     // only uses the cookies set in a third-party context under the same top-level site. See HTTP::Cookie::PartitionContext.
     String get_cookie(URL::URL const& url, HTTP::Cookie::Source source, Optional<HTTP::Cookie::PartitionContext> const&, HTTP::Cookie::SameSiteContext);

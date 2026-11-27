@@ -62,6 +62,24 @@ Optional<WebRequestResourceType> web_request_resource_type_from_string(StringVie
         return WebRequestResourceType::WebSocket;
     if (value == "other"sv)
         return WebRequestResourceType::Other;
+    if (value == "object_subrequest"sv)
+        return WebRequestResourceType::ObjectSubrequest;
+    if (value == "xslt"sv)
+        return WebRequestResourceType::Xslt;
+    if (value == "beacon"sv)
+        return WebRequestResourceType::Beacon;
+    if (value == "xml_dtd"sv)
+        return WebRequestResourceType::XmlDtd;
+    if (value == "csp_report"sv)
+        return WebRequestResourceType::CspReport;
+    if (value == "imageset"sv)
+        return WebRequestResourceType::Imageset;
+    if (value == "web_manifest"sv)
+        return WebRequestResourceType::WebManifest;
+    if (value == "speculative"sv)
+        return WebRequestResourceType::Speculative;
+    if (value == "json"sv)
+        return WebRequestResourceType::Json;
     return {};
 }
 
@@ -92,6 +110,24 @@ StringView to_string(WebRequestResourceType type)
         return "websocket"sv;
     case WebRequestResourceType::Other:
         return "other"sv;
+    case WebRequestResourceType::ObjectSubrequest:
+        return "object_subrequest"sv;
+    case WebRequestResourceType::Xslt:
+        return "xslt"sv;
+    case WebRequestResourceType::Beacon:
+        return "beacon"sv;
+    case WebRequestResourceType::XmlDtd:
+        return "xml_dtd"sv;
+    case WebRequestResourceType::CspReport:
+        return "csp_report"sv;
+    case WebRequestResourceType::Imageset:
+        return "imageset"sv;
+    case WebRequestResourceType::WebManifest:
+        return "web_manifest"sv;
+    case WebRequestResourceType::Speculative:
+        return "speculative"sv;
+    case WebRequestResourceType::Json:
+        return "json"sv;
     }
     VERIFY_NOT_REACHED();
 }
@@ -136,6 +172,7 @@ static constexpr Array web_request_events {
     "onResponseStarted"sv,
     "onCompleted"sv,
     "onErrorOccurred"sv,
+    "onBeforeSendHeaders"sv,
 };
 
 Optional<WebRequestEvent> web_request_event_from_string(StringView value)

@@ -409,9 +409,10 @@ TEST_CASE(support_matrix_classification)
     EXPECT_EQ(eval_bad.status, Web::Extensions::CompatibilityStatus::Incompatible);
     EXPECT(eval_bad.unsupported_reasons.size() >= 2);
 
-    auto unsupported_options = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
+    // A module background and a content script in the page's own world both run, as in Firefox.
+    auto execution_options = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
         "manifest_version": 3,
-        "name": "Unsupported execution settings",
+        "name": "Execution settings",
         "version": "1",
         "background": { "scripts": ["background.js"], "type": "module" },
         "content_scripts": [{
@@ -421,12 +422,12 @@ TEST_CASE(support_matrix_classification)
             "match_about_blank": true
         }]
     })"sv));
-    auto eval_options = Web::Extensions::SupportMatrix::evaluate_manifest(unsupported_options);
-    EXPECT_EQ(eval_options.status, Web::Extensions::CompatibilityStatus::Incompatible);
-    EXPECT_EQ(eval_options.unsupported_reasons.size(), 1u);
-    EXPECT(eval_options.unsupported_reasons.first().contains("content_scripts.world"sv));
-    EXPECT(unsupported_options.background()->is_module);
-    EXPECT(unsupported_options.content_scripts().first().match_about_blank);
+    auto eval_options = Web::Extensions::SupportMatrix::evaluate_manifest(execution_options);
+    EXPECT_EQ(eval_options.status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
+    EXPECT(eval_options.unsupported_reasons.is_empty());
+    EXPECT(execution_options.background()->is_module);
+    EXPECT(execution_options.content_scripts().first().match_about_blank);
+    EXPECT(execution_options.content_scripts().first().main_world);
 
     auto unbound_commands = TRY_OR_FAIL(Web::Extensions::ExtensionManifest::parse(R"({
         "manifest_version": 3, "name": "Commands", "version": "1",
@@ -437,7 +438,9 @@ TEST_CASE(support_matrix_classification)
         "manifest_version": 3, "name": "Commands", "version": "1",
         "commands": { "bound": { "suggested_key": { "default": "Ctrl+Shift+Y" } } }
     })"sv));
-    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(bound_commands).status, Web::Extensions::CompatibilityStatus::Incompatible);
+    // A suggested shortcut is accepted. Ladyflock binds no shortcut yet, so commands.getAll reports none, as Firefox
+    // does for a command without one.
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(bound_commands).status, Web::Extensions::CompatibilityStatus::ManifestCompatibleUntested);
 }
 
 TEST_CASE(zip_reader_hardening)
@@ -651,4 +654,57 @@ TEST_CASE(extension_page_localized_messages)
     )"sv,
         "messages.js"sv, true);
     EXPECT_EQ(result, Optional<String> { R"({"result":true})"_string });
+}
+
+// Firefox restricts only the sources of an extension page's scripts, workers and plugins.
+TEST_CASE(extension_csp_restricts_script_sources_only)
+{
+    using Web::Extensions::ExtensionManifest;
+    using Web::Extensions::ManifestVersion;
+    struct Case {
+        StringView policy;
+        bool valid_mv2;
+        bool valid_mv3;
+    };
+    static constexpr Array cases {
+        // 1Password's policy, trimmed: local and remote origins in connect-src and form-action are the extension's own business.
+        Case { "default-src 'none'; form-action https://localhost:3030; frame-ancestors http: https: 'self'; connect-src http://127.0.0.1:12519 wss://b5n.1password.com https:; script-src 'self' 'wasm-unsafe-eval'"sv, true, true },
+        Case { "script-src 'self'; object-src 'self'"sv, true, true },
+        Case { "script-src 'self' 'sha256-abc='; img-src *"sv, true, true },
+        Case { "default-src 'self'"sv, true, true },
+        Case { "script-src 'self' 'unsafe-eval'"sv, true, false },
+        Case { "script-src 'self' https://cdn.example.com"sv, true, false },
+        Case { "script-src 'self' http://localhost:8080"sv, true, false },
+        Case { "script-src 'self' 'unsafe-inline'"sv, false, false },
+        Case { "script-src 'self' https:"sv, false, false },
+        Case { "script-src 'self' https://*.example.com"sv, false, false },
+        Case { "script-src 'self' http://example.com"sv, false, false },
+        Case { "script-src *"sv, false, false },
+        Case { "script-src 'self' data:"sv, false, false },
+        // script-src-elem and script-src-attr take precedence over script-src, so they're held to the same sources.
+        Case { "script-src 'self'; script-src-elem https:"sv, false, false },
+        Case { "script-src 'self'; script-src-attr 'unsafe-inline'"sv, false, false },
+        // Workers fall back to child-src before script-src.
+        Case { "script-src 'self'; child-src https:"sv, false, false },
+        Case { "script-src 'self'; worker-src blob:"sv, true, false },
+        // Plugins are gone in Manifest V3, so only Manifest V2 restricts object-src.
+        Case { "script-src 'self'; object-src https:"sv, false, true },
+        // Without script-src or default-src, scripts are unrestricted.
+        Case { "img-src 'self'"sv, false, false },
+        Case { ""sv, false, false },
+    };
+    for (auto const& test : cases) {
+        auto mv2 = ExtensionManifest::is_valid_extension_csp(test.policy, ManifestVersion::V2);
+        auto mv3 = ExtensionManifest::is_valid_extension_csp(test.policy, ManifestVersion::V3);
+        if (mv2 != test.valid_mv2 || mv3 != test.valid_mv3)
+            warnln("Policy \"{}\": MV2 {} (expected {}), MV3 {} (expected {})", test.policy, mv2, test.valid_mv2, mv3, test.valid_mv3);
+        EXPECT_EQ(mv2, test.valid_mv2);
+        EXPECT_EQ(mv3, test.valid_mv3);
+    }
+
+    // An invalid policy refuses the install, as a manifest error does in Firefox.
+    auto unsafe = MUST(ExtensionManifest::parse(R"({"manifest_version": 2, "name": "A", "version": "1",
+        "content_security_policy": "script-src 'self' 'unsafe-inline'"})"sv));
+    EXPECT(unsafe.has_invalid_csp());
+    EXPECT_EQ(Web::Extensions::SupportMatrix::evaluate_manifest(unsafe).status, Web::Extensions::CompatibilityStatus::Incompatible);
 }

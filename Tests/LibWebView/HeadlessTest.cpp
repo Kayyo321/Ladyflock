@@ -48,7 +48,7 @@ HeadlessTestEnvironment::HeadlessTestEnvironment(StringView name, unsigned timeo
         StringView variable;
         StringView name;
     };
-    for (auto const& location : Array { Location { "XDG_DATA_HOME"sv, "data"sv }, Location { "XDG_CACHE_HOME"sv, "cache"sv } }) {
+    for (auto const& location : Array { Location { "XDG_DATA_HOME"sv, "data"sv }, Location { "XDG_CACHE_HOME"sv, "cache"sv }, Location { "XDG_DOWNLOAD_DIR"sv, "downloads"sv } }) {
         auto path = LexicalPath::join(m_directory, location.name).string();
         MUST(Core::Directory::create(path, Core::Directory::CreateDirectories::Yes));
         MUST(Core::Environment::set(location.variable, path, Core::Environment::Overwrite::Yes));

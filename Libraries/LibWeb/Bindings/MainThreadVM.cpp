@@ -629,7 +629,16 @@ void initialize_agent(HTML::AgentType type)
         // 6. If referrer is a Script Record or a Cyclic Module Record, then:
         if (referrer.has<GC::Ref<JS::Script>>() || referrer.has<GC::Ref<JS::CyclicModule>>()) {
             // 1. Set referencingScript to referrer.[[HostDefined]].
-            referencing_script = *HTML::script_from_host_defined(referrer.has<GC::Ref<JS::Script>>() ? referrer.get<GC::Ref<JS::Script>>()->host_defined() : referrer.get<GC::Ref<JS::CyclicModule>>()->host_defined());
+            auto* script = HTML::script_from_host_defined(referrer.has<GC::Ref<JS::Script>>() ? referrer.get<GC::Ref<JS::Script>>()->host_defined() : referrer.get<GC::Ref<JS::CyclicModule>>()->host_defined());
+
+            // AD-HOC: An extension's content script runs in an isolated realm as a script of its own, with no HTML script
+            //         to fetch modules for it. It can't import modules yet, and is told so rather than taking its page down.
+            if (!script) {
+                auto completion = JS::throw_completion(JS::TypeError::create(settings_object->realm(), "Dynamic import is not available to this script"_utf16));
+                JS::finish_loading_imported_module(referrer, module_request, payload, completion);
+                return;
+            }
+            referencing_script = *script;
 
             // 2. Set settingsObject to referencingScript's settings object.
             settings_object = referencing_script->settings_object();

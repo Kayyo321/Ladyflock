@@ -15,14 +15,17 @@ static bool supported_page_menu_properties(JsonObject const& properties, bool cr
 {
     bool supported = true;
     properties.for_each_member([&](auto const& key, auto const&) {
-        if (!(creating && key == "id"sv) && !key.is_one_of("title"sv, "contexts"sv, "type"sv, "documentUrlPatterns"sv, "targetUrlPatterns"sv))
+        // Ladyflock shows no menu item icons, so icons change nothing.
+        if (!(creating && key == "id"sv) && !key.is_one_of("title"sv, "contexts"sv, "type"sv, "documentUrlPatterns"sv, "targetUrlPatterns"sv, "visible"sv, "icons"sv))
             supported = false;
     });
     if (properties.has("type"sv)) {
         auto type = properties.get_string("type"sv);
-        if (!type.has_value() || *type != "normal"sv)
+        if (!type.has_value() || !type->is_one_of("normal"sv, "separator"sv))
             return false;
     }
+    if (properties.has("visible"sv) && !properties.get_bool("visible"sv).has_value())
+        return false;
     return supported;
 }
 
@@ -47,7 +50,8 @@ ErrorOr<void> ExtensionManager::change_page_menu(String const& extension_id, Str
         return Error::from_string_literal("Only normal page menu items are supported");
     auto const& details = properties.as_object();
     auto title = details.get_string("title"sv);
-    if ((creating || details.has("title"sv)) && (!title.has_value() || title->is_empty() || title->byte_count() > 512))
+    bool separator = details.get_string("type"sv) == "separator"sv;
+    if ((creating || details.has("title"sv)) && !separator && (!title.has_value() || title->is_empty() || title->byte_count() > 512))
         return Error::from_string_literal("Expected a menu title of at most 512 bytes");
 
     MenuRegistration next {};
@@ -68,13 +72,20 @@ ErrorOr<void> ExtensionManager::change_page_menu(String const& extension_id, Str
     }
     if (title.has_value())
         next.title = *title;
+    // A separator only divides other items, so it is not shown as an item of its own.
+    if (details.has("type"sv))
+        next.is_separator = separator;
+    if (auto visible = details.get_bool("visible"sv); visible.has_value())
+        next.visible = *visible;
     if (details.has("contexts"sv)) {
         auto contexts = details.get_array("contexts"sv);
         if (!contexts.has_value() || contexts->is_empty() || contexts->size() > 16)
             return Error::from_string_literal("Expected a nonempty menu context list");
         next.contexts.clear();
         for (auto const& value : contexts->values()) {
-            if (!value.is_string() || !value.as_string().is_one_of("all"sv, "page"sv, "frame"sv, "editable"sv, "link"sv, "image"sv, "video"sv, "audio"sv))
+            // Ladyflock shows extension items only in the page's own menu. Items for the toolbar button, tabs, bookmarks
+            // or the tools menu are kept but never shown.
+            if (!value.is_string() || !value.as_string().is_one_of("all"sv, "page"sv, "frame"sv, "editable"sv, "link"sv, "image"sv, "video"sv, "audio"sv, "selection"sv, "browser_action"sv, "action"sv, "page_action"sv, "tab"sv, "tools_menu"sv, "bookmark"sv, "password"sv))
                 return Error::from_string_literal("Unsupported menu context");
             next.contexts.append(value.as_string());
         }
@@ -113,6 +124,8 @@ ErrorOr<void> ExtensionManager::change_page_menu(String const& extension_id, Str
 
 bool ExtensionManager::MenuRegistration::matches(CanonicalNavigable const& frame, ExtensionMenuTarget const& target) const
 {
+    if (!visible || is_separator)
+        return false;
     if (!documents.is_empty() && !any_of(documents, [&](auto const& pattern) { return pattern.matches(frame.active_document_url()); }))
         return false;
     if (!targets.is_empty() || matches_abp_links) {
@@ -131,6 +144,10 @@ bool ExtensionManager::MenuRegistration::matches(CanonicalNavigable const& frame
             return target.link_url.has_value();
         if (context == "editable"sv)
             return target.editable;
+        if (context == "selection"sv)
+            return target.has_selection;
+        if (context == "password"sv)
+            return false;
         if (context == "page"sv)
             return !frame.parent() && !target.link_url.has_value() && !target.media_type.has_value() && !target.editable && !target.has_selection;
         return target.media_type == context;

@@ -2969,12 +2969,13 @@ NonnullRefPtr<Audio::RecordStream::CreatePromise> PageClient::create_audio_recor
     VERIFY_NOT_REACHED();
 }
 
-void Page::set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
+void Page::set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page)
 {
     m_hosted_extension_id = move(extension_id);
     m_hosted_extension_uuid = move(extension_uuid);
     m_hosted_extension_manifest_json = move(manifest_json);
     m_hosted_extension_locale_messages_json = move(locale_messages_json);
+    m_hosts_extension_background_page = is_background_page;
 
     for (auto const& navigable : hosted_navigables()) {
         auto document = navigable->active_document();
@@ -2982,7 +2983,7 @@ void Page::set_hosted_extension_context(String extension_id, String extension_uu
             continue;
         if (document->url().scheme() == "moz-extension"sv
             && document->url().serialized_host() == *m_hosted_extension_uuid) {
-            document->initialize_extension_page_context(*m_hosted_extension_id, *m_hosted_extension_uuid, *m_hosted_extension_manifest_json, m_hosted_extension_locale_messages_json);
+            document->initialize_extension_page_context(*m_hosted_extension_id, *m_hosted_extension_uuid, *m_hosted_extension_manifest_json, m_hosted_extension_locale_messages_json, m_hosts_extension_background_page);
         }
     }
 }

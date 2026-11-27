@@ -26,13 +26,25 @@ class WEB_API ExtensionContentScriptHost final : public GC::Cell {
 
 public:
     static GC::Ref<ExtensionContentScriptHost> create(DOM::Document&);
+
+    // The manifest and messages an extension's content scripts read, which the browser sends to each renderer once
+    // before that renderer runs any of the extension's content scripts.
+    struct ExtensionMetadata {
+        String manifest_json;
+        String locale_messages_json;
+    };
+    static void set_extension_metadata(String extension_id, String manifest_json, String locale_messages_json);
+    static Optional<ExtensionMetadata const&> extension_metadata(StringView extension_id);
     virtual ~ExtensionContentScriptHost() override;
 
     void attach_scripts(Vector<AttachedContentScript>);
     void run_scripts_for(RunAt);
     void inject_attached_script(AttachedContentScript const&);
 
-    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
+    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page);
+    // Whether the document is an extension's own page whose manifest asks for the permission. The browser checks
+    // again before it acts on anything the permission allows.
+    bool is_extension_page_with_permission(StringView permission) const;
 
     // Dynamic execution (tabs.executeScript / scripting.executeScript) in the isolated realm.
     void execute_script_dynamically(u64 call_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json);
@@ -48,6 +60,7 @@ private:
 
     virtual void visit_edges(Cell::Visitor&) override;
 
+    void run_deferred_main_world_scripts();
     GC::Ref<Bindings::ExtensionRealmContext> ensure_content_script_realm(String const& extension_id, String const& extension_uuid, u64 grant_generation);
 
     GC::Ref<DOM::Document> m_document;
@@ -55,6 +68,7 @@ private:
     bool m_ran_document_start { false };
     bool m_ran_document_end { false };
     bool m_ran_document_idle { false };
+    Vector<AttachedContentScript> m_deferred_main_world_scripts;
 
     HashMap<String, GC::Ref<Bindings::ExtensionRealmContext>> m_extension_realms;
     GC::Ptr<Bindings::ExtensionRealmContext> m_extension_page_context;

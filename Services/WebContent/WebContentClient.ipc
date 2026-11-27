@@ -343,6 +343,7 @@ endpoint WebContentClient routed by Web::PageId page_id
     [NotRouted] register_dedicated_worker(Web::PageId page_id, Web::HTML::WorkerAgentStartRequest request, IPC::TransportHandle worker_transport) =|
 
     [NotRouted] did_request_extension_resource(Web::PageId page_id, URL::URL url, Web::HTML::CrossProcessId document_id) => (Web::Extensions::ExtensionResourceResponse response)
+    [NotRouted] did_request_extension_cross_origin_access(Web::PageId page_id, Web::HTML::CrossProcessId document_id, URL::URL url) => (bool allowed)
     [NotRouted] did_call_extension_api(Web::PageId page_id, u64 call_id, String extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json) =|
     [NotRouted] did_reply_extension_event(Web::PageId page_id, u64 reply_id, bool has_value, String result_json) =|
     [NotRouted] did_finish_extension_script_execution(Web::PageId page_id, u64 call_id, bool success, String result_or_error_json) =|

@@ -387,7 +387,8 @@ private:
     virtual void picture_in_picture_window_did_close(Web::PageId page_id, bool pause_video) override;
     virtual void set_picture_in_picture_window_controls_in_use(Web::PageId page_id, bool in_use) override;
 
-    virtual void set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json) override;
+    virtual void set_hosted_extension_context(Web::PageId page_id, String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page) override;
+    virtual void set_extension_content_script_metadata(String extension_id, String manifest_json, String locale_messages_json) override;
     virtual void attach_extension_content_scripts(Web::PageId page_id, Web::HTML::CrossProcessId document_id, Vector<Web::Extensions::AttachedContentScript> scripts) override;
     virtual void execute_extension_script(Web::PageId page_id, u64 execution_id, String extension_id, String extension_uuid, u64 grant_generation, Vector<String> sources, Optional<String> func_source, Optional<String> args_json, Optional<Web::HTML::CrossProcessId> document_id) override;
     virtual void inject_extension_css(Web::PageId page_id, String extension_id, String key, String css, bool remove, Optional<Web::HTML::CrossProcessId> document_id) override;

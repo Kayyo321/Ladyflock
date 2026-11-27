@@ -258,6 +258,10 @@ public:
     [[nodiscard]] bool use_cors_preflight() const { return m_use_cors_preflight; }
     void set_use_cors_preflight(bool use_cors_preflight) { m_use_cors_preflight = use_cors_preflight; }
 
+    // AD-HOC: Whether an extension's own page reads this cross-origin response, as it may for a host it has access to.
+    [[nodiscard]] bool is_extension_cross_origin_read() const { return m_extension_cross_origin_read; }
+    void set_extension_cross_origin_read(bool value) { m_extension_cross_origin_read = value; }
+
     [[nodiscard]] CredentialsMode credentials_mode() const { return m_credentials_mode; }
     void set_credentials_mode(CredentialsMode credentials_mode) { m_credentials_mode = credentials_mode; }
 
@@ -491,6 +495,7 @@ private:
     // https://fetch.spec.whatwg.org/#use-cors-preflight-flag
     // A request has an associated use-CORS-preflight flag. Unless stated otherwise, it is unset.
     bool m_use_cors_preflight { false };
+    bool m_extension_cross_origin_read { false };
 
     // https://fetch.spec.whatwg.org/#concept-request-credentials-mode
     // A request has an associated credentials mode, which is "omit", "same-origin", or "include". Unless stated

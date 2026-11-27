@@ -2311,9 +2311,25 @@ void WebContentPage::did_change_background_color(Gfx::Color color)
 
 // NB: The system clipboard belongs to the user, so a page reaches it only right after the user's own input to it, as
 //     with a copy or paste shortcut, a click on a page control, or the browser's Paste command.
+// An enabled extension's own page that holds the given permission, as the browser knows the document and the renderer.
+bool WebContentPage::is_extension_page_with_permission(Optional<Web::HTML::CrossProcessId> document_id, StringView permission)
+{
+    if (!document_id.has_value())
+        return false;
+    auto document = hosted_document_with_id(*document_id);
+    if (!document || !document->extension_id().has_value() || client().hosted_extension_id() != document->extension_id())
+        return false;
+    auto& manager = client().session().extension_manager;
+    if (!manager || !manager->extensions_enabled())
+        return false;
+    auto extension = manager->extension_by_id(*document->extension_id());
+    return extension.has_value() && extension->enabled && extension->manifest.has_permission(permission);
+}
+
 void WebContentPage::did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem item, String, Optional<Web::HTML::CrossProcessId> writing_document_id)
 {
-    if (!has_transient_user_activation())
+    // The clipboardWrite permission lets an extension's pages write without a user gesture, as in Firefox.
+    if (!has_transient_user_activation() && !is_extension_page_with_permission(writing_document_id, "clipboardWrite"sv))
         return;
 
     // A page writes only text, HTML and PNG data. Any other format can carry more, like a list of file URLs that the
@@ -2690,6 +2706,18 @@ void WebContentPage::did_request_clipboard_entries(u64 request_id, Web::HTML::Cr
 {
     Vector<Web::Clipboard::SystemClipboardItem> items;
     auto document = hosted_document_with_id(reading_document_id);
+    // The clipboardRead permission lets an extension's pages read whatever the clipboard holds, as in Firefox.
+    if (document && is_extension_page_with_permission(reading_document_id, "clipboardRead"sv)) {
+        view().read_clipboard_item([page = NonnullRefPtr { *this }, request_id](Web::Clipboard::SystemClipboardItem item) {
+            if (!page->is_open())
+                return;
+            Vector<Web::Clipboard::SystemClipboardItem> items;
+            if (!item.system_clipboard_representations.is_empty())
+                items.append(move(item));
+            page->async_retrieved_clipboard_entries(request_id, items);
+        });
+        return;
+    }
     if (!document || !has_transient_user_activation()) {
         async_retrieved_clipboard_entries(request_id, items);
         return;

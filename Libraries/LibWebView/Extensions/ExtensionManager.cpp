@@ -16,27 +16,37 @@
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
+#include <LibCore/MimeData.h>
+#include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibCrypto/Hash/Hash.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibGfx/SystemTheme.h>
+#include <LibHTTP/Cookie/Cookie.h>
 #include <LibRequests/RequestClient.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibURL/Parser.h>
 #include <LibWebCommon/HTML/BrowsingContext.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/BlobURLStore.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CanonicalNavigable.h>
 #include <LibWebView/CanonicalTraversable.h>
+#include <LibWebView/CookieJar.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/Extensions/MozillaAddonTrust.h>
+#include <LibWebView/Extensions/NativeMessaging.h>
+#include <LibWebView/FileDownloader.h>
 #include <LibWebView/HeadlessWebView.h>
+#include <LibWebView/NotificationManager.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Settings.h>
+#include <LibWebView/SystemIdle.h>
 #include <LibWebView/Utilities.h>
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebContentPage.h>
+#include <time.h>
 
 namespace WebView::Extensions {
 
@@ -74,7 +84,9 @@ static String mime_type_for_path(StringView path)
         return "image/jpeg"_string;
     if (path.ends_with(".woff2"sv, CaseSensitivity::CaseInsensitive))
         return "font/woff2"_string;
-    return "application/octet-stream"_string;
+    // Everything else, such as WebAssembly, which can only be compiled as it streams in when served as
+    // application/wasm, gets the type its extension names.
+    return MUST(String::from_utf8(Core::guess_mime_type_based_on_filename(path)));
 }
 
 static ErrorOr<String> read_utf8_file_bounded(ByteString const& path)
@@ -394,18 +406,87 @@ String ExtensionManager::locale_messages_for(InstalledExtension const& extension
     return messages.serialized();
 }
 
+// Tells the extensions with the downloads permission what became of the profile's downloads.
+class ExtensionManager::DownloadEvents final : public FileDownloaderObserver {
+public:
+    AK_ALLOC_WITH_KMALLOC;
+
+    explicit DownloadEvents(ExtensionManager& manager)
+        : m_manager(manager)
+    {
+    }
+
+private:
+    virtual void download_added(FileDownloader::Download const& download) override
+    {
+        if (download.is_private != IsPrivate::No || !download.identity_id.is_empty())
+            return;
+        auto item = m_manager.serialize_extension_download(download);
+        m_snapshots.set(download.id, item);
+        JsonArray arguments;
+        arguments.must_append(move(item));
+        m_manager.dispatch_to_extensions_with_permission("downloads"sv, "downloads"sv, "onCreated"sv, arguments.serialized());
+    }
+
+    virtual void download_updated(FileDownloader::Download const& download) override
+    {
+        if (download.is_private != IsPrivate::No || !download.identity_id.is_empty())
+            return;
+        auto item = m_manager.serialize_extension_download(download);
+        auto previous = m_snapshots.get(download.id).value_or({});
+        // A delta names each changed field with its previous and current value, as in Firefox.
+        JsonObject delta;
+        delta.set("id"sv, download.id);
+        for (auto key : { "state"sv, "paused"sv, "canResume"sv, "error"sv, "totalBytes"sv, "fileSize"sv, "exists"sv, "filename"sv, "url"sv }) {
+            auto current = item.get(key);
+            auto before = previous.get(key);
+            if ((current.has_value() ? current->serialized() : String {}) == (before.has_value() ? before->serialized() : String {}))
+                continue;
+            JsonObject change;
+            if (before.has_value())
+                change.set("previous"sv, *before);
+            if (current.has_value())
+                change.set("current"sv, *current);
+            delta.set(key, move(change));
+        }
+        m_snapshots.set(download.id, move(item));
+        if (delta.size() == 1)
+            return;
+        JsonArray arguments;
+        arguments.must_append(move(delta));
+        m_manager.dispatch_to_extensions_with_permission("downloads"sv, "downloads"sv, "onChanged"sv, arguments.serialized());
+    }
+
+    virtual void download_removed(u64 id, IsPrivate is_private) override
+    {
+        if (is_private != IsPrivate::No || !m_snapshots.remove(id))
+            return;
+        m_manager.m_extension_downloads.remove(id);
+        JsonArray arguments;
+        arguments.must_append(id);
+        m_manager.dispatch_to_extensions_with_permission("downloads"sv, "downloads"sv, "onErased"sv, arguments.serialized());
+    }
+
+    ExtensionManager& m_manager;
+    HashMap<u64, JsonObject> m_snapshots;
+};
+
 ErrorOr<NonnullOwnPtr<ExtensionManager>> ExtensionManager::create(ByteString profile_data_root, Database::Database* shared_database)
 {
     NonnullOwnPtr<ExtensionStorage> storage = shared_database
         ? TRY(ExtensionStorage::create(*shared_database))
         : ExtensionStorage::create();
-    return adopt_own(*new ExtensionManager(move(profile_data_root), move(storage)));
+    NonnullOwnPtr<ExtensionStorage> sync_storage = shared_database
+        ? TRY(ExtensionStorage::create(*shared_database, ExtensionStorage::Area::Sync))
+        : ExtensionStorage::create();
+    return adopt_own(*new ExtensionManager(move(profile_data_root), move(storage), move(sync_storage)));
 }
 
-ExtensionManager::ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<ExtensionStorage> storage)
+ExtensionManager::ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<ExtensionStorage> storage, NonnullOwnPtr<ExtensionStorage> sync_storage)
     : m_profile_data_root(move(profile_data_root))
     , m_extensions_root(LexicalPath::join(m_profile_data_root, "extensions"sv).string())
     , m_storage(move(storage))
+    , m_sync_storage(move(sync_storage))
     , m_alarms([this](String const& extension_id, JsonObject alarm) {
         JsonArray arguments;
         arguments.must_append(move(alarm));
@@ -464,6 +545,9 @@ ExtensionManager::ExtensionManager(ByteString profile_data_root, NonnullOwnPtr<E
 
             auto has_host_access = has_host_permission(extension.extension_id, request.url)
                 && (is_navigation || (initiator.has_value() && has_host_permission(extension.extension_id, *initiator)));
+            // With declarativeNetRequestWithHostAccess alone, every rule needs host access, as in Firefox.
+            if (!has_host_access && !extension.manifest.has_permission("declarativeNetRequest"sv))
+                continue;
             auto match = match_declarative_request(extension.declarative_rulesets, request, initiator, has_host_access, extension.dynamic_declarative_rules.rules, extension.session_declarative_rules.rules);
             if (request.event == Event::BeforeRequest && match.winner) {
                 if (match.winner->action == Action::Block)
@@ -516,6 +600,7 @@ void ExtensionManager::shutdown()
     m_content_script_session_storage_access.clear();
     m_pending_event_replies.clear();
     m_pending_script_executions.clear();
+    m_script_execution_groups.clear();
 
     Vector<String> keys;
     for (auto const& [ext_id, _] : m_background_hosts)
@@ -634,7 +719,7 @@ ErrorOr<void> ExtensionManager::load_registry()
                         entry.registered_content_scripts.append(script.release_value());
                 }
             }
-            if (auto dynamic_rules = obj.get_array("dynamic_declarative_rules"sv); dynamic_rules.has_value() && entry.manifest.has_permission("declarativeNetRequest"sv)) {
+            if (auto dynamic_rules = obj.get_array("dynamic_declarative_rules"sv); dynamic_rules.has_value() && Web::Extensions::uses_declarative_net_request(entry.manifest)) {
                 auto loaded = parse_mutable_ruleset(*dynamic_rules);
                 if (!loaded.is_error())
                     entry.dynamic_declarative_rules = loaded.release_value();
@@ -741,6 +826,10 @@ void ExtensionManager::register_extension_entry(InstalledExtension ext, bool fir
 
     m_action_controller.configure_from_manifest(ext_id, manifest);
     m_action_controller.set_pinned(ext_id, pinned);
+    if (enabled && manifest.has_permission("idle"sv))
+        start_idle_polling();
+    if (enabled && manifest.has_permission("downloads"sv))
+        ensure_download_events();
     if (enabled) {
         m_sidebar_controller.configure_from_manifest(ext_id, manifest, first_install, current_window_id());
         if (manifest.background().has_value() && manifest.background()->has_background() && manifest.background()->persistent)
@@ -748,6 +837,251 @@ void ExtensionManager::register_extension_entry(InstalledExtension ext, bool fir
     }
     notify_network_prediction_changed(prediction_was_enabled);
     notify_chrome_changed();
+    if (first_install) {
+        if (auto installed = m_extensions_by_id.get(ext_id); installed.has_value())
+            notify_management_event("onInstalled"sv, *installed);
+    }
+}
+
+static String iso8601_utc(UnixDateTime time)
+{
+    time_t seconds = time.seconds_since_epoch();
+    struct tm parts {};
+    gmtime_r(&seconds, &parts);
+    return MUST(String::formatted("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
+        parts.tm_hour, parts.tm_min, parts.tm_sec, time.milliseconds_since_epoch() % 1000));
+}
+
+// Extensions see the downloads of the profile they run in, not those of private windows or other identities.
+bool ExtensionManager::is_extension_visible_download(u64 id) const
+{
+    auto download = Application::the().file_downloader().download(id);
+    return download.has_value() && download->is_private == IsPrivate::No && download->identity_id.is_empty();
+}
+
+// Where downloads.download saves, as in Firefox: a relative path within the downloads folder.
+ErrorOr<LexicalPath> ExtensionManager::extension_download_destination(Optional<String> const& filename, URL::URL const& url, StringView conflict_action)
+{
+    if (!conflict_action.is_one_of("uniquify"sv, "overwrite"sv))
+        return Error::from_string_literal("Unsupported conflictAction");
+    ByteString relative;
+    if (filename.has_value() && !filename->is_empty()) {
+        auto name = filename->bytes_as_string_view();
+        if (name.starts_with('/') || name.contains('\\') || name.contains(':'))
+            return Error::from_string_literal("filename must not be an absolute path");
+        for (auto part : name.split_view('/', SplitBehavior::KeepEmpty)) {
+            if (part.is_empty() || part == "."sv || part == ".."sv || part.starts_with('.'))
+                return Error::from_string_literal("filename must not contain back-references or hidden parts");
+            if (any_of(part, [](char c) { return static_cast<u8>(c) < 0x20 || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|'; }))
+                return Error::from_string_literal("filename must not contain illegal characters");
+        }
+        relative = name;
+    } else {
+        auto last = url.path_segment_count() > 0 ? URL::percent_decode(url.path_segment_at_index(url.path_segment_count() - 1)) : ByteString {};
+        relative = last.is_empty() || last.contains('/') || last.starts_with('.') ? ByteString { "download"sv } : last;
+    }
+
+    auto directory = Core::StandardPaths::downloads_directory();
+    auto destination = LexicalPath::join(directory, relative);
+    TRY(Core::Directory::create(destination.dirname(), Core::Directory::CreateDirectories::Yes));
+    if (conflict_action == "overwrite"sv || !FileSystem::exists(destination.string()))
+        return destination;
+    for (size_t n = 1; n < 10000; ++n) {
+        auto candidate = LexicalPath::join(destination.dirname(), destination.extension().is_empty() ? ByteString::formatted("{}({})", destination.title(), n) : ByteString::formatted("{}({}).{}", destination.title(), n, destination.extension()));
+        if (!FileSystem::exists(candidate.string()))
+            return candidate;
+    }
+    return Error::from_string_literal("No free file name for the download");
+}
+
+JsonObject ExtensionManager::serialize_extension_download(FileDownloader::Download const& download) const
+{
+    using Status = FileDownloader::DownloadStatus;
+    JsonObject item;
+    item.set("id"sv, download.id);
+    item.set("url"sv, download.url.serialize());
+    item.set("finalUrl"sv, download.url.serialize());
+    item.set("referrer"sv, ""sv);
+    item.set("filename"sv, MUST(String::from_byte_string(download.destination.string())));
+    item.set("incognito"sv, false);
+    item.set("danger"sv, "safe"sv);
+    item.set("mime"sv, ""sv);
+    item.set("startTime"sv, iso8601_utc(download.created_time));
+    auto state = download.status == Status::Completed ? "complete"sv : FileDownloader::status_is_active(download.status) ? "in_progress"sv
+                                                                                                                         : "interrupted"sv;
+    item.set("state"sv, state);
+    item.set("paused"sv, download.status == Status::Paused);
+    item.set("canResume"sv, download.status == Status::Paused && download.can_resume);
+    if (download.status == Status::Canceled)
+        item.set("error"sv, "USER_CANCELED"sv);
+    else if (download.status == Status::Failed)
+        item.set("error"sv, "NETWORK_FAILED"sv);
+    item.set("bytesReceived"sv, download.downloaded_size);
+    item.set("totalBytes"sv, download.total_size.has_value() ? static_cast<i64>(*download.total_size) : -1);
+    item.set("fileSize"sv, download.status == Status::Completed ? static_cast<i64>(download.downloaded_size) : download.total_size.has_value() ? static_cast<i64>(*download.total_size)
+                                                                                                                                               : -1);
+    item.set("exists"sv, download.status == Status::Completed && FileSystem::exists(download.destination.string()));
+    if (auto extension_id = m_extension_downloads.get(download.id); extension_id.has_value()) {
+        item.set("byExtensionId"sv, *extension_id);
+        if (auto extension = m_extensions_by_id.get(*extension_id); extension.has_value())
+            item.set("byExtensionName"sv, extension->manifest.name());
+    }
+    return item;
+}
+
+void ExtensionManager::ensure_download_events()
+{
+    if (!m_download_events)
+        m_download_events = make<DownloadEvents>(*this);
+}
+
+void ExtensionManager::dispatch_to_extensions_with_permission(StringView permission, StringView namespace_name, StringView event_name, String const& arguments)
+{
+    Vector<String> listeners;
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (extension.enabled && (permission.is_empty() || extension.manifest.has_permission(permission)))
+            listeners.append(id);
+    }
+    for (auto const& id : listeners)
+        dispatch_event_to_extension(id, namespace_name, event_name, arguments);
+}
+
+// An extension uses a cookie when it has access to a site within the cookie's domain.
+bool ExtensionManager::extension_may_use_cookie(InstalledExtension const& extension, HTTP::Cookie::Cookie const& cookie) const
+{
+    for (auto scheme : { "https"sv, "http"sv }) {
+        if (cookie.secure && scheme == "http"sv)
+            continue;
+        auto url = URL::Parser::basic_parse(ByteString::formatted("{}://{}/", scheme, cookie.domain));
+        if (url.has_value() && has_host_permission(extension.extension_id, *url))
+            return true;
+    }
+    return false;
+}
+
+JsonObject ExtensionManager::serialize_extension_cookie(HTTP::Cookie::Cookie const& cookie)
+{
+    JsonObject result;
+    result.set("name"sv, cookie.name);
+    result.set("value"sv, cookie.value);
+    result.set("domain"sv, cookie.host_only ? cookie.domain : MUST(String::formatted(".{}", cookie.domain)));
+    result.set("hostOnly"sv, cookie.host_only);
+    result.set("path"sv, cookie.path);
+    result.set("secure"sv, cookie.secure);
+    result.set("httpOnly"sv, cookie.http_only);
+    auto same_site = cookie.same_site == HTTP::Cookie::SameSite::Strict ? "strict"sv
+        : cookie.same_site == HTTP::Cookie::SameSite::Lax               ? "lax"sv
+                                                                        : "no_restriction"sv;
+    result.set("sameSite"sv, same_site);
+    result.set("session"sv, !cookie.persistent);
+    if (cookie.persistent)
+        result.set("expirationDate"sv, static_cast<double>(cookie.expiry_time.milliseconds_since_epoch()) / 1000.0);
+    result.set("storeId"sv, cookie_store_id);
+    result.set("firstPartyDomain"sv, ""sv);
+    if (cookie.partition_key.is_empty()) {
+        result.set("partitionKey"sv, JsonValue {});
+    } else {
+        JsonObject partition;
+        partition.set("topLevelSite"sv, cookie.partition_key.to_utf8());
+        result.set("partitionKey"sv, move(partition));
+    }
+    return result;
+}
+
+void ExtensionManager::cookie_changed(HTTP::Cookie::Cookie const& cookie, bool removed)
+{
+    Vector<String> listeners;
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (extension.enabled && extension.manifest.has_permission("cookies"sv) && extension_may_use_cookie(extension, cookie))
+            listeners.append(id);
+    }
+    if (listeners.is_empty())
+        return;
+    JsonObject change;
+    change.set("removed"sv, removed);
+    change.set("cookie"sv, serialize_extension_cookie(cookie));
+    // A cookie the browser deletes is given the earliest expiry; one that runs out keeps its own.
+    change.set("cause"sv, !removed ? "explicit"sv : cookie.expiry_time == UnixDateTime::earliest() ? "explicit"sv
+                                                                                                   : "expired"sv);
+    JsonArray arguments;
+    arguments.must_append(move(change));
+    auto serialized = arguments.serialized();
+    for (auto const& id : listeners)
+        dispatch_event_to_extension(id, "cookies"sv, "onChanged"sv, serialized);
+}
+
+// What a native application's port or message ends with. Ladyflock finds hosts where Firefox does, with Firefox's
+// errors, but does not yet start them.
+String ExtensionManager::native_application_error(StringView name, StringView extension_id)
+{
+    auto host = NativeMessaging::find_host(name, extension_id);
+    if (host.is_error())
+        return MUST(String::formatted("Invalid native application {}: {}", name, host.error()));
+    if (!host.value().has_value())
+        return MUST(String::formatted("No such native application {}", name));
+    return MUST(String::formatted("Ladyflock does not start native applications such as {}", name));
+}
+
+void ExtensionManager::close_extension_notifications(StringView extension_id)
+{
+    auto notifications = m_notifications.take(extension_id);
+    if (!notifications.has_value())
+        return;
+    for (auto const& [_, notification] : *notifications)
+        NotificationManager::the().close_for_extension(notification.platform_id);
+}
+
+String ExtensionManager::idle_state_for(u32 detection_interval_seconds)
+{
+    auto status = system_idle_status();
+    if (status.locked)
+        return "locked"_string;
+    if (status.idle_time.has_value() && *status.idle_time >= AK::Duration::from_seconds(detection_interval_seconds))
+        return "idle"_string;
+    return "active"_string;
+}
+
+void ExtensionManager::start_idle_polling()
+{
+    if (m_idle_poll_timer)
+        return;
+    m_idle_poll_timer = Core::Timer::create_repeating(AK::Duration::from_seconds(5), [this] { poll_idle_state(); });
+    m_idle_poll_timer->start();
+}
+
+// idle.onStateChanged fires when the state an extension's detection interval gives changes.
+void ExtensionManager::poll_idle_state()
+{
+    Vector<String> listeners;
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (extension.enabled && extension.manifest.has_permission("idle"sv))
+            listeners.append(id);
+    }
+    for (auto const& id : listeners) {
+        auto state = idle_state_for(m_idle_detection_intervals.get(id).value_or(60));
+        auto previous = m_idle_reported_states.get(id).copy();
+        m_idle_reported_states.set(id, state);
+        if (!previous.has_value() || *previous == state)
+            continue;
+        JsonArray arguments;
+        arguments.must_append(state);
+        dispatch_event_to_extension(id, "idle"sv, "onStateChanged"sv, arguments.serialized());
+    }
+}
+
+void ExtensionManager::notify_management_event(StringView event, InstalledExtension const& subject)
+{
+    auto info = management_info(subject);
+    Vector<String> listeners;
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (id != subject.extension_id && extension.enabled && extension.manifest.has_permission("management"sv))
+            listeners.append(id);
+    }
+    for (auto const& id : listeners) {
+        JsonArray arguments;
+        arguments.must_append(info);
+        dispatch_event_to_extension(id, "management"sv, event, arguments.serialized());
+    }
 }
 
 void ExtensionManager::dispatch_installed_event(InstalledExtension const& extension, Optional<String> previous_version)
@@ -942,7 +1276,7 @@ ErrorOr<InstalledExtension> ExtensionManager::approve_update(StringView token, b
         updated.manifest = move(manifest);
         updated.declarative_rulesets = move(rulesets);
         updated.session_declarative_rules = {};
-        if (!updated.manifest.has_permission("declarativeNetRequest"sv))
+        if (!Web::Extensions::uses_declarative_net_request(updated.manifest))
             updated.dynamic_declarative_rules = {};
         updated.compatibility_status = committed.compatibility_status;
         updated.sha256_hex = committed.sha256_hex;
@@ -1050,6 +1384,7 @@ ErrorOr<void> ExtensionManager::set_extension_enabled(StringView extension_id, b
     auto gen = it->value.grant_generation;
 
     if (!enabled) {
+        close_extension_notifications(extension_id);
         it->value.active_tab_ids.clear();
         it->value.network_prediction_setting.clear();
         m_page_menus.remove(extension_id);
@@ -1071,6 +1406,7 @@ ErrorOr<void> ExtensionManager::set_extension_enabled(StringView extension_id, b
 
     notify_network_prediction_changed(prediction_was_enabled);
     notify_chrome_changed();
+    notify_management_event(enabled ? "onEnabled"sv : "onDisabled"sv, it->value);
     return save_registry();
 }
 
@@ -1163,6 +1499,7 @@ ErrorOr<void> ExtensionManager::remove_extension(StringView extension_id)
     refresh_declarative_watch_state();
 
     m_alarms.clear_extension(extension_id);
+    close_extension_notifications(extension_id);
     stop_background_page(extension_id);
     m_web_request_coordinator.remove_all_for_extension(extension_id);
     broadcast_world_revocation(extension_id, ext->grant_generation + 1);
@@ -1170,11 +1507,19 @@ ErrorOr<void> ExtensionManager::remove_extension(StringView extension_id)
     m_action_controller.remove_extension(extension_id);
     m_sidebar_controller.remove_extension(extension_id);
     m_storage->delete_extension_data(extension_id);
+    m_sync_storage->delete_extension_data(extension_id);
     m_session_storage->delete_extension_data(extension_id);
     m_content_script_session_storage_access.remove(extension_id);
     m_id_by_uuid.remove(ext->uuid);
     m_persisted_uuid_by_id.remove(extension_id);
     m_available_updates.remove(extension_id);
+    notify_management_event("onUninstalled"sv, *ext);
+    // Firefox opens the extension's uninstall page, if it set one, once the extension is gone.
+    if (auto uninstall_url = m_uninstall_urls.take(extension_id); uninstall_url.has_value()) {
+        auto tabs = ordinary_tab_views();
+        if (!tabs.is_empty())
+            Application::the().open_url_in_new_tab(*uninstall_url, Web::HTML::ActivateTab::Yes, tabs.first());
+    }
 
     if (ext->source == Web::Extensions::InstallSource::SignedXpi)
         m_installer.remove_installed_package(ext->install_directory);
@@ -1342,6 +1687,20 @@ bool ExtensionManager::has_host_permission(StringView extension_id, URL::URL con
     return ext->manifest.has_host_permission_for(url);
 }
 
+bool ExtensionManager::extension_page_may_read_cross_origin(WebContentClient& caller, Web::PageId page_id, Web::HTML::CrossProcessId document_id, URL::URL const& url) const
+{
+    // The answer is for the extension this renderer hosts, and only for one of that extension's documents. A content
+    // script, which runs in the web page's renderer, never gets it.
+    auto const& extension_id = caller.hosted_extension_id();
+    if (!extension_id.has_value())
+        return false;
+    auto* page = caller.page(page_id);
+    auto document = page && page->is_open() && page->has_traversable() ? page->hosted_document_with_id(document_id) : nullptr;
+    if (!document || document->unload_counter() > 0 || document->extension_id() != *extension_id || document->origin().is_opaque())
+        return false;
+    return has_host_permission(*extension_id, url);
+}
+
 static bool is_legacy_registration_owner_active(RegisteredExtensionContentScript::Owner const& owner)
 {
     auto renderer = owner.renderer.strong_ref();
@@ -1411,7 +1770,7 @@ void ExtensionManager::attach_content_scripts_for_document(WebContentPage& page,
             script.run_at = rule.run_at;
             script.all_frames = rule.all_frames;
             script.match_about_blank = rule.match_about_blank;
-            script.run_in_main_world = registration && registration->run_in_main_world;
+            script.run_in_main_world = rule.main_world || (registration && registration->run_in_main_world);
 
             if (registration && registration->legacy_owner.has_value()) {
                 if (document.origin().is_opaque() || !is_legacy_registration_owner_active(*registration->legacy_owner))
@@ -1442,8 +1801,21 @@ void ExtensionManager::attach_content_scripts_for_document(WebContentPage& page,
                 attach(registered.rule, &registered);
         }
     }
-    if (!attached.is_empty())
-        page.client().async_attach_extension_content_scripts(page.id(), document.id(), move(attached));
+    if (attached.is_empty())
+        return;
+    for (auto const& script : attached) {
+        if (auto ext = m_extensions_by_id.get(script.extension_id); ext.has_value())
+            send_content_script_metadata(page.client(), *ext);
+    }
+    page.client().async_attach_extension_content_scripts(page.id(), document.id(), move(attached));
+}
+
+void ExtensionManager::send_content_script_metadata(WebContentClient& client, InstalledExtension const& extension) const
+{
+    auto token = MUST(String::formatted("{}/{}/{}", extension.uuid, extension.manifest.version(), extension.sha256_hex));
+    if (!client.needs_extension_metadata(extension.extension_id, token))
+        return;
+    client.async_set_extension_content_script_metadata(extension.extension_id, extension.manifest.raw_json(), locale_messages_for(extension));
 }
 
 void ExtensionManager::revoke_document_worlds(WebContentPage& page, Web::HTML::CrossProcessId document_id)
@@ -1578,11 +1950,9 @@ void ExtensionManager::refresh_declarative_watch_state()
 {
     m_web_request_coordinator.set_has_declarative_rules(any_of(m_extensions_by_id, [](auto const& entry) {
         auto const& extension = entry.value;
-        return extension.enabled && (!extension.dynamic_declarative_rules.rules.is_empty() || !extension.session_declarative_rules.rules.is_empty()
-            || any_of(extension.declarative_rulesets, [](auto const& ruleset) {
-                   return ruleset.enabled && !ruleset.rules.is_empty();
-               }));
-
+        return extension.enabled && (!extension.dynamic_declarative_rules.rules.is_empty() || !extension.session_declarative_rules.rules.is_empty() || any_of(extension.declarative_rulesets, [](auto const& ruleset) {
+            return ruleset.enabled && !ruleset.rules.is_empty();
+        }));
     }));
 }
 
@@ -1723,6 +2093,12 @@ bool ExtensionManager::is_background_running(StringView extension_id) const
 {
     auto it = m_background_hosts.find(extension_id);
     return it != m_background_hosts.end() && it->value->loaded;
+}
+
+ViewImplementation* ExtensionManager::background_view_for_testing(StringView extension_id)
+{
+    auto it = m_background_hosts.find(extension_id);
+    return it == m_background_hosts.end() ? nullptr : it->value->view.ptr();
 }
 
 void ExtensionManager::stop_background_page(StringView extension_id)
@@ -1871,7 +2247,7 @@ void ExtensionManager::dispatch_event_to_extension(
             if (!arguments.is_error() && arguments.value().is_array() && arguments.value().as_array().size() == 2) {
                 auto const& area = arguments.value().as_array().at(1);
                 dispatch_storage_to_content = area.is_string()
-                    && (area.as_string() == "local"sv || (area.as_string() == "session"sv && m_content_script_session_storage_access.contains(extension_id)));
+                    && (area.as_string().is_one_of("local"sv, "sync"sv) || (area.as_string() == "session"sv && m_content_script_session_storage_access.contains(extension_id)));
             }
         }
         if (extension.has_value() && extension->enabled) {
@@ -1984,30 +2360,40 @@ void ExtensionManager::handle_script_execution_finished(WebContentClient& render
     auto expected = m_pending_script_executions.get(execution_id);
     if (!expected.has_value() || expected->renderer.ptr() != &renderer || expected->target_page_id != page_id)
         return;
-    auto pending = m_pending_script_executions.take(execution_id);
-    auto caller = pending->caller.strong_ref();
-    if (!caller)
+    auto pending = m_pending_script_executions.take(execution_id).release_value();
+    auto group_entry = m_script_execution_groups.find(pending.group_id);
+    if (group_entry == m_script_execution_groups.end())
         return;
+    auto& group = group_entry->value;
+    --group.remaining;
+    auto caller = group.caller.strong_ref();
 
-    if (!success) {
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, false, JsonValue(result_or_error_json).serialized());
+    // As in Firefox, the call fails with the first frame whose script fails, and otherwise has each frame's result.
+    if (!success && !group.failed) {
+        group.failed = true;
+        if (caller)
+            caller->async_extension_api_response(group.page_id, group.document_id, group.call_id, false, JsonValue(result_or_error_json).serialized());
+    } else if (success && !group.failed) {
+        auto parsed = JsonValue::from_string(result_or_error_json);
+        auto result = parsed.is_error() ? JsonValue {} : parsed.release_value();
+        if (group.expect_array_results) {
+            JsonObject wrapped;
+            wrapped.set("frameId"sv, pending.frame_id);
+            wrapped.set("result"sv, move(result));
+            group.results[pending.index] = move(wrapped);
+        } else {
+            group.results[pending.index] = move(result);
+        }
+    }
+    if (group.remaining > 0)
         return;
+    if (!group.failed && caller) {
+        JsonArray results;
+        for (auto& result : group.results)
+            results.must_append(move(result));
+        caller->async_extension_api_response(group.page_id, group.document_id, group.call_id, true, results.serialized());
     }
-
-    if (pending->expect_array_results) {
-        auto parsed = JsonValue::from_string(result_or_error_json);
-        JsonObject wrapped;
-        wrapped.set("frameId"sv, pending->frame_id);
-        wrapped.set("result"sv, parsed.is_error() ? JsonValue {} : parsed.release_value());
-        JsonArray arr;
-        arr.must_append(move(wrapped));
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, true, arr.serialized());
-    } else {
-        auto parsed = JsonValue::from_string(result_or_error_json);
-        JsonArray arr;
-        arr.must_append(parsed.is_error() ? JsonValue {} : parsed.release_value());
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, true, arr.serialized());
-    }
+    m_script_execution_groups.remove(pending.group_id);
 }
 
 void ExtensionManager::handle_web_request_check(WebContentClient& caller, Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails const& requested_details)
@@ -2065,13 +2451,18 @@ static Optional<ViewImplementation&> default_extension_target(ExtensionManager c
     return *views.first();
 }
 
+// The frame an injection names, or all_frames for each frame the extension may access.
+static constexpr i64 all_frames = -1;
+
 static ErrorOr<i64> requested_script_frame(JsonObject const& details)
 {
     if (details.get_bool("allFrames"sv) == true)
-        return Error::from_string_literal("Injection into all frames is unavailable");
+        return details.has("frameId"sv) ? ErrorOr<i64> { Error::from_string_literal("Injection names both a frame and all frames") } : all_frames;
     if (auto target = details.get_object("target"sv); target.has_value()) {
-        if (target->get_bool("allFrames"sv) == true || target->has("documentIds"sv))
-            return Error::from_string_literal("Injection requires a single frame");
+        if (target->has("documentIds"sv))
+            return Error::from_string_literal("Injection by document ID is unavailable");
+        if (target->get_bool("allFrames"sv) == true)
+            return target->has("frameIds"sv) ? ErrorOr<i64> { Error::from_string_literal("Injection names both frames and all frames") } : all_frames;
         if (target->has("frameIds"sv)) {
             auto ids = target->get_array("frameIds"sv);
             if (!ids.has_value() || ids->size() != 1)
@@ -2107,6 +2498,30 @@ static CanonicalNavigable const* scripting_target_frame(ViewImplementation const
     return result;
 }
 
+// The frames an injection reaches: the one it names, or with all_frames, the top-level frame and each other frame the
+// extension may access. The named or top-level frame must be one it may access.
+static Vector<CanonicalNavigable const*> scripting_target_frames(ExtensionManager const& manager, StringView extension_id, ViewImplementation const& view, i64 frame_id)
+{
+    auto may_access = [&](CanonicalNavigable const* frame) {
+        return frame && !frame->active_document().origin().is_opaque() && manager.has_host_permission(extension_id, frame->active_document_url(), view.view_id());
+    };
+    Vector<CanonicalNavigable const*> frames;
+    auto const* first = scripting_target_frame(view, frame_id == all_frames ? 0 : frame_id);
+    if (!may_access(first))
+        return frames;
+    frames.append(first);
+    if (frame_id != all_frames)
+        return frames;
+    view.traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
+        if (frame.extension_frame_id() == 0)
+            return IterationDecision::Continue;
+        if (auto const* target = scripting_target_frame(view, frame.extension_frame_id()); may_access(target))
+            frames.append(target);
+        return IterationDecision::Continue;
+    });
+    return frames;
+}
+
 void ExtensionManager::handle_scripting_execute_script(
     WebContentClient& caller,
     Web::PageId page_id,
@@ -2134,8 +2549,8 @@ void ExtensionManager::handle_scripting_execute_script(
         return;
     }
 
-    auto const* frame = scripting_target_frame(*target_view, frame_id.value());
-    if (!frame || frame->active_document().origin().is_opaque() || !has_host_permission(ext.extension_id, frame->active_document_url(), target_view->view_id())) {
+    auto frames = scripting_target_frames(*this, ext.extension_id, *target_view, frame_id.value());
+    if (frames.is_empty()) {
         send_err("Extension lacks host/activeTab permission for target tab");
         return;
     }
@@ -2174,33 +2589,42 @@ void ExtensionManager::handle_scripting_execute_script(
         return;
     }
 
-    auto& target_document = frame->active_document();
-    auto& target_page = *target_document.host();
-    auto target_doc_id = target_document.id();
-
-    u64 exec_id = m_next_execution_id++;
-    target_document.authorize_content_script(ext.extension_id, ext.grant_generation);
-    m_pending_script_executions.set(exec_id, PendingScriptExecution {
-                                                 .caller = caller.make_weak_ptr<WebContentClient>(),
-                                                 .page_id = page_id,
-                                                 .document_id = source_document_id,
-                                                 .call_id = call_id,
-                                                 .frame_id = frame_id.value(),
-                                                 .expect_array_results = modern_api,
-                                                 .renderer = target_page.client().make_weak_ptr<WebContentClient>(),
-                                                 .target_page_id = target_page.id(),
-                                             });
-
-    target_page.client().async_execute_extension_script(
-        target_page.id(),
-        exec_id,
-        ext.extension_id,
-        ext.uuid,
-        ext.grant_generation,
-        sources,
-        func_source,
-        func_args,
-        target_doc_id);
+    auto group_id = m_next_execution_id++;
+    m_script_execution_groups.set(group_id, ScriptExecutionGroup {
+                                                .caller = caller.make_weak_ptr<WebContentClient>(),
+                                                .page_id = page_id,
+                                                .document_id = source_document_id,
+                                                .call_id = call_id,
+                                                .expect_array_results = modern_api,
+                                                .remaining = frames.size(),
+                                                .failed = false,
+                                                .results = Vector<JsonValue> {},
+                                            });
+    m_script_execution_groups.get(group_id)->results.resize(frames.size());
+    for (size_t index = 0; index < frames.size(); ++index) {
+        auto& target_document = frames[index]->active_document();
+        auto& target_page = *target_document.host();
+        u64 exec_id = m_next_execution_id++;
+        target_document.authorize_content_script(ext.extension_id, ext.grant_generation);
+        m_pending_script_executions.set(exec_id, PendingScriptExecution {
+                                                     .group_id = group_id,
+                                                     .index = index,
+                                                     .frame_id = frames[index]->extension_frame_id(),
+                                                     .renderer = target_page.client().make_weak_ptr<WebContentClient>(),
+                                                     .target_page_id = target_page.id(),
+                                                 });
+        send_content_script_metadata(target_page.client(), ext);
+        target_page.client().async_execute_extension_script(
+            target_page.id(),
+            exec_id,
+            ext.extension_id,
+            ext.uuid,
+            ext.grant_generation,
+            sources,
+            func_source,
+            func_args,
+            target_document.id());
+    }
 }
 
 void ExtensionManager::handle_scripting_css(
@@ -2229,17 +2653,27 @@ void ExtensionManager::handle_scripting_css(
         return;
     }
 
+    Vector<CanonicalDocument*> target_documents;
+    if (frame_id.value() == all_frames) {
+        for (auto const* frame : scripting_target_frames(*this, ext.extension_id, *target_view, all_frames))
+            target_documents.append(&frame->active_document());
+        if (target_documents.is_empty()) {
+            send_err("Extension lacks host/activeTab permission for target tab");
+            return;
+        }
+    }
+
     bool allow_pending_document = !remove && ext.manifest.manifest_version() == Web::Extensions::ManifestVersion::V2
         && details_obj.get_string("runAt"sv) == "document_start"sv;
-    auto const* frame = scripting_target_frame(*target_view, frame_id.value(), allow_pending_document);
-    if (!frame) {
+    auto const* frame = target_documents.is_empty() ? scripting_target_frame(*target_view, frame_id.value(), allow_pending_document) : nullptr;
+    if (target_documents.is_empty() && !frame) {
         send_err("Extension lacks host/activeTab permission for target tab");
         return;
     }
 
-    auto* target_document = &frame->active_document();
-    auto const* target_url = &frame->active_document_url();
-    if (allow_pending_document) {
+    auto* target_document = frame ? &frame->active_document() : nullptr;
+    auto const* target_url = frame ? &frame->active_document_url() : nullptr;
+    if (frame && allow_pending_document) {
         // A document_start content script can ask the background page to style its document
         // while the frame still reports the document being replaced as active.
         if (auto navigation_id = frame->ongoing_navigation_id(); navigation_id.has_value()) {
@@ -2253,11 +2687,14 @@ void ExtensionManager::handle_scripting_css(
             }
         }
     }
-    auto const& target_page = target_document->host();
-    if (!target_page || !target_page->is_open() || target_document->unload_counter() || target_document->origin().is_opaque()
-        || !has_host_permission(ext.extension_id, *target_url, target_view->view_id())) {
-        send_err("Extension lacks host/activeTab permission for target tab");
-        return;
+    if (frame) {
+        auto const& target_page = target_document->host();
+        if (!target_page || !target_page->is_open() || target_document->unload_counter() || target_document->origin().is_opaque()
+            || !has_host_permission(ext.extension_id, *target_url, target_view->view_id())) {
+            send_err("Extension lacks host/activeTab permission for target tab");
+            return;
+        }
+        target_documents.append(target_document);
     }
 
     String css_text;
@@ -2293,7 +2730,10 @@ void ExtensionManager::handle_scripting_css(
         css_text = MUST(sb.to_string());
     }
 
-    target_page->client().async_inject_extension_css(target_page->id(), ext.extension_id, css_key, css_text, remove, target_document->id());
+    for (auto* document : target_documents) {
+        if (auto const& target_page = document->host(); target_page && target_page->is_open())
+            target_page->client().async_inject_extension_css(target_page->id(), ext.extension_id, css_key, css_text, remove, document->id());
+    }
     caller.async_extension_api_response(page_id, source_document_id, call_id, true, "null"_string);
 }
 
@@ -2373,6 +2813,17 @@ bool ExtensionManager::handle_runtime_port_call(WebContentClient& caller, Web::P
         return false;
     auto const& id = arguments[0].as_string();
     RuntimePortEndpoint source { caller.make_weak_ptr<WebContentClient>(), page_id, document_id };
+
+    if (method == "connectNativePort"sv) {
+        if (arguments.size() != 2 || !arguments[1].is_string() || m_runtime_ports.contains(id))
+            return false;
+        auto extension = extension_by_id(extension_id);
+        auto error = extension.has_value() && extension->manifest.has_permission("nativeMessaging"sv)
+            ? native_application_error(arguments[1].as_string(), extension_id)
+            : "Extension lacks the nativeMessaging permission"_string;
+        send_runtime_port_event(source, extension_id, "onPortDisconnect"sv, id, error);
+        return true;
+    }
 
     if (method == "connectPort"sv) {
         if (arguments.size() != 2 || !arguments[1].is_string() || arguments[1].as_string().byte_count() > 1024 || m_runtime_ports.contains(id))
@@ -2527,7 +2978,7 @@ void ExtensionManager::handle_api_call(
             reply_err("Document has no current content script grant");
             return;
         }
-        bool storage_access = namespace_name == "storage.local"sv
+        bool storage_access = namespace_name.is_one_of("storage.local"sv, "storage.sync"sv, "storage.managed"sv)
             || (namespace_name == "storage.session"sv && method_name != "setAccessLevel"sv && m_content_script_session_storage_access.contains(extension_id));
         bool runtime_access = namespace_name == "runtime"sv && method_name.bytes_as_string_view().is_one_of("sendMessage"sv, "connectPort"sv, "postPortMessage"sv, "disconnectPort"sv);
         if (!runtime_access && !storage_access) {
@@ -2659,7 +3110,7 @@ void ExtensionManager::handle_api_call(
     }
 
     if (namespace_name == "runtime"sv) {
-        if (method_name.bytes_as_string_view().is_one_of("connectPort"sv, "postPortMessage"sv, "disconnectPort"sv)) {
+        if (method_name.bytes_as_string_view().is_one_of("connectPort"sv, "connectNativePort"sv, "postPortMessage"sv, "disconnectPort"sv)) {
             if (!parsed_args.is_error() && parsed_args.value().is_array())
                 handle_runtime_port_call(caller, page_id, document_id, extension_id, method_name, parsed_args.value().as_array());
             return;
@@ -2695,17 +3146,74 @@ void ExtensionManager::handle_api_call(
             reply_ok(JsonValue {});
             return;
         }
+        if (method_name == "sendNativeMessage"sv) {
+            auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+            if (!ext->manifest.has_permission("nativeMessaging"sv)) {
+                reply_err("Extension lacks the nativeMessaging permission");
+                return;
+            }
+            if (arguments.size() != 2 || !arguments[0].is_string()) {
+                reply_err("runtime.sendNativeMessage requires an application name and a message");
+                return;
+            }
+            auto error = native_application_error(arguments[0].as_string(), extension_id);
+            caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(error).serialized());
+            return;
+        }
+        if (method_name == "setUninstallURL"sv) {
+            // As in Firefox, an empty or missing URL clears it, and only an http or https URL may be opened.
+            auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+            if (arguments.is_empty() || arguments[0].is_null() || (arguments[0].is_string() && arguments[0].as_string().is_empty())) {
+                m_uninstall_urls.remove(extension_id);
+                reply_ok(JsonValue {});
+                return;
+            }
+            auto url = arguments[0].is_string() && arguments[0].as_string().byte_count() <= 1023 ? URL::Parser::basic_parse(arguments[0].as_string()) : Optional<URL::URL> {};
+            if (!url.has_value() || !url->scheme().is_one_of("http"sv, "https"sv)) {
+                reply_err("Invalid URL scheme: only http and https URLs can be uninstall URLs");
+                return;
+            }
+            m_uninstall_urls.set(extension_id, url.release_value());
+            reply_ok(JsonValue {});
+            return;
+        }
+        if (method_name == "reload"sv) {
+            // The reply goes out before the extension's pages close, as they would be gone when it arrived.
+            reply_ok(JsonValue {});
+            Core::deferred_invoke([weak = make_weak_ptr<ExtensionManager>(), extension_id] {
+                auto* self = weak.ptr();
+                if (!self || !self->m_extensions_by_id.contains(extension_id))
+                    return;
+                if (self->set_extension_enabled(extension_id, false).is_error())
+                    return;
+                (void)self->set_extension_enabled(extension_id, true);
+            });
+            return;
+        }
         reply_err("Unsupported runtime API method");
         return;
     }
 
-    if (namespace_name == "storage"sv || namespace_name == "storage.local"sv || namespace_name == "storage.session"sv) {
+    if (namespace_name.is_one_of("storage"sv, "storage.local"sv, "storage.session"sv, "storage.sync"sv, "storage.managed"sv)) {
         if (!ext->manifest.has_permission("storage"sv)) {
             reply_err("Extension lacks 'storage' permission");
             return;
         }
+        // Firefox reads managed storage from an enterprise policy or a native manifest. Ladyflock has neither for
+        // extensions, so it answers as Firefox does when no managed storage manifest is installed.
+        if (namespace_name == "storage.managed"sv) {
+            if (method_name.is_one_of("get"sv, "getKeys"sv, "getBytesInUse"sv))
+                reply_err("Managed storage manifest not found");
+            else
+                reply_err("storage.managed is read-only");
+            return;
+        }
         bool is_session_storage = namespace_name == "storage.session"sv;
-        auto& storage = is_session_storage ? *m_session_storage : *m_storage;
+        bool is_sync_storage = namespace_name == "storage.sync"sv;
+        auto& storage = is_session_storage ? *m_session_storage : is_sync_storage ? *m_sync_storage
+                                                                                  : *m_storage;
+        auto area_name = is_session_storage ? "session"_string : is_sync_storage ? "sync"_string
+                                                                                 : "local"_string;
         auto normalized_method = method_name.bytes_as_string_view();
         if (normalized_method.starts_with("local."sv))
             normalized_method = normalized_method.substring_view(6);
@@ -2734,7 +3242,7 @@ void ExtensionManager::handle_api_call(
                 return;
             JsonArray ev_args;
             ev_args.must_append(move(changes));
-            ev_args.must_append(is_session_storage ? "session"_string : "local"_string);
+            ev_args.must_append(area_name);
             dispatch_event_to_extension(ext->extension_id, "storage"sv, "onChanged"sv, ev_args.serialized());
         };
 
@@ -2755,7 +3263,9 @@ void ExtensionManager::handle_api_call(
             JsonObject items;
             if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty() && parsed_args.value().as_array().at(0).is_object())
                 items = parsed_args.value().as_array().at(0).as_object();
-            auto quota = !is_session_storage && ext->manifest.has_permission("unlimitedStorage"sv) ? ExtensionStorage::Quota::Unlimited : ExtensionStorage::Quota::Limited;
+            auto quota = is_sync_storage                                                    ? ExtensionStorage::Quota::Sync
+                : !is_session_storage && ext->manifest.has_permission("unlimitedStorage"sv) ? ExtensionStorage::Quota::Unlimited
+                                                                                            : ExtensionStorage::Quota::Limited;
             auto changes = storage.set(extension_id, items, quota);
             if (changes.is_error()) {
                 caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", changes.error()))).serialized());
@@ -2822,6 +3332,506 @@ void ExtensionManager::handle_api_call(
             });
         }
         reply_ok(move(result));
+        return;
+    }
+
+    if (namespace_name == "downloads"sv) {
+        if (!ext->manifest.has_permission("downloads"sv)) {
+            reply_err("Extension lacks the downloads permission");
+            return;
+        }
+        ensure_download_events();
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        auto& downloader = Application::the().file_downloader();
+        auto download_id_argument = [&]() -> Optional<u64> {
+            if (arguments.is_empty())
+                return {};
+            auto id = arguments[0].get_u64();
+            if (!id.has_value() || !is_extension_visible_download(*id))
+                return {};
+            return id;
+        };
+
+        if (method_name == "download"sv) {
+            if (arguments.is_empty() || !arguments[0].is_object()) {
+                reply_err("downloads.download requires options");
+                return;
+            }
+            auto const& options = arguments[0].as_object();
+            auto url = options.get_string("url"sv).map([](auto const& url) { return URL::Parser::basic_parse(url); }).value_or({});
+            if (!url.has_value()) {
+                reply_err("Invalid download URL");
+                return;
+            }
+            // A download request goes out as the browser's own GET, as Ladyflock downloads do.
+            if (auto method = options.get_string("method"sv); (method.has_value() && *method != "GET"sv) || options.has("body"sv) || options.has("headers"sv)) {
+                reply_err("Only plain GET downloads are supported");
+                return;
+            }
+            Optional<Web::FileAPI::SerializedBlobURLEntry::Blob> blob;
+            if (url->scheme() == "blob"sv) {
+                // Only a blob the extension itself made, as in Firefox.
+                auto entry = caller.session().blob_url_store ? caller.session().blob_url_store->resolve(Utf16String::from_utf8(url->serialize()), {}) : Optional<Web::FileAPI::SerializedBlobURLEntry> {};
+                auto extension_origin = URL::Parser::basic_parse(ByteString::formatted("moz-extension://{}/", ext->uuid)).map([](auto const& page) { return page.origin(); });
+                if (!entry.has_value() || !extension_origin.has_value() || !entry->origin.is_same_origin(*extension_origin) || !entry->object.has<Web::FileAPI::SerializedBlobURLEntry::Blob>()) {
+                    reply_err("The blob URL is not one this extension made");
+                    return;
+                }
+                blob = entry->object.get<Web::FileAPI::SerializedBlobURLEntry::Blob>();
+            } else if (!url->scheme().is_one_of("http"sv, "https"sv)) {
+                reply_err("Downloads need an http, https or blob URL");
+                return;
+            }
+            auto filename = options.get_string("filename"sv).map([](auto const& name) { return String { name }; });
+            auto destination = extension_download_destination(filename, *url, options.get_string("conflictAction"sv).value_or("uniquify"_string));
+            if (destination.is_error()) {
+                caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::formatted("{}", destination.error()))).serialized());
+                return;
+            }
+            auto replace = options.get_string("conflictAction"sv) == "overwrite"sv ? FileDownloader::MayReplaceDestination::Yes : FileDownloader::MayReplaceDestination::No;
+            u64 id;
+            if (blob.has_value()) {
+                id = downloader.start_download(FileDownloader::Owner { IsPrivate::No }, *url, destination.release_value(), blob->data.size(), replace);
+                m_extension_downloads.set(id, extension_id);
+                downloader.append_download_data(id, blob->data.bytes());
+                downloader.finish_download(id);
+            } else {
+                id = downloader.download_file(FileDownloader::Owner { IsPrivate::No }, *url, destination.release_value(), replace);
+                m_extension_downloads.set(id, extension_id);
+            }
+            reply_ok(JsonValue(id));
+            return;
+        }
+        if (method_name == "search"sv) {
+            auto query = !arguments.is_empty() && arguments[0].is_object() ? arguments[0].as_object() : JsonObject {};
+            JsonArray items;
+            Vector<FileDownloader::Download const*> matches;
+            for (auto const& download : downloader.downloads()) {
+                if (!is_extension_visible_download(download.id))
+                    continue;
+                auto item = serialize_extension_download(download);
+                bool matches_query = true;
+                query.for_each_member([&](String const& key, JsonValue const& value) {
+                    if (key.is_one_of("limit"sv, "orderBy"sv, "query"sv) || !matches_query)
+                        return;
+                    if (auto field = item.get(key); !field.has_value() || field->serialized() != value.serialized())
+                        matches_query = false;
+                });
+                if (matches_query)
+                    matches.append(&download);
+            }
+            // The newest first when asked, as most extensions do with orderBy: ["-startTime"].
+            auto order = query.get_array("orderBy"sv);
+            if (order.has_value() && !order->is_empty() && order->at(0).is_string() && order->at(0).as_string() == "-startTime"sv)
+                matches.reverse();
+            auto limit = query.get_u32("limit"sv).value_or(0);
+            for (auto const* download : matches) {
+                if (limit != 0 && items.size() >= limit)
+                    break;
+                items.must_append(serialize_extension_download(*download));
+            }
+            reply_ok(move(items));
+            return;
+        }
+        if (method_name.is_one_of("cancel"sv, "pause"sv, "resume"sv)) {
+            auto id = download_id_argument();
+            auto download = id.has_value() ? downloader.download(*id) : Optional<FileDownloader::Download const&> {};
+            if (!download.has_value()) {
+                reply_err("Invalid download id");
+                return;
+            }
+            if (method_name == "cancel"sv) {
+                if (FileDownloader::status_is_active(download->status))
+                    downloader.cancel_download(*id);
+            } else if (method_name == "pause"sv) {
+                if (download->status != FileDownloader::DownloadStatus::InProgress) {
+                    reply_err("Download is not in progress");
+                    return;
+                }
+                downloader.pause_download(*id);
+            } else {
+                if (download->status != FileDownloader::DownloadStatus::Paused) {
+                    reply_err("Download is not paused");
+                    return;
+                }
+                downloader.resume_download(*id);
+            }
+            reply_ok(JsonValue {});
+            return;
+        }
+        reply_err("Unsupported downloads method");
+        return;
+    }
+
+    if (namespace_name == "cookies"sv) {
+        if (!ext->manifest.has_permission("cookies"sv)) {
+            reply_err("Extension lacks the cookies permission");
+            return;
+        }
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        auto& jar = *caller.session().cookie_jar;
+        if (method_name == "getAllCookieStores"sv) {
+            JsonArray tab_ids;
+            for (auto* view : ordinary_tab_views())
+                tab_ids.must_append(view->view_id());
+            JsonObject store;
+            store.set("id"sv, cookie_store_id);
+            store.set("incognito"sv, false);
+            store.set("tabIds"sv, move(tab_ids));
+            JsonArray stores;
+            stores.must_append(move(store));
+            reply_ok(move(stores));
+            return;
+        }
+        if (arguments.is_empty() || !arguments[0].is_object()) {
+            reply_err("The cookies API needs a details object");
+            return;
+        }
+        auto const& details = arguments[0].as_object();
+        if (auto store = details.get_string("storeId"sv); store.has_value() && *store != cookie_store_id) {
+            reply_err("Invalid cookie store id");
+            return;
+        }
+        auto details_url = details.get_string("url"sv).map([](auto const& url) { return URL::Parser::basic_parse(url); }).value_or({});
+        auto may_use = [&](HTTP::Cookie::Cookie const& cookie) { return extension_may_use_cookie(*ext, cookie); };
+
+        // The cookie with the longest path among those the URL would send under the name.
+        auto best_match = [&](URL::URL const& url, StringView name) -> Optional<HTTP::Cookie::Cookie> {
+            auto host = HTTP::Cookie::canonicalize_domain(url);
+            if (!host.has_value())
+                return {};
+            Optional<HTTP::Cookie::Cookie> best;
+            for (auto& cookie : jar.get_all_cookies()) {
+                if (cookie.name != name || !cookie.partition_key.is_empty() || !may_use(cookie))
+                    continue;
+                if (!HTTP::Cookie::cookie_matches_url(cookie, url, *host, HTTP::Cookie::Source::Http, HTTP::Cookie::SameSiteContext::same_site()))
+                    continue;
+                if (!best.has_value() || cookie.path.byte_count() > best->path.byte_count())
+                    best = move(cookie);
+            }
+            return best;
+        };
+        auto url_is_allowed = [&] {
+            return details_url.has_value() && details_url->scheme().is_one_of("http"sv, "https"sv) && has_host_permission(extension_id, *details_url);
+        };
+
+        if (method_name == "get"sv || method_name == "remove"sv) {
+            auto name = details.get_string("name"sv);
+            if (!name.has_value() || !details_url.has_value()) {
+                reply_err("The details need a url and a name");
+                return;
+            }
+            if (!url_is_allowed()) {
+                reply_err("Permission denied to access cookies for this URL");
+                return;
+            }
+            auto cookie = best_match(*details_url, *name);
+            if (method_name == "get"sv) {
+                reply_ok(cookie.has_value() ? JsonValue(serialize_extension_cookie(*cookie)) : JsonValue {});
+                return;
+            }
+            if (!cookie.has_value()) {
+                reply_ok(JsonValue {});
+                return;
+            }
+            jar.delete_cookie({ cookie->name, cookie->domain, cookie->host_only, cookie->path, cookie->partition_key });
+            JsonObject removed;
+            removed.set("url"sv, details_url->serialize());
+            removed.set("name"sv, *name);
+            removed.set("storeId"sv, cookie_store_id);
+            removed.set("firstPartyDomain"sv, ""sv);
+            reply_ok(move(removed));
+            return;
+        }
+        if (method_name == "getAll"sv) {
+            Optional<String> url_host;
+            if (details_url.has_value())
+                url_host = HTTP::Cookie::canonicalize_domain(*details_url);
+            auto domain = details.get_string("domain"sv).map([](auto const& domain) { return MUST(domain.to_ascii_lowercase().trim("."sv, TrimMode::Left)); });
+            JsonArray cookies;
+            for (auto const& cookie : jar.get_all_cookies()) {
+                // As in Firefox, getAll returns the cookies of partitioned storage only when asked for a partition.
+                if (!cookie.partition_key.is_empty() || !may_use(cookie))
+                    continue;
+                if (details_url.has_value() && (!url_host.has_value() || !HTTP::Cookie::cookie_matches_url(cookie, *details_url, *url_host, HTTP::Cookie::Source::Http, HTTP::Cookie::SameSiteContext::same_site())))
+                    continue;
+                if (domain.has_value() && !HTTP::Cookie::domain_matches(cookie.domain, *domain))
+                    continue;
+                if (auto name = details.get_string("name"sv); name.has_value() && cookie.name != *name)
+                    continue;
+                if (auto path = details.get_string("path"sv); path.has_value() && cookie.path != *path)
+                    continue;
+                if (auto secure = details.get_bool("secure"sv); secure.has_value() && cookie.secure != *secure)
+                    continue;
+                if (auto session = details.get_bool("session"sv); session.has_value() && cookie.persistent == *session)
+                    continue;
+                cookies.must_append(serialize_extension_cookie(cookie));
+            }
+            reply_ok(move(cookies));
+            return;
+        }
+        if (method_name == "set"sv) {
+            if (!details_url.has_value() || !url_is_allowed()) {
+                reply_err("Permission denied to set cookies for this URL");
+                return;
+            }
+            auto host = HTTP::Cookie::canonicalize_domain(*details_url);
+            if (!host.has_value()) {
+                reply_err("Invalid cookie URL");
+                return;
+            }
+            HTTP::Cookie::Cookie cookie;
+            cookie.name = details.get_string("name"sv).value_or({});
+            cookie.value = details.get_string("value"sv).value_or({});
+            cookie.secure = details.get_bool("secure"sv).value_or(false);
+            cookie.http_only = details.get_bool("httpOnly"sv).value_or(false);
+            cookie.path = details.get_string("path"sv).value_or(HTTP::Cookie::default_path(*details_url));
+            if (auto domain = details.get_string("domain"sv); domain.has_value() && !domain->is_empty()) {
+                cookie.domain = MUST(domain->to_ascii_lowercase().trim("."sv, TrimMode::Left));
+                cookie.host_only = false;
+            } else {
+                cookie.domain = *host;
+                cookie.host_only = true;
+            }
+            // An unset sameSite leaves the browser's default. SameSite=None needs Secure, so on a cookie that isn't
+            // secure no_restriction also leaves the default, which sends the cookie as Firefox would.
+            auto same_site = details.get_string("sameSite"sv);
+            if (same_site == "strict"sv)
+                cookie.same_site = HTTP::Cookie::SameSite::Strict;
+            else if (same_site == "lax"sv)
+                cookie.same_site = HTTP::Cookie::SameSite::Lax;
+            else if (same_site == "no_restriction"sv && cookie.secure)
+                cookie.same_site = HTTP::Cookie::SameSite::None;
+            else
+                cookie.same_site = HTTP::Cookie::SameSite::Default;
+            auto now = UnixDateTime::now();
+            cookie.creation_time = now;
+            cookie.last_access_time = now;
+            if (auto expiration = details.get_double_with_precision_loss("expirationDate"sv); expiration.has_value()) {
+                cookie.persistent = true;
+                cookie.expiry_time = UnixDateTime::from_milliseconds_since_epoch(static_cast<i64>(*expiration * 1000));
+            } else {
+                cookie.expiry_time = UnixDateTime::from_seconds_since_epoch(NumericLimits<i32>::max());
+            }
+            if (!may_use(cookie) || !HTTP::Cookie::domain_matches(*host, cookie.domain)) {
+                reply_err("Permission denied to set this cookie's domain");
+                return;
+            }
+            if (auto result = jar.set_cookie_from_devtools(*details_url, {}, cookie); result.is_error()) {
+                reply_err("The cookie could not be set");
+                return;
+            }
+            auto stored = best_match(*details_url, cookie.name);
+            reply_ok(stored.has_value() ? JsonValue(serialize_extension_cookie(*stored)) : JsonValue {});
+            return;
+        }
+        reply_err("Unsupported cookies method");
+        return;
+    }
+
+    if (namespace_name == "notifications"sv) {
+        if (!ext->manifest.has_permission("notifications"sv)) {
+            reply_err("Extension lacks the notifications permission");
+            return;
+        }
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        auto& notifications = m_notifications.ensure(extension_id);
+        if (method_name == "getAll"sv) {
+            JsonObject all;
+            for (auto const& [id, notification] : notifications)
+                all.set(id, notification.options);
+            reply_ok(move(all));
+            return;
+        }
+        if (method_name == "clear"sv) {
+            auto id = arguments.is_empty() || !arguments[0].is_string() ? Optional<String> {} : Optional<String> { arguments[0].as_string() };
+            auto notification = id.has_value() ? notifications.take(*id) : Optional<ExtensionNotification> {};
+            if (notification.has_value())
+                NotificationManager::the().close_for_extension(notification->platform_id);
+            reply_ok(JsonValue(notification.has_value()));
+            return;
+        }
+        if (method_name != "create"sv) {
+            reply_err("Unsupported notifications method");
+            return;
+        }
+        // create([id], options): Firefox shows every template as a basic notification.
+        size_t options_index = !arguments.is_empty() && (arguments[0].is_string() || arguments[0].is_null()) ? 1 : 0;
+        if (options_index >= arguments.size() || !arguments[options_index].is_object()) {
+            reply_err("notifications.create requires notification options");
+            return;
+        }
+        auto const& options = arguments[options_index].as_object();
+        auto type = options.get_string("type"sv);
+        auto title = options.get_string("title"sv);
+        auto message = options.get_string("message"sv);
+        if (!type.has_value() || !type->is_one_of("basic"sv, "image"sv, "list"sv, "progress"sv) || !title.has_value() || !message.has_value()) {
+            reply_err("Notification options need a type, title and message");
+            return;
+        }
+        String id;
+        if (options_index == 1 && arguments[0].is_string() && !arguments[0].as_string().is_empty())
+            id = arguments[0].as_string();
+        else
+            id = MUST(String::formatted("ladyflock-notification-{}", m_next_notification_number++));
+        if (auto previous = notifications.take(id); previous.has_value())
+            NotificationManager::the().close_for_extension(previous->platform_id);
+
+        Web::NotificationsAPI::NotificationData data;
+        data.title = Utf16String::from_utf8(*title);
+        data.body = Utf16String::from_utf8(*message);
+        data.require_interaction = options.get_bool("requireInteraction"sv).value_or(false);
+        data.silent = options.get_bool("silent"sv);
+
+        auto deliver = [weak = make_weak_ptr<ExtensionManager>(), extension_id, id](StringView event, Optional<bool> by_user = {}) {
+            auto* self = weak.ptr();
+            if (!self)
+                return;
+            JsonArray event_arguments;
+            event_arguments.must_append(id);
+            if (by_user.has_value()) {
+                event_arguments.must_append(*by_user);
+                if (auto live = self->m_notifications.get(extension_id); live.has_value())
+                    live->remove(id);
+            }
+            self->dispatch_event_to_extension(extension_id, "notifications"sv, event, event_arguments.serialized());
+        };
+        // The notification is recorded first, since a platform that refuses it reports its close before show returns.
+        notifications.set(id, ExtensionNotification { .platform_id = 0, .options = options });
+        auto platform_id = NotificationManager::the().show_for_extension(ext->manifest.name(), move(data),
+            {
+                .on_shown = [deliver] { deliver("onShown"sv); },
+                .on_clicked = [deliver] { deliver("onClicked"sv); },
+                .on_closed = [deliver](bool by_user) { deliver("onClosed"sv, by_user); },
+            });
+        if (auto live = m_notifications.get(extension_id); live.has_value()) {
+            if (auto notification = live->get(id); notification.has_value())
+                notification->platform_id = platform_id;
+        }
+        reply_ok(JsonValue(id));
+        return;
+    }
+
+    // Ladyflock does not apply extension themes: no theme is current, and one can't be set.
+    if (namespace_name == "theme"sv) {
+        if (!ext->manifest.has_permission("theme"sv)) {
+            reply_err("Extension lacks the theme permission");
+            return;
+        }
+        if (method_name == "getCurrent"sv) {
+            JsonObject theme;
+            theme.set("colors"sv, JsonValue {});
+            theme.set("images"sv, JsonValue {});
+            theme.set("properties"sv, JsonValue {});
+            reply_ok(move(theme));
+            return;
+        }
+        reply_err("Ladyflock does not apply extension themes");
+        return;
+    }
+
+    // The omnibox keyword is not bound to the address bar, so there is no suggestion to show.
+    if (namespace_name == "omnibox"sv && method_name == "setDefaultSuggestion"sv) {
+        reply_ok(JsonValue {});
+        return;
+    }
+
+    if (namespace_name == "idle"sv) {
+        if (!ext->manifest.has_permission("idle"sv)) {
+            reply_err("Extension lacks the idle permission");
+            return;
+        }
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        auto interval = arguments.is_empty() || !arguments[0].is_number() ? Optional<double> {} : arguments[0].get_double_with_precision_loss();
+        if (!interval.has_value() || *interval < 0) {
+            reply_err("Expected a detection interval in seconds");
+            return;
+        }
+        // As in Firefox, no interval is shorter than 15 seconds.
+        auto seconds = static_cast<u32>(clamp(*interval, 15.0, 4294967295.0));
+        if (method_name == "queryState"sv) {
+            reply_ok(JsonValue(idle_state_for(seconds)));
+            return;
+        }
+        if (method_name == "setDetectionInterval"sv) {
+            m_idle_detection_intervals.set(extension_id, seconds);
+            reply_ok(JsonValue {});
+            return;
+        }
+        reply_err("Unsupported idle method");
+        return;
+    }
+
+    if (namespace_name == "management"sv) {
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
+        if (method_name == "getSelf"sv) {
+            reply_ok(JsonValue(management_info(*ext)));
+            return;
+        }
+        if (method_name == "uninstallSelf"sv) {
+            // Firefox asks the user first when the extension wants a confirmation. Ladyflock has no such dialog, so it
+            // declines, as Firefox does when the user cancels.
+            if (!arguments.is_empty() && arguments[0].is_object() && arguments[0].as_object().get_bool("showConfirmDialog"sv) == true) {
+                reply_err("User cancelled uninstall of extension");
+                return;
+            }
+            reply_ok(JsonValue {});
+            Core::deferred_invoke([weak = make_weak_ptr<ExtensionManager>(), extension_id] {
+                if (auto* self = weak.ptr())
+                    (void)self->remove_extension(extension_id);
+            });
+            return;
+        }
+        if (!ext->manifest.has_permission("management"sv)) {
+            reply_err("This method requires the management permission");
+            return;
+        }
+        if (method_name == "getAll"sv) {
+            JsonArray all;
+            for (auto const& [_, installed] : m_extensions_by_id)
+                all.must_append(management_info(installed));
+            reply_ok(move(all));
+            return;
+        }
+        if (method_name == "get"sv) {
+            auto target = !arguments.is_empty() && arguments[0].is_string() ? m_extensions_by_id.get(arguments[0].as_string()) : Optional<InstalledExtension&> {};
+            if (!target.has_value()) {
+                reply_err("No such addon");
+                return;
+            }
+            reply_ok(JsonValue(management_info(*target)));
+            return;
+        }
+        reply_err("Unsupported management method");
+        return;
+    }
+
+    // Ladyflock saves no passwords and fills no forms itself, so these are off and no extension can turn them on. A
+    // password manager turns them off at startup, which then changes nothing.
+    if (namespace_name.bytes_as_string_view().starts_with("privacy.services."sv)) {
+        if (!ext->manifest.has_permission("privacy"sv)) {
+            reply_err("Extension lacks the privacy permission");
+            return;
+        }
+        if (method_name == "get"sv) {
+            JsonObject setting;
+            setting.set("value"sv, false);
+            setting.set("levelOfControl"sv, "not_controllable"sv);
+            reply_ok(move(setting));
+            return;
+        }
+        if (method_name.is_one_of("set"sv, "clear"sv)) {
+            reply_ok(JsonValue(false));
+            return;
+        }
+        reply_err("Unsupported privacy setting method");
+        return;
+    }
+
+    if ((namespace_name == "action"sv || namespace_name == "browserAction"sv) && method_name == "getUserSettings"sv) {
+        JsonObject settings;
+        settings.set("isOnToolbar"sv, m_action_controller.resolved_state(extension_id).pinned);
+        reply_ok(move(settings));
         return;
     }
 
@@ -2926,28 +3936,110 @@ void ExtensionManager::handle_api_call(
         return;
     }
 
-    if (namespace_name == "windows"sv && method_name == "getCurrent"sv) {
-        auto window_id = caller_window();
+    if (namespace_name == "windows"sv) {
+        auto const& arguments = !parsed_args.is_error() && parsed_args.value().is_array() ? parsed_args.value().as_array() : empty_arr;
         auto active = Application::the().active_web_view();
-        JsonObject window;
-        window.set("id"sv, window_id);
-        window.set("focused"sv, active.has_value() && active->extension_window_id() == window_id);
-        window.set("incognito"sv, false);
-        window.set("type"sv, "normal"sv);
-        if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty()) {
-            auto const& options = parsed_args.value().as_array().at(0);
-            if (options.is_object() && options.as_object().get_bool("populate"sv) == true) {
-                JsonArray tabs;
-                for (auto* view : ordinary_tab_views()) {
-                    if (view->extension_window_id() != window_id)
-                        continue;
-                    if (auto tab = tab_info_for_extension(extension_id, *view); tab.has_value())
-                        tabs.must_append(serialize_tab(*tab));
-                }
-                window.set("tabs"sv, move(tabs));
-            }
+        auto focused_window = active.has_value() && active->is_private() == IsPrivate::No ? Optional<u64> { active->extension_window_id() } : Optional<u64> {};
+        Vector<u64> window_ids;
+        for (auto* view : ordinary_tab_views()) {
+            if (!window_ids.contains_slow(view->extension_window_id()))
+                window_ids.append(view->extension_window_id());
         }
-        reply_ok(JsonValue(move(window)));
+        auto window_json = [&](u64 window_id, JsonValue const& options) {
+            return window_info(extension_id, window_id, options.is_object() && options.as_object().get_bool("populate"sv) == true);
+        };
+        auto options_at = [&](size_t index) { return index < arguments.size() ? arguments[index] : JsonValue {}; };
+
+        if (method_name == "getCurrent"sv) {
+            reply_ok(JsonValue(window_json(caller_window(), options_at(0))));
+            return;
+        }
+        if (method_name == "getLastFocused"sv) {
+            auto window_id = focused_window.value_or(window_ids.is_empty() ? current_window_id() : window_ids.first());
+            reply_ok(JsonValue(window_json(window_id, options_at(0))));
+            return;
+        }
+        if (method_name == "get"sv) {
+            // windows.WINDOW_ID_CURRENT is -2.
+            auto window_id = arguments.is_empty() ? Optional<u64> {} : arguments[0].get_u64();
+            if (!arguments.is_empty() && arguments[0].get_i64() == -2)
+                window_id = caller_window();
+            if (!window_id.has_value() || !window_ids.contains_slow(*window_id)) {
+                reply_err("Invalid window ID");
+                return;
+            }
+            reply_ok(JsonValue(window_json(*window_id, options_at(1))));
+            return;
+        }
+        if (method_name == "getAll"sv) {
+            auto options = options_at(0);
+            if (options.is_object()) {
+                auto types = options.as_object().get_array("windowTypes"sv);
+                if (types.has_value() && !any_of(types->values(), [](auto const& type) { return type.is_string() && type.as_string() == "normal"sv; })) {
+                    reply_ok(JsonArray {});
+                    return;
+                }
+            }
+            JsonArray windows;
+            for (auto window_id : window_ids)
+                windows.must_append(window_json(window_id, options));
+            reply_ok(move(windows));
+            return;
+        }
+        if (method_name == "create"sv) {
+            auto options = options_at(0);
+            auto const& details = options.is_object() ? options.as_object() : empty_obj;
+            if (details.get_bool("incognito"sv) == true) {
+                reply_err("Extension does not have permission for incognito mode");
+                return;
+            }
+            // The first URL opens in the new window. Ladyflock opens every window as a normal one.
+            Optional<String> requested;
+            if (auto url = details.get_string("url"sv); url.has_value())
+                requested = *url;
+            else if (auto urls = details.get_array("url"sv); urls.has_value() && !urls->is_empty() && urls->at(0).is_string())
+                requested = urls->at(0).as_string();
+            auto base = URL::Parser::basic_parse(ByteString::formatted("moz-extension://{}/", ext->uuid));
+            auto url = requested.has_value() ? URL::Parser::basic_parse(*requested, base) : URL::Parser::basic_parse("about:blank"sv);
+            bool own_page = url.has_value() && url->scheme() == "moz-extension"sv && url->serialized_host() == ext->uuid;
+            if (!url.has_value() || (!own_page && !url->scheme().is_one_of("http"sv, "https"sv) && url->serialize() != "about:blank"sv)) {
+                reply_err("Illegal URL for a new window");
+                return;
+            }
+            auto pending_id = m_next_window_creation_id++;
+            m_pending_window_creations.append(PendingWindowCreation {
+                .id = pending_id,
+                .caller = caller.make_weak_ptr<WebContentClient>(),
+                .page_id = page_id,
+                .document_id = document_id,
+                .call_id = call_id,
+                .extension_id = extension_id,
+                .timeout = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [this, pending_id] {
+                    auto index = m_pending_window_creations.find_first_index_if([&](auto const& pending) { return pending.id == pending_id; });
+                    if (!index.has_value())
+                        return;
+                    auto pending = m_pending_window_creations.take(*index);
+                    if (auto renderer = pending.caller.strong_ref())
+                        renderer->async_extension_api_response(pending.page_id, pending.document_id, pending.call_id, false, "\"The window did not open\""_string);
+                }),
+            });
+            m_pending_window_creations.last().timeout->start();
+            Application::the().open_url_in_new_window(*url, IsPrivate::No);
+            return;
+        }
+        reply_err("Unsupported windows method");
+        return;
+    }
+
+    if (namespace_name == "tabs"sv && method_name == "getCurrent"sv) {
+        // Only a page shown in a browser tab has a tab; a background page, popup or sidebar does not.
+        auto& view = page->view();
+        if (view.owner_view_id().has_value() || is_extension_background_view(view)) {
+            reply_ok(JsonValue {});
+            return;
+        }
+        auto tab = tab_info_for_extension(extension_id, view);
+        reply_ok(tab.has_value() ? JsonValue(serialize_tab(*tab)) : JsonValue {});
         return;
     }
 
@@ -3150,6 +4242,24 @@ void ExtensionManager::handle_api_call(
                 reply_err("Target tab not found");
                 return;
             }
+            // The message goes to the frame the options name, or else to the tab's top-level document.
+            i64 frame_id = 0;
+            if (auto const& arguments = parsed_args.value().as_array(); arguments.size() > 2 && arguments.at(2).is_object()) {
+                auto const& options = arguments.at(2).as_object();
+                if (options.has("frameId"sv)) {
+                    auto requested = options.get_i64("frameId"sv);
+                    if (!requested.has_value() || *requested < 0) {
+                        reply_err("Invalid frame ID");
+                        return;
+                    }
+                    frame_id = *requested;
+                }
+            }
+            auto const* frame = scripting_target_frame(*view, frame_id);
+            if (!frame) {
+                reply_err("Could not establish connection. Receiving end does not exist.");
+                return;
+            }
             auto weak_caller = caller.make_weak_ptr<WebContentClient>();
             auto rid = register_event_reply([weak_caller, page_id, document_id, call_id](bool has_val, String const& res_json) {
                 if (auto c = weak_caller.strong_ref())
@@ -3162,9 +4272,8 @@ void ExtensionManager::handle_api_call(
             ev_args.must_append(msg);
             ev_args.must_append(move(sender));
 
-            auto& target_page = view->traversable().active_document().host()
-                ? *view->traversable().active_document().host()
-                : view->page();
+            auto& target_document = frame->active_document();
+            auto& target_page = target_document.host() ? *target_document.host() : view->page();
             bind_event_reply(rid, target_page);
             target_page.client().async_dispatch_extension_event(
                 target_page.id(),
@@ -3173,7 +4282,7 @@ void ExtensionManager::handle_api_call(
                 "onMessage"_string,
                 ev_args.serialized(),
                 rid,
-                view->traversable().active_document().id());
+                target_document.id());
             return;
         }
         if (method_name == "executeScript"sv) {
@@ -3343,17 +4452,46 @@ void ExtensionManager::handle_api_call(
         return true;
     };
 
-    auto icon_from_details = [&](JsonObject const& details) -> ErrorOr<Optional<String>> {
+    struct IconUpdate {
+        bool keep_current { false };
+        Optional<String> path;
+    };
+    auto icon_from_details = [&](JsonObject const& details) -> ErrorOr<IconUpdate> {
         auto path = details.get("path"sv);
-        if (!path.has_value())
-            return Error::from_string_literal("setIcon requires a package path or size-to-path object");
-        if (path->is_null())
-            return Optional<String> {};
-        auto icons = TRY(Web::Extensions::ExtensionManifest::parse_icon_map(*path));
+        if (!path.has_value() || path->is_null()) {
+            // The toolbar draws bitmaps from the package only, so an imageData icon leaves the current icon in place.
+            if (auto image_data = details.get("imageData"sv); image_data.has_value() && !image_data->is_null())
+                return IconUpdate { .keep_current = true, .path = {} };
+            if (!path.has_value())
+                return Error::from_string_literal("setIcon requires a package path or size-to-path object");
+            return IconUpdate {};
+        }
+        // As in Firefox, a relative path is relative to the page that calls, so "../icons/a.png" from
+        // "background/index.html" names "icons/a.png".
+        auto resolve = [&](JsonValue const& value) -> JsonValue {
+            if (!value.is_string() || value.as_string().starts_with('/'))
+                return value;
+            auto resolved = URL::Parser::basic_parse(value.as_string(), document->creation_url());
+            if (!resolved.has_value() || resolved->scheme() != "moz-extension"sv || resolved->serialized_host() != ext->uuid)
+                return value;
+            return JsonValue { MUST(String::from_byte_string(URL::percent_decode(resolved->serialize_path()))) };
+        };
+        JsonValue resolved_path = resolve(*path);
+        if (path->is_object()) {
+            JsonObject sizes;
+            path->as_object().for_each_member([&](auto const& size, auto const& value) { sizes.set(size, resolve(value)); });
+            resolved_path = move(sizes);
+        }
+        auto icons = TRY(Web::Extensions::ExtensionManifest::parse_icon_map(resolved_path));
         auto selected = Web::Extensions::ExtensionManifest::preferred_icon(icons);
-        if (!selected.has_value())
+        if (!selected.has_value()) {
+            // The isolated image decoder can't draw SVG. Firefox accepts SVG icons, so keep the current icon
+            // instead of refusing the call.
+            if (!icons.is_empty())
+                return IconUpdate { .keep_current = true, .path = {} };
             return Error::from_string_literal("No valid icon size was supplied");
-        return selected;
+        }
+        return IconUpdate { .path = move(selected) };
     };
 
     if (namespace_name == "action"sv || namespace_name == "browserAction"sv) {
@@ -3409,12 +4547,13 @@ void ExtensionManager::handle_api_call(
         } else if (method_name == "getPopup"sv) {
             reply_ok(JsonValue(m_action_controller.get_popup(extension_id, tab_id, window_id).value_or({})));
         } else if (method_name == "setIcon"sv) {
-            auto path = icon_from_details(arg_obj);
-            if (path.is_error()) {
+            auto update = icon_from_details(arg_obj);
+            if (update.is_error()) {
                 reply_err("setIcon requires a package path or size-to-path object");
                 return;
             }
-            m_action_controller.set_icon(extension_id, path.release_value(), tab_id, window_id);
+            if (!update.value().keep_current)
+                m_action_controller.set_icon(extension_id, update.value().path, tab_id, window_id);
             reply_ok(JsonValue {});
         } else if (method_name == "enable"sv) {
             Optional<u64> tid;
@@ -3453,6 +4592,11 @@ void ExtensionManager::handle_api_call(
             reply_err("Expected menu arguments");
             return;
         }
+        // Menus are drawn when they open, so a menu that is already showing keeps the items it opened with.
+        if (method_name == "refresh"sv) {
+            reply_ok(JsonValue {});
+            return;
+        }
         auto result = change_page_menu(extension_id, method_name, parsed_args.value().as_array());
         if (result.is_error()) {
             caller.async_extension_api_response(page_id, document_id, call_id, false, JsonValue(MUST(String::from_utf8(result.error().string_literal()))).serialized());
@@ -3477,12 +4621,13 @@ void ExtensionManager::handle_api_call(
         auto window_id = scope.value_or_lazy_evaluated(caller_window);
 
         if (method_name == "setIcon"sv) {
-            auto path = icon_from_details(arg_obj);
-            if (path.is_error()) {
+            auto update = icon_from_details(arg_obj);
+            if (update.is_error()) {
                 reply_err("setIcon requires a package path or size-to-path object");
                 return;
             }
-            m_sidebar_controller.set_icon(extension_id, path.release_value(), tab_id, scope);
+            if (!update.value().keep_current)
+                m_sidebar_controller.set_icon(extension_id, update.value().path, tab_id, scope);
             reply_ok(JsonValue {});
         } else if (method_name == "setPanel"sv) {
             m_sidebar_controller.set_panel(extension_id, copy_opt_string(arg_obj.get_string("panel"sv)), tab_id, scope);
@@ -3608,7 +4753,7 @@ void ExtensionManager::handle_api_call(
     }
 
     if (namespace_name == "declarativeNetRequest"sv) {
-        if (context_type == Web::Extensions::ContextType::ContentScript || !ext->manifest.has_permission("declarativeNetRequest"sv)) {
+        if (context_type == Web::Extensions::ContextType::ContentScript || !Web::Extensions::uses_declarative_net_request(ext->manifest)) {
             reply_err("Declarative network requests require an extension page with the declarativeNetRequest permission");
             return;
         }
@@ -3834,8 +4979,57 @@ void ExtensionManager::handle_api_call(
     reply_err("Unsupported extension API namespace");
 }
 
+JsonObject ExtensionManager::window_info(StringView extension_id, u64 window_id, bool populate) const
+{
+    auto active = Application::the().active_web_view();
+    JsonObject window;
+    window.set("id"sv, window_id);
+    window.set("focused"sv, active.has_value() && active->is_private() == IsPrivate::No && active->extension_window_id() == window_id);
+    window.set("incognito"sv, false);
+    window.set("type"sv, "normal"sv);
+    window.set("state"sv, "normal"sv);
+    window.set("alwaysOnTop"sv, false);
+    if (populate) {
+        JsonArray tabs;
+        for (auto* view : ordinary_tab_views()) {
+            if (view->extension_window_id() != window_id)
+                continue;
+            if (auto tab = tab_info_for_extension(extension_id, *view); tab.has_value())
+                tabs.must_append(serialize_tab(*tab));
+        }
+        window.set("tabs"sv, move(tabs));
+    }
+    return window;
+}
+
+void ExtensionManager::notify_window_removed(u64 window_id)
+{
+    if (!m_known_window_ids.remove(window_id))
+        return;
+    JsonArray arguments;
+    arguments.must_append(window_id);
+    dispatch_to_extensions_with_permission({}, "windows"sv, "onRemoved"sv, arguments.serialized());
+}
+
 void ExtensionManager::notify_tab_created(ViewImplementation const& view)
 {
+    // A window's first tab is the window's creation, and the answer to the oldest windows.create still waiting.
+    if (auto window_id = view.extension_window_id(); window_id != 0 && m_known_window_ids.set(window_id) == AK::HashSetResult::InsertedNewEntry) {
+        if (!m_pending_window_creations.is_empty()) {
+            auto pending = m_pending_window_creations.take_first();
+            pending.timeout->stop();
+            if (auto renderer = pending.caller.strong_ref())
+                renderer->async_extension_api_response(pending.page_id, pending.document_id, pending.call_id, true, window_info(pending.extension_id, window_id, true).serialized());
+        }
+        for (auto const& [id, extension] : m_extensions_by_id) {
+            if (!extension.enabled)
+                continue;
+            JsonArray arguments;
+            arguments.must_append(window_info(id, window_id, false));
+            dispatch_event_to_extension(extension.extension_id, "windows"sv, "onCreated"sv, arguments.serialized());
+        }
+    }
+
     for (auto const& [id, extension] : m_extensions_by_id) {
         if (auto tab = tab_info_for_extension(id, view); tab.has_value()) {
             JsonArray args;
@@ -3896,9 +5090,21 @@ void ExtensionManager::notify_tab_activated(u64 tab_id, u64 window_id)
     args.must_append(move(active_info));
     auto serialized = args.serialized();
 
+    // Ladyflock highlights only the active tab, so the highlighted tabs change exactly when it does.
+    JsonObject highlight_info;
+    highlight_info.set("windowId"sv, static_cast<i64>(window_id));
+    JsonArray tab_ids;
+    tab_ids.must_append(static_cast<i64>(tab_id));
+    highlight_info.set("tabIds"sv, move(tab_ids));
+    JsonArray highlight_args;
+    highlight_args.must_append(move(highlight_info));
+    auto serialized_highlight = highlight_args.serialized();
+
     for (auto const& [ext_id, ext] : m_extensions_by_id) {
-        if (ext.enabled)
-            dispatch_event_to_extension(ext_id, "tabs"sv, "onActivated"sv, serialized);
+        if (!ext.enabled)
+            continue;
+        dispatch_event_to_extension(ext_id, "tabs"sv, "onActivated"sv, serialized);
+        dispatch_event_to_extension(ext_id, "tabs"sv, "onHighlighted"sv, serialized_highlight);
     }
 }
 
@@ -4084,13 +5290,134 @@ void ExtensionManager::activate_page_menu_item(ViewImplementation const& view, W
                 info.set("srcUrl"sv, target.source_url->serialize());
             if (target.media_type.has_value())
                 info.set("mediaType"sv, *target.media_type);
+            if (target.selection_text.has_value())
+                info.set("selectionText"sv, *target.selection_text);
             JsonArray args;
             args.must_append(move(info));
             args.must_append(serialize_tab(*tab));
             dispatch_event_to_extension(id, "menus"sv, "onClicked"sv, args.serialized());
+            notify_page_menu_hidden();
             return;
         }
     }
+}
+
+void ExtensionManager::notify_page_menu_shown(ViewImplementation const& view, Web::HTML::CrossProcessId document, ExtensionMenuTarget const& target)
+{
+    notify_page_menu_hidden();
+    auto* frame = extension_menu_frame(view, document);
+    if (!extensions_enabled() || !frame)
+        return;
+
+    JsonArray contexts;
+    if (target.link_url.has_value())
+        contexts.must_append("link"_string);
+    if (target.media_type.has_value())
+        contexts.must_append(*target.media_type);
+    if (target.has_selection)
+        contexts.must_append("selection"_string);
+    if (target.editable)
+        contexts.must_append("editable"_string);
+    if (frame->parent())
+        contexts.must_append("frame"_string);
+    if (!target.link_url.has_value() && !target.media_type.has_value() && !target.has_selection && !target.editable)
+        contexts.must_append("page"_string);
+
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (!extension.enabled || (!extension.manifest.has_permission("menus"sv) && !extension.manifest.has_permission("contextMenus"sv)))
+            continue;
+        auto tab = tab_info_for_extension(id, view);
+        if (!tab.has_value())
+            continue;
+        JsonArray menu_ids;
+        if (auto items = m_page_menus.get(id); items.has_value()) {
+            for (auto const& item : *items) {
+                if (item.matches(*frame, target))
+                    menu_ids.must_append(item.id);
+            }
+        }
+        JsonObject info;
+        info.set("menuIds"sv, move(menu_ids));
+        info.set("contexts"sv, contexts);
+        info.set("editable"sv, target.editable);
+        info.set("frameId"sv, frame->extension_frame_id());
+        // As in Firefox, what the menu was opened on is included only for pages the extension may access.
+        if (has_host_permission(id, frame->active_document_url(), view.view_id())) {
+            info.set("pageUrl"sv, view.url().serialize());
+            if (frame->parent())
+                info.set("frameUrl"sv, frame->active_document_url().serialize());
+            if (target.link_url.has_value())
+                info.set("linkUrl"sv, target.link_url->serialize());
+            if (target.source_url.has_value())
+                info.set("srcUrl"sv, target.source_url->serialize());
+            if (target.selection_text.has_value())
+                info.set("selectionText"sv, *target.selection_text);
+        }
+        if (target.media_type.has_value())
+            info.set("mediaType"sv, *target.media_type);
+        JsonArray args;
+        args.must_append(move(info));
+        args.must_append(serialize_tab(*tab));
+        m_extensions_shown_page_menu.set(id);
+        dispatch_event_to_extension(id, "menus"sv, "onShown"sv, args.serialized());
+    }
+}
+
+void ExtensionManager::notify_page_menu_hidden()
+{
+    for (auto const& id : m_extensions_shown_page_menu) {
+        if (auto extension = m_extensions_by_id.get(id); extension.has_value() && extension->enabled)
+            dispatch_event_to_extension(id, "menus"sv, "onHidden"sv, "[]"_string);
+    }
+    m_extensions_shown_page_menu.clear();
+}
+
+JsonObject ExtensionManager::management_info(InstalledExtension const& extension) const
+{
+    auto const& manifest = extension.manifest;
+    JsonObject info;
+    info.set("id"sv, extension.extension_id);
+    info.set("name"sv, manifest.name());
+    info.set("shortName"sv, manifest.name());
+    info.set("description"sv, manifest.description().value_or({}));
+    info.set("version"sv, manifest.version());
+    info.set("mayDisable"sv, true);
+    info.set("enabled"sv, extension.enabled);
+    info.set("type"sv, "extension"sv);
+    info.set("installType"sv, extension.source == Web::Extensions::InstallSource::SignedXpi ? "normal"sv : "development"sv);
+    auto raw_manifest = MUST(JsonValue::from_string(manifest.raw_json()));
+    if (auto homepage = raw_manifest.as_object().get_string("homepage_url"sv); homepage.has_value())
+        info.set("homepageUrl"sv, *homepage);
+    if (manifest.options_ui().has_value()) {
+        if (auto url = package_page_url(extension, manifest.options_ui()->page); url.has_value())
+            info.set("optionsUrl"sv, url->serialize());
+    } else {
+        info.set("optionsUrl"sv, ""sv);
+    }
+    JsonArray permissions;
+    for (auto const& permission : manifest.permissions()) {
+        if (!Web::Extensions::MatchPattern::is_valid_host_permission_pattern(permission))
+            permissions.must_append(permission);
+    }
+    info.set("permissions"sv, move(permissions));
+    JsonArray hosts;
+    for (auto const& origin : granted_origin_patterns(extension))
+        hosts.must_append(origin);
+    info.set("hostPermissions"sv, move(hosts));
+    JsonArray icons;
+    for (auto const& [size, path] : manifest.icons()) {
+        auto size_number = size.to_number<u32>();
+        auto url = package_page_url(extension, path);
+        if (!size_number.has_value() || !url.has_value())
+            continue;
+        JsonObject icon;
+        icon.set("size"sv, *size_number);
+        icon.set("url"sv, url->serialize());
+        icons.must_append(move(icon));
+    }
+    if (!icons.is_empty())
+        info.set("icons"sv, move(icons));
+    return info;
 }
 
 JsonObject ExtensionManager::summary_json() const

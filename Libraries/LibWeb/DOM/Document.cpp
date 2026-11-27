@@ -624,7 +624,7 @@ WebIDL::ExceptionOr<GC::Ref<Document>> Document::create_and_initialize(Type type
         && page.hosted_extension_uuid().has_value()
         && page.hosted_extension_manifest_json().has_value()
         && document->url().serialized_host() == *page.hosted_extension_uuid()) {
-        document->initialize_extension_page_context(*page.hosted_extension_id(), *page.hosted_extension_uuid(), *page.hosted_extension_manifest_json(), page.hosted_extension_locale_messages_json());
+        document->initialize_extension_page_context(*page.hosted_extension_id(), *page.hosted_extension_uuid(), *page.hosted_extension_manifest_json(), page.hosted_extension_locale_messages_json(), page.hosts_extension_background_page());
     }
     if (auto pending_scripts = page.take_pending_extension_scripts(document->id()); !pending_scripts.is_empty()) {
         document->ensure_extension_content_script_host().attach_scripts(move(pending_scripts));
@@ -12638,9 +12638,9 @@ void Document::run_extension_content_scripts(Extensions::RunAt run_at)
         m_extension_content_script_host->run_scripts_for(run_at);
 }
 
-void Document::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
+void Document::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page)
 {
-    ensure_extension_content_script_host().initialize_extension_page_context(move(extension_id), move(extension_uuid), move(manifest_json), move(locale_messages_json));
+    ensure_extension_content_script_host().initialize_extension_page_context(move(extension_id), move(extension_uuid), move(manifest_json), move(locale_messages_json), is_background_page);
 }
 
 void Document::detach_extension_worlds()

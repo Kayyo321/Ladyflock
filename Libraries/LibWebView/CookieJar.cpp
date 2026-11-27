@@ -9,6 +9,7 @@
 
 #include <AK/Array.h>
 #include <AK/IPv4Address.h>
+#include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
@@ -841,6 +842,13 @@ Requests::CacheSizes CookieJar::TransientStorage::estimate_storage_size_accessed
 
 void CookieJar::TransientStorage::send_cookie_changed_notifications(ReadonlySpan<CookieEntry> cookies, bool inform_web_view_about_changed_domains)
 {
+    ScopeGuard notify_owner = [&] {
+        if (!m_owner_jar || !m_owner_jar->on_cookie_changed)
+            return;
+        auto now = UnixDateTime::now();
+        for (auto const& cookie : cookies)
+            m_owner_jar->on_cookie_changed(cookie.value, cookie.value.expiry_time < now);
+    };
     ViewImplementation::for_each_view([&](ViewImplementation& view) {
         if (m_owner_jar) {
             if (view.session().cookie_jar.ptr() != m_owner_jar)

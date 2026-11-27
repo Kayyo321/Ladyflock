@@ -474,7 +474,7 @@ ErrorOr<Vector<DeclarativeRuleset>> load_declarative_rulesets(Web::Extensions::E
     if (!object.has("declarative_net_request"sv))
         return rulesets;
     auto declaration = object.get_object("declarative_net_request"sv);
-    if (!declaration.has_value() || !manifest.has_permission("declarativeNetRequest"sv))
+    if (!declaration.has_value() || !Web::Extensions::uses_declarative_net_request(manifest))
         return Error::from_string_literal("Declarative rules require the declarativeNetRequest permission");
     auto descriptors = declaration->get_array("rule_resources"sv);
     if (!descriptors.has_value() || declaration->size() != 1 || descriptors->size() > max_rulesets)

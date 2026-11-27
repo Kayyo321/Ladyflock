@@ -20,7 +20,9 @@
 
 namespace WebView::Extensions {
 
-// Per-extension storage.local backed by SQLite (via LibDatabase) with an in-memory fallback.
+// Per-extension storage.local or storage.sync backed by SQLite (via LibDatabase) with an in-memory fallback.
+// Ladyflock has no sync service, so storage.sync stays on this device with Firefox's sync quotas, as it does in a
+// Firefox profile that is not signed in.
 // Each changed key returns { oldValue?, newValue? } to drive browser.storage.onChanged.
 class WEBVIEW_API ExtensionStorage {
     AK_MAKE_NONCOPYABLE(ExtensionStorage);
@@ -28,14 +30,23 @@ class WEBVIEW_API ExtensionStorage {
 public:
     AK_ALLOC_WITH_KMALLOC;
 
+    enum class Area {
+        Local,
+        Sync,
+    };
+
     enum class Quota {
         Limited,
         Unlimited,
+        Sync,
     };
     static constexpr u64 default_quota_bytes = 10 * MiB;
+    static constexpr u64 sync_quota_bytes = 102400;
+    static constexpr u64 sync_quota_bytes_per_item = 8192;
+    static constexpr u64 sync_max_items = 512;
 
     static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode = Database::MigrationMode::Apply);
-    static ErrorOr<NonnullOwnPtr<ExtensionStorage>> create(Database::Database&);
+    static ErrorOr<NonnullOwnPtr<ExtensionStorage>> create(Database::Database&, Area = Area::Local);
     static NonnullOwnPtr<ExtensionStorage> create();
 
     ~ExtensionStorage();

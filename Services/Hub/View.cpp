@@ -823,6 +823,7 @@ void View::did_request_context_menu(WebView::ContextMenuRequest request)
     if (m_is_tab && session().extension_manager && request.extension_menu_document.has_value()) {
         m_extension_menu_target.editable = request.is_editable;
         m_extension_menu_target.has_selection = request.selected_text.has_value();
+        m_extension_menu_target.selection_text = request.selected_text;
         if (request.link_navigation.has_value())
             m_extension_menu_target.link_url = request.link_navigation->url;
         if (request.navigation.has_value())
@@ -833,6 +834,7 @@ void View::did_request_context_menu(WebView::ContextMenuRequest request)
             m_extension_menu_target.media_type = request.media->is_video ? "video"_string : "audio"_string;
         m_extension_menu_document = request.extension_menu_document;
         m_extension_menu_items = session().extension_manager->page_menu_items(*this, *m_extension_menu_document, m_extension_menu_target);
+        session().extension_manager->notify_page_menu_shown(*this, *m_extension_menu_document, m_extension_menu_target);
         request.extension_menu_serial = m_extension_menu_serial;
         request.extension_menu_items = m_extension_menu_items;
     }

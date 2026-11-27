@@ -80,6 +80,12 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
         scheme = Scheme::File;
     else if (scheme_view == "moz-extension"sv)
         scheme = Scheme::MozExtension;
+    else if (scheme_view == "ws"sv)
+        scheme = Scheme::Ws;
+    else if (scheme_view == "wss"sv)
+        scheme = Scheme::Wss;
+    else if (scheme_view == "ftp"sv)
+        scheme = Scheme::Ftp;
     else
         return Error::from_string_literal("Unsupported scheme in match pattern");
 
@@ -90,6 +96,14 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
 
     auto host_view = remainder.substring_view(0, *path_sep);
     auto path_view = remainder.substring_view(*path_sep);
+
+    Optional<u16> port;
+    if (auto colon = host_view.find_last(':'); colon.has_value() && !host_view.contains(']')) {
+        port = host_view.substring_view(*colon + 1).to_number<u16>();
+        if (!port.has_value())
+            return Error::from_string_literal("Invalid port in match pattern");
+        host_view = host_view.substring_view(0, *colon);
+    }
 
     if (scheme == Scheme::File && !host_view.is_one_of(""sv, "*"sv))
         return Error::from_string_literal("File match patterns only accept an empty or wildcard host");
@@ -118,7 +132,8 @@ ErrorOr<MatchPattern> MatchPattern::parse(StringView pattern)
         scheme,
         move(normalized_host),
         match_subdomains,
-        TRY(String::from_utf8(path_view)));
+        TRY(String::from_utf8(path_view)),
+        port);
 }
 
 bool MatchPattern::is_valid_host_permission_pattern(StringView pattern)
@@ -169,9 +184,20 @@ bool MatchPattern::matches(URL::URL const& url) const
     case Scheme::MozExtension:
         scheme_ok = url_scheme == "moz-extension"sv;
         break;
+    case Scheme::Ws:
+        scheme_ok = url_scheme == "ws"sv;
+        break;
+    case Scheme::Wss:
+        scheme_ok = url_scheme == "wss"sv;
+        break;
+    case Scheme::Ftp:
+        scheme_ok = url_scheme == "ftp"sv;
+        break;
     }
 
     if (!scheme_ok)
+        return false;
+    if (m_port.has_value() && url.port_or_default() != m_port)
         return false;
 
     if (m_is_all_urls)

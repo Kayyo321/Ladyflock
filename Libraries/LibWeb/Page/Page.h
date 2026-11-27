@@ -560,7 +560,8 @@ public:
     void set_viewport_is_fullscreen(ViewportIsFullscreen);
     void did_deny_fullscreen_window();
 
-    void set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
+    void set_hosted_extension_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page);
+    bool hosts_extension_background_page() const { return m_hosts_extension_background_page; }
     Optional<String> const& hosted_extension_id() const { return m_hosted_extension_id; }
     Optional<String> const& hosted_extension_uuid() const { return m_hosted_extension_uuid; }
     Optional<String> const& hosted_extension_manifest_json() const { return m_hosted_extension_manifest_json; }
@@ -804,6 +805,7 @@ private:
     Optional<String> m_hosted_extension_uuid;
     Optional<String> m_hosted_extension_manifest_json;
     String m_hosted_extension_locale_messages_json;
+    bool m_hosts_extension_background_page { false };
 
     HashMap<HTML::CrossProcessId, GC::Weak<DOM::Document>> m_extension_documents;
     HashMap<HTML::CrossProcessId, Vector<Extensions::AttachedContentScript>> m_pending_extension_scripts;
@@ -1141,6 +1143,7 @@ public:
     virtual void page_did_take_screenshot(Gfx::ShareableBitmap const&) { }
 
     virtual Extensions::ExtensionResourceResponse page_did_request_extension_resource(URL::URL const&, HTML::CrossProcessId) { return {}; }
+    virtual bool page_did_request_extension_cross_origin_access([[maybe_unused]] HTML::CrossProcessId document_id, [[maybe_unused]] URL::URL const& url) { return false; }
     virtual void page_did_call_extension_api([[maybe_unused]] u64 call_id, [[maybe_unused]] String const& extension_id, [[maybe_unused]] Extensions::ContextType context_type, [[maybe_unused]] HTML::CrossProcessId document_id, [[maybe_unused]] u64 grant_generation, [[maybe_unused]] String const& namespace_name, [[maybe_unused]] String const& method_name, [[maybe_unused]] String const& args_json) { }
     virtual void page_did_reply_extension_event([[maybe_unused]] u64 reply_id, [[maybe_unused]] bool has_value, [[maybe_unused]] String const& result_json) { }
     virtual void page_did_finish_extension_script_execution([[maybe_unused]] u64 call_id, [[maybe_unused]] bool success, [[maybe_unused]] String const& result_or_error_json) { }

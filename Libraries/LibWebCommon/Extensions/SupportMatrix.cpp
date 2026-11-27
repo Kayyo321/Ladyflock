@@ -39,29 +39,124 @@ static constexpr Array s_supported_manifest_keys {
     "web_accessible_resources"sv,
     "content_security_policy"sv,
     "declarative_net_request"sv,
+    "incognito"sv,
+    "developer"sv,
+    "storage"sv,
+    "omnibox"sv,
+};
+
+// Manifest keys Firefox reads that Ladyflock does not implement. An extension that declares one is refused, since
+// Firefox would act on it. Firefox ignores any other key it doesn't know, with a warning, and so does Ladyflock.
+static constexpr Array s_firefox_unsupported_manifest_keys {
+    "chrome_settings_overrides"sv,
+    "chrome_url_overrides"sv,
+    "devtools_page"sv,
+    "dictionaries"sv,
+    "experiment_apis"sv,
+    "hidden"sv,
+    "l10n_resources"sv,
+    "page_action"sv,
+    "protocol_handlers"sv,
+    "telemetry"sv,
+    "theme"sv,
+    "theme_experiment"sv,
+    "user_scripts"sv,
+};
+
+// Permissions Firefox knows. Firefox ignores any other permission with a warning, such as one only Chrome has, and so
+// does Ladyflock. One Firefox knows and Ladyflock does not implement refuses the install.
+static constexpr Array s_firefox_permissions {
+    "activeTab"sv,
+    "alarms"sv,
+    "bookmarks"sv,
+    "browserSettings"sv,
+    "browsingData"sv,
+    "captivePortal"sv,
+    "clipboardRead"sv,
+    "clipboardWrite"sv,
+    "contextMenus"sv,
+    "contextualIdentities"sv,
+    "cookies"sv,
+    "declarativeNetRequest"sv,
+    "declarativeNetRequestFeedback"sv,
+    "declarativeNetRequestWithHostAccess"sv,
+    "devtools"sv,
+    "dns"sv,
+    "downloads"sv,
+    "downloads.open"sv,
+    "find"sv,
+    "geckoProfiler"sv,
+    "geolocation"sv,
+    "history"sv,
+    "identity"sv,
+    "idle"sv,
+    "management"sv,
+    "menus"sv,
+    "menus.overrideContext"sv,
+    "mozillaAddons"sv,
+    "nativeMessaging"sv,
+    "networkStatus"sv,
+    "normandyAddonStudy"sv,
+    "notifications"sv,
+    "pkcs11"sv,
+    "privacy"sv,
+    "proxy"sv,
+    "publicSuffix"sv,
+    "scripting"sv,
+    "search"sv,
+    "sessions"sv,
+    "storage"sv,
+    "tabGroups"sv,
+    "tabHide"sv,
+    "tabs"sv,
+    "telemetry"sv,
+    "theme"sv,
+    "topSites"sv,
+    "trialML"sv,
+    "unlimitedStorage"sv,
+    "urlbar"sv,
+    "userScripts"sv,
+    "webNavigation"sv,
+    "webRequest"sv,
+    "webRequestAuthProvider"sv,
+    "webRequestBlocking"sv,
+    "webRequestFilterResponse"sv,
+    "webRequestFilterResponse.serviceWorkerScript"sv,
 };
 
 static constexpr Array s_supported_permissions {
     "activeTab"sv,
     "alarms"sv,
+    "clipboardRead"sv,
+    "clipboardWrite"sv,
     "contextMenus"sv,
+    "cookies"sv,
     "declarativeNetRequest"sv,
+    "declarativeNetRequestWithHostAccess"sv,
     "dns"sv,
+    "downloads"sv,
+    "idle"sv,
+    "management"sv,
     "menus"sv,
+    "nativeMessaging"sv,
+    "notifications"sv,
     "privacy"sv,
     "publicSuffix"sv,
     "scripting"sv,
     "storage"sv,
     "tabs"sv,
+    "theme"sv,
     "unlimitedStorage"sv,
     "webNavigation"sv,
     "webRequest"sv,
     "webRequestBlocking"sv,
+    "webRequestAuthProvider"sv,
 };
 
 static constexpr Array s_supported_api_methods {
     "runtime.id"sv,
     "runtime.getURL"sv,
+    "runtime.getBackgroundPage"sv,
     "runtime.getManifest"sv,
     "runtime.sendMessage"sv,
     "runtime.onMessage"sv,
@@ -98,6 +193,9 @@ static constexpr Array s_supported_api_methods {
     "menus.remove"sv,
     "menus.removeAll"sv,
     "menus.onClicked"sv,
+    "menus.onShown"sv,
+    "menus.onHidden"sv,
+    "menus.refresh"sv,
     "privacy.network.networkPredictionEnabled.get"sv,
     "privacy.network.networkPredictionEnabled.set"sv,
     "privacy.network.networkPredictionEnabled.clear"sv,
@@ -115,6 +213,7 @@ static constexpr Array s_supported_api_methods {
     "webNavigation.onHistoryStateUpdated"sv,
     "webNavigation.onReferenceFragmentUpdated"sv,
     "webNavigation.onErrorOccurred"sv,
+    "webNavigation.onTabReplaced"sv,
     "storage.local.get"sv,
     "storage.local.set"sv,
     "storage.local.remove"sv,
@@ -141,6 +240,7 @@ static constexpr Array s_supported_api_methods {
     "tabs.removeCSS"sv,
     "tabs.onUpdated"sv,
     "tabs.onActivated"sv,
+    "tabs.onHighlighted"sv,
     "tabs.onCreated"sv,
     "tabs.onRemoved"sv,
     "windows.getCurrent"sv,
@@ -195,6 +295,7 @@ static constexpr Array s_supported_api_methods {
     "publicSuffix.getKnownSuffix"sv,
     "publicSuffix.getDomain"sv,
     "webRequest.onBeforeRequest"sv,
+    "webRequest.onBeforeSendHeaders"sv,
     "webRequest.onSendHeaders"sv,
     "webRequest.onHeadersReceived"sv,
     "webRequest.onBeforeRedirect"sv,
@@ -203,7 +304,84 @@ static constexpr Array s_supported_api_methods {
     "webRequest.onErrorOccurred"sv,
     "webRequest.handlerBehaviorChanged"sv,
     "runtime.onUpdateAvailable"sv,
+    "runtime.getPlatformInfo"sv,
+    "runtime.getBrowserInfo"sv,
+    "runtime.onStartup"sv,
+    "runtime.onSuspend"sv,
+    "runtime.onMessageExternal"sv,
+    "runtime.onConnectExternal"sv,
+    "runtime.setUninstallURL"sv,
+    "runtime.reload"sv,
+    "extension.getURL"sv,
+    "extension.getBackgroundPage"sv,
+    "extension.inIncognitoContext"sv,
+    "extension.isAllowedIncognitoAccess"sv,
+    "extension.isAllowedFileSchemeAccess"sv,
+    "i18n.getMessage (content scripts)"sv,
+    "storage.sync.get"sv,
+    "storage.sync.set"sv,
+    "storage.sync.remove"sv,
+    "storage.sync.clear"sv,
+    "storage.sync.getBytesInUse"sv,
+    "storage.sync.getKeys"sv,
+    "storage.managed.get"sv,
+    "storage.local.onChanged"sv,
+    "storage.sync.onChanged"sv,
+    "storage.session.onChanged"sv,
+    "tabs.getCurrent"sv,
+    "tabs.onReplaced"sv,
+    "windows.get"sv,
+    "windows.getAll"sv,
+    "windows.getLastFocused"sv,
     "windows.onFocusChanged"sv,
+    "management.getSelf"sv,
+    "management.uninstallSelf"sv,
+    "management.getAll"sv,
+    "management.get"sv,
+    "management.onInstalled"sv,
+    "management.onUninstalled"sv,
+    "management.onEnabled"sv,
+    "management.onDisabled"sv,
+    "permissions.request"sv,
+    "runtime.connectNative"sv,
+    "runtime.sendNativeMessage"sv,
+    "notifications.create"sv,
+    "notifications.clear"sv,
+    "notifications.getAll"sv,
+    "notifications.onShown"sv,
+    "notifications.onClicked"sv,
+    "notifications.onClosed"sv,
+    "notifications.onButtonClicked"sv,
+    "idle.queryState"sv,
+    "idle.setDetectionInterval"sv,
+    "idle.onStateChanged"sv,
+    "cookies.get"sv,
+    "cookies.getAll"sv,
+    "cookies.set"sv,
+    "cookies.remove"sv,
+    "cookies.getAllCookieStores"sv,
+    "cookies.onChanged"sv,
+    "downloads.download"sv,
+    "downloads.search"sv,
+    "downloads.cancel"sv,
+    "downloads.pause"sv,
+    "downloads.resume"sv,
+    "downloads.onCreated"sv,
+    "downloads.onChanged"sv,
+    "downloads.onErased"sv,
+    "navigator.clipboard (clipboardWrite, clipboardRead)"sv,
+    "theme.getCurrent (no theme; update and reset are refused)"sv,
+    "privacy.services.passwordSavingEnabled"sv,
+    "privacy.services.autofillEnabled"sv,
+    "privacy.services.autofillAddressEnabled"sv,
+    "privacy.services.autofillCreditCardEnabled"sv,
+    "action.getUserSettings"sv,
+    "browserAction.getUserSettings"sv,
+    "windows.create (opens a normal window)"sv,
+    "windows.onCreated"sv,
+    "windows.onRemoved"sv,
+    "webRequest.onAuthRequired (never fires: no HTTP authentication challenge is answered)"sv,
+    "omnibox events (the keyword is not bound to the address bar)"sv,
 };
 
 // Each entry must have a verified package and a passing behavior test for the same bytes.
@@ -250,11 +428,31 @@ bool SupportMatrix::is_manifest_key_supported(StringView key)
     return s_supported_manifest_keys.span().contains_slow(key);
 }
 
+bool SupportMatrix::is_permission_known_to_firefox(StringView permission)
+{
+    return s_firefox_permissions.span().contains_slow(permission);
+}
+
+bool SupportMatrix::is_manifest_key_known_unsupported(StringView key)
+{
+    return s_firefox_unsupported_manifest_keys.span().contains_slow(key);
+}
+
 bool SupportMatrix::is_permission_supported(StringView permission)
 {
     if (MatchPattern::is_valid_host_permission_pattern(permission))
         return true;
     return s_supported_permissions.span().contains_slow(permission);
+}
+
+static void check_permission(CompatibilityEvaluation& evaluation, StringView permission)
+{
+    if (SupportMatrix::is_permission_supported(permission))
+        return;
+    if (SupportMatrix::is_permission_known_to_firefox(permission))
+        evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported permission '{}'", permission)));
+    else
+        evaluation.warnings.append(MUST(String::formatted("Ignored permission '{}', which Firefox does not know", permission)));
 }
 
 static bool is_tested_exact_version(
@@ -283,17 +481,22 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
 {
     CompatibilityEvaluation evaluation;
 
+    // Firefox refuses an extension whose policy fails its check, as a manifest error.
     if (manifest.has_invalid_csp())
         evaluation.unsupported_reasons.append("Invalid or unsafe content_security_policy"_string);
 
     for (auto const& key : manifest.top_level_keys()) {
-        if (!is_manifest_key_supported(key))
+        if (is_manifest_key_supported(key))
+            continue;
+        if (is_manifest_key_known_unsupported(key))
             evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported manifest key '{}'", key)));
+        else
+            evaluation.warnings.append(MUST(String::formatted("Ignored manifest key '{}', which Firefox does not read", key)));
     }
 
     auto const source = MUST(JsonValue::from_string(manifest.raw_json()));
     auto const& root = source.as_object();
-    if (root.has("declarative_net_request"sv) && !manifest.has_permission("declarativeNetRequest"sv))
+    if (root.has("declarative_net_request"sv) && !uses_declarative_net_request(manifest))
         evaluation.unsupported_reasons.append("Declarative rules require declarativeNetRequest permission"_string);
     auto reject = [&](StringView field) {
         evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported manifest setting '{}'", field)));
@@ -317,8 +520,6 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
                     reject("commands"sv);
                     return;
                 }
-                if (options.as_object().has("suggested_key"sv))
-                    reject("commands.suggested_key"sv);
             });
         } else {
             reject("commands"sv);
@@ -327,10 +528,10 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
     if (auto scripts = root.get_array("content_scripts"sv); scripts.has_value()) {
         for (auto const& script : scripts->values()) {
             auto const& options = script.as_object();
-            if (options.has("match_origin_as_fallback"sv) && options.get_bool("match_origin_as_fallback"sv) != false)
+            if (options.has("match_origin_as_fallback"sv) && !options.get_bool("match_origin_as_fallback"sv).has_value())
                 reject("content_scripts.match_origin_as_fallback"sv);
-            if (options.has("world"sv) && options.get_string("world"sv) != "ISOLATED"sv)
-                reject("content_scripts.world"sv);
+            else if (options.get_bool("match_origin_as_fallback"sv) == true)
+                evaluation.warnings.append("content_scripts.match_origin_as_fallback reaches about: frames, not blob: or data: ones"_string);
             if (options.has("css_origin"sv)) {
                 auto css_origin = options.get_string("css_origin"sv);
                 if (!css_origin.has_value() || !css_origin->equals_ignoring_ascii_case("author"sv))
@@ -338,13 +539,12 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
             }
         }
     }
-    for (auto const& perm : manifest.permissions()) {
-        if (!is_permission_supported(perm))
-            evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported permission '{}'", perm)));
-    }
+    for (auto const& perm : manifest.permissions())
+        check_permission(evaluation, perm);
+    // File, WebSocket and FTP access is not granted; the extension's web access does not depend on it.
     for (auto const& pattern : manifest.host_permissions()) {
         if (!pattern.is_web_host_permission())
-            evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported host permission '{}'", pattern.raw())));
+            evaluation.warnings.append(MUST(String::formatted("Host permission '{}' is not granted", pattern.raw())));
     }
 
     if (manifest.has_permission("webRequestBlocking"sv) && !manifest.has_permission("webRequest"sv))
@@ -376,10 +576,8 @@ CompatibilityEvaluation SupportMatrix::evaluate_catalog_metadata(
     if (has_service_worker_only)
         evaluation.unsupported_reasons.append("Background service_worker without scripts or page is not supported"_string);
 
-    for (auto const& perm : permissions) {
-        if (!is_permission_supported(perm))
-            evaluation.unsupported_reasons.append(MUST(String::formatted("Unsupported permission '{}'", perm)));
-    }
+    for (auto const& perm : permissions)
+        check_permission(evaluation, perm);
 
     if (!evaluation.unsupported_reasons.is_empty()) {
         evaluation.status = CompatibilityStatus::Incompatible;

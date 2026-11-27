@@ -31,6 +31,7 @@ struct ExtensionMenuTarget {
     Optional<URL::URL> source_url;
     Optional<String> media_type;
     bool has_selection { false };
+    Optional<String> selection_text;
     bool editable { false };
 };
 

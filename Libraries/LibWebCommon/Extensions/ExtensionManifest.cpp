@@ -51,46 +51,82 @@ String ExtensionManifest::default_extension_csp(ManifestVersion version)
     return "script-src 'self'; object-src 'self'"_string;
 }
 
+// Firefox restricts only where an extension page's scripts, workers and plugins may come from, and leaves every other
+// directive, such as connect-src or img-src, to the extension. See AddonContentPolicy::ValidateAddonCSP.
+static bool is_allowed_script_source(StringView source, ManifestVersion version)
+{
+    if (source.is_one_of("'self'"sv, "'none'"sv, "'wasm-unsafe-eval'"sv, "'report-sample'"sv))
+        return true;
+    if (source.starts_with("'sha256-"sv) || source.starts_with("'sha384-"sv) || source.starts_with("'sha512-"sv))
+        return true;
+    if (version == ManifestVersion::V3)
+        return false;
+
+    // Manifest V2 also allows eval, the extension's own blobs, local development servers and a named secure host.
+    if (source.is_one_of("'unsafe-eval'"sv, "blob:"sv, "moz-extension:"sv))
+        return true;
+    for (auto local : { "http://localhost"sv, "http://127.0.0.1"sv, "https://localhost"sv, "https://127.0.0.1"sv }) {
+        if (source == local || (source.starts_with(local) && source.length() > local.length() && (source[local.length()] == ':' || source[local.length()] == '/')))
+            return true;
+    }
+    if (source.starts_with("https://"sv)) {
+        auto host = source.substring_view(8);
+        if (auto end = host.find_any_of("/:"sv); end.has_value())
+            host = host.substring_view(0, *end);
+        // A wildcard or a public suffix alone would allow scripts from anyone.
+        return !host.is_empty() && !host.contains('*') && host.contains('.');
+    }
+    return false;
+}
+
 bool ExtensionManifest::is_valid_extension_csp(StringView csp, ManifestVersion version)
 {
     if (csp.is_empty())
         return false;
 
     auto lowered = csp.to_ascii_lowercase_string();
-    auto lowered_view = lowered.bytes_as_string_view();
+    HashMap<StringView, Vector<StringView>> directives;
+    for (auto directive : lowered.bytes_as_string_view().split_view(';')) {
+        auto tokens = directive.trim_whitespace().split_view_if([](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; });
+        if (tokens.is_empty())
+            continue;
+        auto name = tokens.take_first();
+        directives.ensure(name, [&] { return move(tokens); });
+    }
 
-    // Firefox forbids 'unsafe-eval', remote http:/ws:/ftp: script sources, and wildcard '*' in script-src.
-    if (lowered_view.contains("'unsafe-eval'"sv))
-        return false;
-    if (lowered_view.contains("http://"sv) || lowered_view.contains("ws://"sv) || lowered_view.contains("ftp://"sv))
-        return false;
+    auto sources_for = [&](StringView name) -> Optional<Vector<StringView> const&> {
+        if (auto sources = directives.get(name); sources.has_value())
+            return *sources;
+        // Workers fall back to child-src, then script-src, then default-src.
+        if (name == "worker-src"sv) {
+            if (auto sources = directives.get("child-src"sv); sources.has_value())
+                return *sources;
+            if (auto sources = directives.get("script-src"sv); sources.has_value())
+                return *sources;
+        }
+        return directives.get("default-src"sv);
+    };
 
-    if (version == ManifestVersion::V3) {
-        // MV3 extension_pages must not allow remote https:// origins or unsafe-inline in script-src.
-        if (lowered_view.contains("https://"sv) || lowered_view.contains("'unsafe-inline'"sv))
+    // Scripts must be restricted, either by script-src or default-src.
+    auto script_sources = sources_for("script-src"sv);
+    if (!script_sources.has_value())
+        return false;
+    // Every directive that can let a script run is held to the same sources, including script-src-elem and
+    // script-src-attr, which would otherwise take precedence over script-src for elements and attributes.
+    auto all_allowed = [&](Vector<StringView> const& sources) {
+        return all_of(sources, [&](auto source) { return is_allowed_script_source(source, version); });
+    };
+    for (auto directive : { "script-src"sv, "worker-src"sv, "object-src"sv }) {
+        // Manifest V3 no longer restricts object-src, as plugins are gone.
+        if (directive == "object-src"sv && version == ManifestVersion::V3)
+            continue;
+        if (auto sources = sources_for(directive); sources.has_value() && !all_allowed(*sources))
             return false;
     }
-
-    bool has_script_src = false;
-    for (auto directive : lowered_view.split_view(';')) {
-        auto trimmed = directive.trim_whitespace();
-        if (!trimmed.starts_with("script-src"sv) && !trimmed.starts_with("default-src"sv))
-            continue;
-        if (trimmed.starts_with("script-src"sv))
-            has_script_src = true;
-
-        auto tokens = trimmed.split_view_if([](char c) { return c == ' ' || c == '\t'; });
-        for (size_t i = 1; i < tokens.size(); ++i) {
-            auto token = tokens[i];
-            if (token == "*"sv || token == "http:"sv || token == "https:"sv || token == "data:"sv)
-                return false;
-        }
+    for (auto const& [name, sources] : directives) {
+        if (name.starts_with("script-src"sv) && !all_allowed(sources))
+            return false;
     }
-
-    // Require explicit script-src (or default-src) restriction.
-    if (!has_script_src && !lowered_view.contains("default-src"sv))
-        return false;
-
     return true;
 }
 
@@ -318,6 +354,16 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
             if (cs_obj.has("match_about_blank"sv) && !cs_obj.get_bool("match_about_blank"sv).has_value())
                 return Error::from_string_literal("content_scripts.match_about_blank must be a boolean");
             rule.match_about_blank = cs_obj.get_bool("match_about_blank"sv).value_or(false);
+            // match_origin_as_fallback also reaches about: frames by their origin. Ladyflock runs no content script
+            // in blob: or data: frames.
+            if (cs_obj.get_bool("match_origin_as_fallback"sv) == true)
+                rule.match_about_blank = true;
+            if (cs_obj.has("world"sv)) {
+                auto world = cs_obj.get_string("world"sv);
+                if (!world.has_value() || !world->is_one_of("ISOLATED"sv, "MAIN"sv))
+                    return Error::from_string_literal("content_scripts.world must be ISOLATED or MAIN");
+                rule.main_world = world == "MAIN"sv;
+            }
 
             manifest.m_content_scripts.append(move(rule));
         }
@@ -458,6 +504,11 @@ ErrorOr<ExtensionManifest> ExtensionManifest::parse(StringView json_text)
     return manifest;
 }
 
+bool uses_declarative_net_request(ExtensionManifest const& manifest)
+{
+    return manifest.has_permission("declarativeNetRequest"sv) || manifest.has_permission("declarativeNetRequestWithHostAccess"sv);
+}
+
 bool ExtensionManifest::has_permission(StringView name) const
 {
     return m_permissions.contains_slow(name);
@@ -466,7 +517,7 @@ bool ExtensionManifest::has_permission(StringView name) const
 bool ExtensionManifest::has_host_permission_for(URL::URL const& url) const
 {
     for (auto const& pattern : m_host_permissions) {
-        if (pattern.matches(url))
+        if (pattern.is_web_host_permission() && pattern.matches(url))
             return true;
     }
     return false;

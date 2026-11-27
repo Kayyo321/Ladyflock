@@ -277,6 +277,7 @@ NonnullRefPtr<Request> Request::clone() const
     new_request->set_referrer_policy(m_referrer_policy);
     new_request->set_mode(m_mode);
     new_request->set_use_cors_preflight(m_use_cors_preflight);
+    new_request->set_extension_cross_origin_read(m_extension_cross_origin_read);
     new_request->set_credentials_mode(m_credentials_mode);
     new_request->set_use_url_credentials(m_use_url_credentials);
     new_request->set_cache_mode(m_cache_mode);

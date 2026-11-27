@@ -3063,6 +3063,11 @@ Web::Extensions::ExtensionResourceResponse PageClient::page_did_request_extensio
     return response->take_response();
 }
 
+bool PageClient::page_did_request_extension_cross_origin_access(Web::HTML::CrossProcessId document_id, URL::URL const& url)
+{
+    return client().did_request_extension_cross_origin_access(m_id, document_id, url);
+}
+
 void PageClient::page_did_call_extension_api(u64 call_id, String const& extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String const& namespace_name, String const& method_name, String const& args_json)
 {
     client().async_did_call_extension_api(m_id, call_id, extension_id, context_type, document_id, grant_generation, namespace_name, method_name, args_json);
