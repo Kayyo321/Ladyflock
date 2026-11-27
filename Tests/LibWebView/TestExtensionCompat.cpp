@@ -115,7 +115,7 @@ TEST_CASE(environment_apis_report_ladyflock_and_keep_sync_storage_on_this_device
 
     auto directory = LexicalPath::join(env.directory(), "environment"sv).string();
     write_file(directory, "manifest.json"sv, R"({
-        "manifest_version": 2, "name": "Environment fixture", "version": "2.5",
+        "manifest_version": 2, "name": "Environment fixture", "version": "2.5", "homepage_url": "https://example.test/home",
         "browser_specific_settings": {"gecko": {"id": "environment@example.test"}},
         "permissions": ["storage"], "background": {"scripts": ["background.js"]},
         "incognito": "not_allowed", "developer": {"name": "Fixture"}, "storage": {"managed_schema": "schema.json"},
@@ -149,7 +149,7 @@ TEST_CASE(environment_apis_report_ladyflock_and_keep_sync_storage_on_this_device
             results.allChanges = allChanges;
 
             const self = await browser.management.getSelf();
-            results.self = [self.id, self.name, self.version, self.installType, self.enabled];
+            results.self = [self.id, self.name, self.version, self.installType, self.enabled, self.homepageUrl];
             results.currentTab = await browser.tabs.getCurrent();
             results.windows = Array.isArray(await browser.windows.getAll());
             results.commands = await browser.commands.getAll();
@@ -190,7 +190,7 @@ TEST_CASE(environment_apis_report_ladyflock_and_keep_sync_storage_on_this_device
     EXPECT_EQ(results->get_array("allChanges"sv)->serialized(), R"(["sync"])"sv);
     EXPECT_EQ(manager.sync_storage().get(installed.extension_id, JsonValue { "theme"_string }).get_string("theme"sv).value(), "dark"sv);
 
-    EXPECT_EQ(results->get_array("self"sv)->serialized(), R"(["environment@example.test","Environment fixture","2.5","development",true])"sv);
+    EXPECT_EQ(results->get_array("self"sv)->serialized(), R"(["environment@example.test","Environment fixture","2.5","development",true,"https://example.test/home"])"sv);
     EXPECT(!results->has("currentTab"sv) || results->get("currentTab"sv)->is_null());
     EXPECT(results->get_bool("windows"sv) == true);
     EXPECT_EQ(results->get_array("commands"sv)->size(), 1u);

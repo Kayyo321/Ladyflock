@@ -823,6 +823,7 @@ void View::did_request_context_menu(WebView::ContextMenuRequest request)
     if (m_is_tab && session().extension_manager && request.extension_menu_document.has_value()) {
         m_extension_menu_target.editable = request.is_editable;
         m_extension_menu_target.has_selection = request.selected_text.has_value();
+        m_extension_menu_target.selection_text = request.selected_text;
         if (request.link_navigation.has_value())
             m_extension_menu_target.link_url = request.link_navigation->url;
         if (request.navigation.has_value())

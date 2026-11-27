@@ -150,6 +150,7 @@ static constexpr Array s_supported_permissions {
     "webNavigation"sv,
     "webRequest"sv,
     "webRequestBlocking"sv,
+    "webRequestAuthProvider"sv,
 };
 
 static constexpr Array s_supported_api_methods {
@@ -371,6 +372,7 @@ static constexpr Array s_supported_api_methods {
     "windows.create (opens a normal window)"sv,
     "windows.onCreated"sv,
     "windows.onRemoved"sv,
+    "webRequest.onAuthRequired (never fires: no HTTP authentication challenge is answered)"sv,
     "omnibox events (the keyword is not bound to the address bar)"sv,
 };
 
@@ -471,9 +473,9 @@ CompatibilityEvaluation SupportMatrix::evaluate_manifest(
 {
     CompatibilityEvaluation evaluation;
 
-    // As in Firefox, a policy that would loosen where scripts come from is ignored, and the default one applies.
+    // Firefox refuses an extension whose policy fails its check, as a manifest error.
     if (manifest.has_invalid_csp())
-        evaluation.warnings.append("Ignored content_security_policy, which allows scripts from where Firefox does not; the default applies"_string);
+        evaluation.unsupported_reasons.append("Invalid or unsafe content_security_policy"_string);
 
     for (auto const& key : manifest.top_level_keys()) {
         if (is_manifest_key_supported(key))

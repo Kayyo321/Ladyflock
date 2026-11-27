@@ -13,9 +13,10 @@
 #include <LibWebCommon/Extensions/ExtensionManifest.h>
 #include <LibWebCommon/Extensions/SupportMatrix.h>
 #include <LibWebCommon/Extensions/ZipReader.h>
+#include <LibWebView/Extensions/DeclarativeRequestRules.h>
 
-// Reports, for each XPI, whether Ladyflock's install check accepts its manifest, and why not. It reads the package
-// only: it does not check the signature, and it runs none of the extension's code.
+// Reports, for each XPI, whether Ladyflock's install check accepts its manifest and its declarative rulesets, and why
+// not. It reads the package only: it does not check the signature, and it runs none of the extension's code.
 static JsonObject evaluate_package(StringView path)
 {
     JsonObject result;
@@ -47,6 +48,15 @@ static JsonObject evaluate_package(StringView path)
         return fail("manifest"sv, manifest.error());
 
     auto evaluation = Web::Extensions::SupportMatrix::evaluate_manifest(manifest.value());
+    // The installer also loads the packaged rulesets, and refuses the extension if one doesn't parse.
+    auto rulesets = WebView::Extensions::load_declarative_rulesets(manifest.value(), [&](StringView path) -> ErrorOr<String> {
+        auto bytes = TRY(zip.value().extract_entry_by_name(path));
+        return String::from_utf8(StringView { bytes.bytes() });
+    });
+    if (rulesets.is_error()) {
+        evaluation.status = Web::Extensions::CompatibilityStatus::Incompatible;
+        evaluation.unsupported_reasons.append(MUST(String::formatted("Declarative rules: {}", rulesets.error())));
+    }
     result.set("status"sv, MUST(String::from_utf8(Web::Extensions::to_string(evaluation.status))));
     result.set("id"sv, manifest.value().gecko_id().value_or({}));
     result.set("version"sv, manifest.value().version());

@@ -1349,12 +1349,19 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
         let clicks = 0;
         browser.menus.onClicked.addListener(async (info, tab) => {
             await browser.storage.local.set({click: info.menuItemId, count: ++clicks, url: info.pageUrl, tab: tab.id,
-                link: info.linkUrl || "", frame: info.frameId, frameUrl: info.frameUrl || ""});
+                link: info.linkUrl || "", frame: info.frameId, frameUrl: info.frameUrl || "", selection: info.selectionText || ""});
             await browser.menus.remove(info.menuItemId);
         });
-        browser.menus.create({id: "unsupported", title: "Tab", contexts: ["tab"]}, () => {
+        // Firefox has no launcher menu; it refuses the item, and so does Ladyflock.
+        browser.menus.create({id: "unsupported", title: "Launcher", contexts: ["launcher"]}, () => {
             browser.storage.local.set({unsupported: !!browser.runtime.lastError});
         });
+        // Items for the tab strip or the toolbar button are kept, but Ladyflock shows extension items only in the
+        // page's menu. A separator and a hidden item are never items of their own there.
+        browser.menus.create({id: "tab-item", title: "Tab", contexts: ["tab", "browser_action"]});
+        browser.menus.create({id: "divider", type: "separator", contexts: ["all"]});
+        browser.menus.create({id: "hidden", title: "Hidden", contexts: ["all"], visible: false});
+        browser.menus.create({id: "translate", title: "Translate", contexts: ["selection"]});
         browser.menus.create({id: "subscribe", title: "Subscribe", contexts: ["link"],
             targetUrlPatterns: ["abp:*", "https://subscribe.example.test/*"]});
         browser.menus.create({id: "resource", title: "Resource", contexts: ["audio", "frame", "image", "video"],
@@ -1402,6 +1409,21 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     WebView::ExtensionMenuTarget image;
     image.media_type = "image"_string;
     EXPECT_EQ(manager.page_menu_items(*view, document, image).size(), 2u);
+
+    // A selection gets its own item, whose click reports the selected text.
+    WebView::ExtensionMenuTarget selection;
+    selection.has_selection = true;
+    selection.selection_text = "bonjour"_string;
+    auto selection_menu = manager.page_menu_items(*view, document, selection);
+    EXPECT_EQ(selection_menu.size(), 2u);
+    auto translate = selection_menu.first_matching([](auto const& item) { return item.title.bytes_as_string_view().ends_with("Translate"sv); });
+    EXPECT(translate.has_value());
+    if (!translate.has_value())
+        return;
+    manager.activate_page_menu_item(*view, document, translate->token, selection);
+    if (!wait_until([&] { return storage().get_string("click"sv) == "translate"sv; }))
+        return;
+    EXPECT_EQ(storage().get_string("selection"sv).value_or(String {}), "bonjour"sv);
     Web::HTML::CrossProcessId subdocument {};
     if (!wait_until([&] {
             view->traversable().for_each_in_inclusive_subtree([&](WebView::CanonicalNavigable const& frame) {
@@ -1420,7 +1442,7 @@ TEST_CASE(extension_page_menu_registration_click_and_revocation)
     EXPECT_EQ(result.get_string("click"sv).value_or(String {}), "inspect"sv);
     EXPECT_EQ(result.get_string("url"sv).value_or(String {}), url.serialize());
     EXPECT_EQ(result.get_u64("tab"sv), view->view_id());
-    EXPECT_EQ(result.get_u64("count"sv), 1u);
+    EXPECT_EQ(result.get_u64("count"sv), 2u);
     EXPECT(result.get_i64("frame"sv).value_or(0) > 0);
     auto frame_url = result.get_string("frameUrl"sv);
     EXPECT(frame_url.has_value() && frame_url->bytes_as_string_view().ends_with("/frame"sv));

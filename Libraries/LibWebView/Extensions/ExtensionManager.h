@@ -206,6 +206,8 @@ public:
 
     // Background / non-persistent event page management.
     void set_event_page_idle_timeout_ms(u32 timeout_ms) { m_event_page_idle_timeout_ms = timeout_ms; }
+    // The view an extension's background page runs in, while it runs.
+    ViewImplementation* background_view_for_testing(StringView extension_id);
     // Checks the system idle state now, as the periodic check does.
     void poll_idle_state();
     // Tells the extensions that may use the cookie about a change to it in their profile's cookie jar.
@@ -393,6 +395,8 @@ private:
         Vector<Web::Extensions::MatchPattern> documents {};
         Vector<Web::Extensions::MatchPattern> targets {};
         bool matches_abp_links { false };
+        bool is_separator { false };
+        bool visible { true };
     };
     HashMap<String, Vector<MenuRegistration>> m_page_menus;
     u64 m_next_menu_token { 1 };

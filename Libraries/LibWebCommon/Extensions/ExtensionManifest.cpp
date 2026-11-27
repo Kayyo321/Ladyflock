@@ -97,7 +97,10 @@ bool ExtensionManifest::is_valid_extension_csp(StringView csp, ManifestVersion v
     auto sources_for = [&](StringView name) -> Optional<Vector<StringView> const&> {
         if (auto sources = directives.get(name); sources.has_value())
             return *sources;
+        // Workers fall back to child-src, then script-src, then default-src.
         if (name == "worker-src"sv) {
+            if (auto sources = directives.get("child-src"sv); sources.has_value())
+                return *sources;
             if (auto sources = directives.get("script-src"sv); sources.has_value())
                 return *sources;
         }
@@ -108,17 +111,21 @@ bool ExtensionManifest::is_valid_extension_csp(StringView csp, ManifestVersion v
     auto script_sources = sources_for("script-src"sv);
     if (!script_sources.has_value())
         return false;
+    // Every directive that can let a script run is held to the same sources, including script-src-elem and
+    // script-src-attr, which would otherwise take precedence over script-src for elements and attributes.
+    auto all_allowed = [&](Vector<StringView> const& sources) {
+        return all_of(sources, [&](auto source) { return is_allowed_script_source(source, version); });
+    };
     for (auto directive : { "script-src"sv, "worker-src"sv, "object-src"sv }) {
         // Manifest V3 no longer restricts object-src, as plugins are gone.
         if (directive == "object-src"sv && version == ManifestVersion::V3)
             continue;
-        auto sources = sources_for(directive);
-        if (!sources.has_value())
-            continue;
-        for (auto source : *sources) {
-            if (!is_allowed_script_source(source, version))
-                return false;
-        }
+        if (auto sources = sources_for(directive); sources.has_value() && !all_allowed(*sources))
+            return false;
+    }
+    for (auto const& [name, sources] : directives) {
+        if (name.starts_with("script-src"sv) && !all_allowed(sources))
+            return false;
     }
     return true;
 }

@@ -386,6 +386,8 @@ Optional<String> ExtensionRealmContext::evaluate_script(StringView source, Strin
             err_obj.set("error"sv, message.to_utf8());
             return err_obj.serialized();
         }
+        // As in Firefox, a content script that fails to parse or throws says so in the page's console.
+        HTML::report_exception_to_console(JS::SyntaxError::create(*m_realm, message), *m_realm, HTML::ErrorInPromise::No);
         return {};
     }
 
@@ -399,6 +401,7 @@ Optional<String> ExtensionRealmContext::evaluate_script(StringView source, Strin
             err_obj.set("error"sv, msg);
             return err_obj.serialized();
         }
+        HTML::report_exception_to_console(thrown, *m_realm, HTML::ErrorInPromise::No);
         return {};
     }
 
@@ -1314,6 +1317,9 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             auto web_request = create_namespace_object("webRequest"sv, methods.span(), is_chrome);
             for (auto event : Array { "onBeforeRequest"sv, "onSendHeaders"sv, "onHeadersReceived"sv, "onBeforeRedirect"sv, "onResponseStarted"sv, "onCompleted"sv, "onErrorOccurred"sv })
                 web_request.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("webRequest"sv, event), JS::default_attributes);
+            // Ladyflock answers no HTTP authentication challenge, so no request asks an extension for credentials.
+            if (manifest_has_permission(manifest, "webRequestBlocking"sv) || manifest_has_permission(manifest, "webRequestAuthProvider"sv))
+                web_request.as_object().define_direct_property("onAuthRequired"_utf16_fly_string, create_event_object("webRequest"sv, "onAuthRequired"sv), JS::default_attributes);
 
             auto resource_types = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
             for (auto type : Array { "main_frame"sv, "sub_frame"sv, "stylesheet"sv, "script"sv, "image"sv, "font"sv, "object"sv, "xmlhttprequest"sv, "media"sv, "other"sv })

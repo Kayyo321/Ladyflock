@@ -2077,6 +2077,12 @@ bool ExtensionManager::is_background_running(StringView extension_id) const
     return it != m_background_hosts.end() && it->value->loaded;
 }
 
+ViewImplementation* ExtensionManager::background_view_for_testing(StringView extension_id)
+{
+    auto it = m_background_hosts.find(extension_id);
+    return it == m_background_hosts.end() ? nullptr : it->value->view.ptr();
+}
+
 void ExtensionManager::stop_background_page(StringView extension_id)
 {
     auto host = m_background_hosts.take(extension_id);
@@ -5138,6 +5144,8 @@ void ExtensionManager::activate_page_menu_item(ViewImplementation const& view, W
                 info.set("srcUrl"sv, target.source_url->serialize());
             if (target.media_type.has_value())
                 info.set("mediaType"sv, *target.media_type);
+            if (target.selection_text.has_value())
+                info.set("selectionText"sv, *target.selection_text);
             JsonArray args;
             args.must_append(move(info));
             args.must_append(serialize_tab(*tab));
@@ -5160,7 +5168,8 @@ JsonObject ExtensionManager::management_info(InstalledExtension const& extension
     info.set("enabled"sv, extension.enabled);
     info.set("type"sv, "extension"sv);
     info.set("installType"sv, extension.source == Web::Extensions::InstallSource::SignedXpi ? "normal"sv : "development"sv);
-    if (auto homepage = MUST(JsonValue::from_string(manifest.raw_json())).as_object().get_string("homepage_url"sv); homepage.has_value())
+    auto raw_manifest = MUST(JsonValue::from_string(manifest.raw_json()));
+    if (auto homepage = raw_manifest.as_object().get_string("homepage_url"sv); homepage.has_value())
         info.set("homepageUrl"sv, *homepage);
     if (manifest.options_ui().has_value()) {
         if (auto url = package_page_url(extension, manifest.options_ui()->page); url.has_value())
