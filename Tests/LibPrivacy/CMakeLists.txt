@@ -2,10 +2,11 @@ ladybird_test_suite(LibPrivacy)
 
 set(TEST_SOURCES
     TestPrivacyIdentityAndStorage.cpp
+    TestPrivacyManagedPolicy.cpp
     TestPrivacyNavigation.cpp
     TestPrivacyPolicy.cpp
     TestPrivacyRoute.cpp
 )
 
 target_sources(TestLibPrivacy PRIVATE ${TEST_SOURCES})
-target_link_libraries(TestLibPrivacy PRIVATE LibIPC LibPrivacy LibURL)
+target_link_libraries(TestLibPrivacy PRIVATE LibCore LibFileSystem LibIPC LibPrivacy LibURL)
