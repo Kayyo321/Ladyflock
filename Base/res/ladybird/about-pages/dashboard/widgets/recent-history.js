@@ -6,7 +6,7 @@
  * Scoped bounded history query with filter, pagination, and single-entry removal.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function dayKey(ms) {
     const d = new Date(ms);
@@ -85,18 +85,7 @@ export function mount(root, api) {
     root.append(bar, listEl, pager);
 
     function favicon(e) {
-        const tile = document.createElement("span");
-        tile.className = "hist-favicon";
-        if (e.faviconBase64Png) {
-            const img = document.createElement("img");
-            img.alt = "";
-            img.src = `data:image/png;base64,${e.faviconBase64Png}`;
-            tile.append(img);
-        } else {
-            const host = hostOf(e.url);
-            tile.textContent = (host || e.title || "?").charAt(0).toUpperCase();
-        }
-        return tile;
+        return siteIcon({ className: "hist-favicon", url: e.url, label: hostOf(e.url) || e.title, favicon: e.faviconBase64Png });
     }
 
     function render() {

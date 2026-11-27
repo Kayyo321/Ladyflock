@@ -6,7 +6,7 @@
  * Scoped to caller's PermissionManager; verifies generation before revoking so expired/replaced grants stay safe.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 const PERMISSION_LABELS = { geolocation: "Location", microphone: "Microphone", notifications: "Notifications", camera: "Camera" };
 
@@ -94,6 +94,7 @@ export function mount(root, api) {
         for (const e of entries) {
             const li = el("li", "dash-list-item perm-row");
             const permName = PERMISSION_LABELS[e.permission] || e.permission;
+            li.append(siteIcon({ className: "dash-site-icon", url: e.origin, label: e.origin.replace(/^[a-z]+:\/\/(www\.)?/i, "") }));
             li.append(el("span", "perm-origin dash-truncate", e.origin));
             li.append(el("span", "perm-kind dash-muted", permName));
             const dec = el("span", "perm-decision " + (e.decision === "allow" || e.decision === "allow-once" ? "is-allow" : "is-block"));

@@ -80,6 +80,7 @@ private:
     void handle_search_engines(i64 request_id);
     void handle_search_submit(i64 request_id, JsonObject const& params);
     void handle_tabs_list(i64 request_id);
+    void handle_favicons_lookup(i64 request_id, JsonObject const& params);
     void handle_tabs_action(i64 request_id, StringView action, JsonObject const& params);
     void handle_recently_closed_list(i64 request_id);
     void handle_recently_closed_reopen(i64 request_id, JsonObject const& params);

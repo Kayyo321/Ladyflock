@@ -6,7 +6,12 @@
  * Ordinary browsing session only; private/named contexts receive no inventory or count.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
+
+// The summary names an extension by `extension_id`.
+function idOf(ext) {
+    return ext.extension_id || ext.id;
+}
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -20,6 +25,11 @@ function el(tag, className, text) {
 export function mount(root, api) {
     let tier = api.tier;
     let state = { available: false, reason: "", summary: null };
+    // Package icons by extension, kept across summaries that come without them, such as
+    // the one a toggle returns.
+    const icons = new Map();
+    let iconRetry = null;
+    let retriedIcons = false;
     root.classList.add("xdock");
 
     const listEl = el("ul", "xdock-grid");
@@ -28,7 +38,7 @@ export function mount(root, api) {
 
     async function setEnabled(ext) {
         const res = await api.request("extensions.setEnabled", {
-            extensionId: ext.id,
+            extensionId: idOf(ext),
             enabled: !ext.enabled,
         });
         if (res.summary) {
@@ -61,10 +71,10 @@ export function mount(root, api) {
         } else {
             const cap = tier === "compact" ? 4 : extensions.length;
             for (const ext of extensions.slice(0, cap)) {
-                const name = ext.name || ext.id;
+                const name = ext.name || idOf(ext);
                 const li = el("li", "xdock-item" + (ext.enabled ? " is-on" : ""));
 
-                const mark = el("span", "xdock-mark", name.slice(0, 1).toUpperCase());
+                const mark = siteIcon({ className: "xdock-mark", label: name, favicon: icons.get(idOf(ext)) });
                 const label = el("span", "xdock-name dash-truncate", name);
                 const stateLbl = el("span", "xdock-state", ext.enabled ? "On" : "Off");
 
@@ -91,7 +101,7 @@ export function mount(root, api) {
                         optBtn.title = "Options";
                         optBtn.append(icon("configure", 14));
                         optBtn.addEventListener("click", () => {
-                            api.request("extensions.openOptions", { extensionId: ext.id }).catch(() => load());
+                            api.request("extensions.openOptions", { extensionId: idOf(ext) }).catch(() => load());
                         });
                         li.append(optBtn);
                     }
@@ -111,7 +121,18 @@ export function mount(root, api) {
 
     async function load() {
         state = await api.request("extensions.list", {});
+        const extensions = state.summary?.extensions || [];
+        for (const ext of extensions) {
+            if (ext.iconBase64Png)
+                icons.set(idOf(ext), ext.iconBase64Png);
+        }
         render();
+        // The browser decodes a package icon the first time it is asked for, so an icon
+        // still missing is asked for once more.
+        if (!retriedIcons && extensions.some(ext => ext.icon_key && !icons.has(idOf(ext)))) {
+            retriedIcons = true;
+            iconRetry = setTimeout(() => load().catch(() => {}), 1200);
+        }
     }
 
     load().catch(err => api.reportError(err.message));
@@ -121,6 +142,8 @@ export function mount(root, api) {
             tier = next.tier;
             render();
         },
-        unmount() {},
+        unmount() {
+            clearTimeout(iconRetry);
+        },
     };
 }

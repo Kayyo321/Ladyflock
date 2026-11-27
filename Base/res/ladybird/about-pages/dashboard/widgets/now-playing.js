@@ -6,7 +6,7 @@
  * Scoped strictly to views in the caller's BrowsingSession via state_for_view / handle_action_for_view.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function fmtTime(sec) {
     if (!Number.isFinite(sec) || sec < 0)
@@ -64,12 +64,8 @@ export function mount(root, api) {
         const top = document.createElement("div");
         top.className = "np-main";
 
-        if (tier === "expanded") {
-            const art = document.createElement("span");
-            art.className = "np-art";
-            art.append(icon("now-playing", 22));
-            top.append(art);
-        }
+        if (tier === "expanded")
+            top.append(siteIcon({ className: "np-art", favicon: active.faviconBase64Png, fallback: icon("now-playing", 22) }));
 
         const info = document.createElement("div");
         info.className = "np-info";

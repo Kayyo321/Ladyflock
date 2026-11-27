@@ -485,3 +485,45 @@
     flex-shrink: 0;
     text-align: center;
 }
+
+/* --- Site logos -------------------------------------------------------------------------- */
+
+/* A site's favicon sits in the tile that otherwise shows its initial or a glyph. Widgets
+   size their own tiles; these are the defaults, and the small tile rows share. */
+.site-icon > img {
+    display: block;
+    width: 64%;
+    height: 64%;
+    border-radius: 3px;
+    object-fit: contain;
+}
+
+.dash-site-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    overflow: hidden;
+    border-radius: 6px;
+    background-color: var(--tint-soft);
+    color: var(--tint-ink);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.dash-site-icon.has-logo {
+    background-color: var(--control);
+}
+
+.dash-site-icon > img {
+    width: 16px;
+    height: 16px;
+}
+
+.dash-card[data-tier="compact"] .perm-row .dash-site-icon,
+.dash-card[data-tier="compact"] .health-row .dash-site-icon {
+    display: none;
+}

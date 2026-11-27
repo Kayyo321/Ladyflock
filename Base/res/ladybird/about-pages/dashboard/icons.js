@@ -6,6 +6,8 @@
  * Built with DOM calls so the page needs no inline markup or image loads.
  */
 
+import { onDashboardEvent, request } from "./bridge.js";
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 // Each glyph is a list of shapes. A string is a stroked path; an object is
@@ -171,4 +173,108 @@ export function ring(size = 64, stroke = 6) {
     };
     set(0);
     return { el: svg, set };
+}
+
+// --- Site logos -----------------------------------------------------------------------
+//
+// A site is pictured by its favicon wherever the browser already knows one: from the
+// item itself, or else from a lookup against this board's own history and open tabs.
+// Nothing is fetched from the network. Until a logo arrives, and whenever there is none
+// or it fails to decode, the site keeps its fallback: its initial, or a glyph.
+
+const LOOKUP_BATCH = 48;
+const faviconCache = new Map(); // url -> base64 PNG, or "" when the browser knows none
+const waiting = new Map(); // url -> [resolve]
+let flushScheduled = false;
+
+onDashboardEvent("historyCleared", () => faviconCache.clear());
+
+async function flushLookups() {
+    flushScheduled = false;
+    const urls = [...waiting.keys()];
+    for (let i = 0; i < urls.length; i += LOOKUP_BATCH) {
+        const batch = urls.slice(i, i + LOOKUP_BATCH);
+        let icons = {};
+        try {
+            icons = (await request("favicons.lookup", { urls: batch })).icons || {};
+        } catch {
+            // Without the host, every site keeps its fallback.
+        }
+        for (const url of batch) {
+            const value = typeof icons[url] === "string" ? icons[url] : "";
+            faviconCache.set(url, value);
+            const resolvers = waiting.get(url) || [];
+            waiting.delete(url);
+            for (const resolve of resolvers)
+                resolve(value);
+        }
+    }
+}
+
+function lookupFavicon(url) {
+    if (faviconCache.has(url))
+        return Promise.resolve(faviconCache.get(url));
+    return new Promise(resolve => {
+        if (!waiting.has(url))
+            waiting.set(url, []);
+        waiting.get(url).push(resolve);
+        if (!flushScheduled) {
+            flushScheduled = true;
+            setTimeout(flushLookups, 0);
+        }
+    });
+}
+
+function isWebUrl(url) {
+    return typeof url === "string" && /^https?:\/\//i.test(url);
+}
+
+function hostOf(url) {
+    try {
+        return new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+        return "";
+    }
+}
+
+export function initialOf(label, url) {
+    const text = String(label || hostOf(url) || "?").trim();
+    return (Array.from(text)[0] || "?").toUpperCase();
+}
+
+/**
+ * A tile picturing a site. It shows `favicon` (base64 PNG) when given, or else looks one
+ * up for `url`, and keeps `fallback` (a node; by default the initial of `label`) until a
+ * logo arrives, or for good when there is none. Children appended to the tile later,
+ * such as a pin mark, stay in place when the logo arrives.
+ */
+export function siteIcon({ className, url, label, favicon, fallback } = {}) {
+    const el = document.createElement("span");
+    el.className = className ? `${className} site-icon` : "site-icon";
+    el.setAttribute("aria-hidden", "true");
+    const fallbackNode = fallback || document.createTextNode(initialOf(label, url));
+    el.append(fallbackNode);
+
+    const show = base64 => {
+        if (!base64 || fallbackNode.parentNode !== el)
+            return;
+        const img = document.createElement("img");
+        img.alt = "";
+        img.decoding = "async";
+        img.addEventListener("error", () => {
+            if (img.parentNode === el) {
+                img.replaceWith(fallbackNode);
+                el.classList.remove("has-logo");
+            }
+        }, { once: true });
+        img.src = `data:image/png;base64,${base64}`;
+        fallbackNode.replaceWith(img);
+        el.classList.add("has-logo");
+    };
+
+    if (favicon)
+        show(favicon);
+    else if (isWebUrl(url))
+        lookupFavicon(url).then(show);
+    return el;
 }

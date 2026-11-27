@@ -6,7 +6,7 @@
  * Explicit pins stored separately from history + bounded visit-score inferred sites.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function hostLabel(urlStr) {
     try {
@@ -83,16 +83,7 @@ export function mount(root, api) {
                 linkBtn.setAttribute("aria-label", name);
             linkBtn.addEventListener("click", () => api.openUrl(site.url, false));
 
-            const iconEl = document.createElement("span");
-            iconEl.className = "sites-icon";
-            if (site.faviconBase64Png) {
-                const img = document.createElement("img");
-                img.src = `data:image/png;base64,${site.faviconBase64Png}`;
-                img.alt = "";
-                iconEl.append(img);
-            } else {
-                iconEl.textContent = name.slice(0, 1).toUpperCase();
-            }
+            const iconEl = siteIcon({ className: "sites-icon", url: site.url, label: name, favicon: site.faviconBase64Png });
             if (site.pinned && tier !== "compact") {
                 const mark = document.createElement("span");
                 mark.className = "sites-pin-mark";

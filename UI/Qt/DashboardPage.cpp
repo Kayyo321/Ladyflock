@@ -28,9 +28,12 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QIcon>
+#include <QPixmap>
 #include <QRegularExpression>
 #include <QXmlStreamReader>
 
@@ -564,6 +567,8 @@ void DashboardPage::received_message(String const& name, JsonValue const& data)
         handle_search_engines(request_id);
     else if (method == "search.submit"sv)
         handle_search_submit(request_id, params);
+    else if (method == "favicons.lookup"sv)
+        handle_favicons_lookup(request_id, params);
     else if (method == "tabs.list"sv)
         handle_tabs_list(request_id);
     else if (method == "tabs.focus"sv)
@@ -1007,6 +1012,130 @@ void DashboardPage::handle_search_submit(i64 request_id, JsonObject const& param
     reply_error(request_id, "Tab is no longer attached."sv);
 }
 
+// A tab's favicon, as the base64 PNG the board shows in place of a site's initial.
+static String favicon_base64_png(QIcon const& icon)
+{
+    if (icon.isNull())
+        return {};
+    auto pixmap = icon.pixmap(QSize(32, 32));
+    if (pixmap.isNull())
+        return {};
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::WriteOnly) || !pixmap.save(&buffer, "PNG"))
+        return {};
+    auto encoded = encode_base64({ reinterpret_cast<u8 const*>(bytes.constData()), static_cast<size_t>(bytes.size()) });
+    return encoded.is_error() ? String {} : encoded.release_value();
+}
+
+static String favicon_base64_png(Optional<ByteBuffer> const& png)
+{
+    if (!png.has_value() || png->is_empty())
+        return {};
+    auto encoded = encode_base64(png->bytes());
+    return encoded.is_error() ? String {} : encoded.release_value();
+}
+
+// NB: A URL such as about:blank has no host, and URL::serialized_host() must not be asked for one.
+static StringView host_of(URL::URL const& url)
+{
+    return url.host().has_value() ? url.serialized_host() : StringView {};
+}
+
+// The favicon history keeps for a page, or else for the root of its site, or else for any page of the same host.
+static String favicon_from_history(WebView::HistoryStore& history, URL::URL const& url)
+{
+    if (auto entry = history.entry_for_url(url); entry.has_value()) {
+        if (auto b64 = favicon_base64_png(entry->favicon_png); !b64.is_empty())
+            return b64;
+    }
+    auto host = host_of(url);
+    if (host.is_empty())
+        return {};
+    if (auto root = URL::Parser::basic_parse(MUST(String::formatted("{}://{}/", url.scheme(), host))); root.has_value()) {
+        if (auto entry = history.entry_for_url(*root); entry.has_value()) {
+            if (auto b64 = favicon_base64_png(entry->favicon_png); !b64.is_empty())
+                return b64;
+        }
+    }
+    for (auto const& entry : history.list_entries(host, 0, 12)) {
+        if (!entry.favicon_png.has_value())
+            continue;
+        auto entry_url = URL::Parser::basic_parse(entry.url);
+        if (entry_url.has_value() && host_of(*entry_url) == host)
+            return favicon_base64_png(entry.favicon_png);
+    }
+    return {};
+}
+
+static constexpr size_t MAX_FAVICON_LOOKUPS = 48;
+
+// Finds a logo for each http(s) URL a widget shows, from what this board's own profile already knows: its history, and
+// the open tabs of its session. Nothing is fetched, and a URL with no known favicon is left out, so the widget keeps
+// its initial for it.
+void DashboardPage::handle_favicons_lookup(i64 request_id, JsonObject const& params)
+{
+    JsonObject icons;
+    auto urls = params.get_array("urls"sv);
+
+    WebView::HistoryStore* history = nullptr;
+    if (!is_ephemeral_scope() && m_context.persists_history)
+        history = &Application::history_store_for_identity(m_context.identity_id, m_context.persists_history);
+
+    Optional<HashMap<String, String>> tab_icons_by_host;
+    auto tab_icon_for_host = [&](String const& host) -> String {
+        if (!tab_icons_by_host.has_value()) {
+            tab_icons_by_host = HashMap<String, String> {};
+            for (auto* widget : QApplication::topLevelWidgets()) {
+                auto* win = as_if<BrowserWindow>(widget);
+                if (!win || win->is_private() != m_context.is_private)
+                    continue;
+                for (int i = 0; i < win->tab_count(); ++i) {
+                    auto* tab = win->tab_at(i);
+                    if (!tab || tab->favicon().isNull())
+                        continue;
+                    if (tab->is_loaded()) {
+                        auto const& tab_id = tab->view().identity_id();
+                        if (!m_context.identity_id.is_empty() && !tab_id.is_empty() && tab_id != m_context.identity_id)
+                            continue;
+                    }
+                    auto tab_host = MUST(String::from_utf8(host_of(tab->url())));
+                    if (tab_host.is_empty() || tab_icons_by_host->contains(tab_host))
+                        continue;
+                    if (auto b64 = favicon_base64_png(tab->favicon()); !b64.is_empty())
+                        tab_icons_by_host->set(tab_host, move(b64));
+                }
+            }
+        }
+        return tab_icons_by_host->get(host).value_or(String {});
+    };
+
+    if (urls.has_value()) {
+        for (size_t i = 0; i < min(urls->size(), MAX_FAVICON_LOOKUPS); ++i) {
+            if (!urls->at(i).is_string())
+                continue;
+            auto const& raw = urls->at(i).as_string();
+            if (raw.bytes().size() > 2048 || icons.has(raw))
+                continue;
+            auto url = URL::Parser::basic_parse(raw);
+            if (!url.has_value() || !url->scheme().is_one_of("http"sv, "https"sv))
+                continue;
+            String b64;
+            if (history)
+                b64 = favicon_from_history(*history, *url);
+            if (b64.is_empty())
+                if (auto host = host_of(*url); !host.is_empty())
+                    b64 = tab_icon_for_host(MUST(String::from_utf8(host)));
+            if (!b64.is_empty())
+                icons.set(raw, move(b64));
+        }
+    }
+
+    JsonObject out;
+    out.set("icons"sv, move(icons));
+    reply_ok(request_id, move(out));
+}
+
 void DashboardPage::handle_tabs_list(i64 request_id)
 {
     auto* caller_window = owning_window();
@@ -1048,6 +1177,7 @@ void DashboardPage::handle_tabs_list(i64 request_id)
             to.set("isLoaded"sv, tab->is_loaded());
             to.set("isAudible"sv, tab->is_loaded() && tab->view().tab_indicator_visible(WebView::TabIndicator::PlayingAudio));
             to.set("isMuted"sv, tab->is_loaded() && tab->view().page_mute_state() == Web::HTML::MuteState::Muted);
+            to.set("faviconBase64Png"sv, favicon_base64_png(tab->favicon()));
             tabs_arr.must_append(move(to));
         }
 
@@ -1819,6 +1949,7 @@ void DashboardPage::handle_health_snapshot(i64 request_id)
             if (stats.memory_bytes.has_value())
                 to.set("memoryBytes"sv, *stats.memory_bytes);
             to.set("sharedWithOtherTabs"sv, stats.other_tabs_sharing_processes);
+            to.set("faviconBase64Png"sv, favicon_base64_png(tab->favicon()));
             tabs_arr.must_append(move(to));
         }
     }
@@ -1872,7 +2003,35 @@ void DashboardPage::handle_media_list(i64 request_id)
         reply_error(request_id, "Browser hub is unavailable."sv);
         return;
     }
-    reply_ok(request_id, hub->web_ui_media_sessions_snapshot(web_ui_id()));
+    auto snapshot = hub->web_ui_media_sessions_snapshot(web_ui_id());
+
+    // The Hub knows each session's tab only by its view; the tab's favicon pictures it.
+    if (snapshot.is_object()) {
+        if (auto sessions = snapshot.as_object().get_array("sessions"sv); sessions.has_value()) {
+            JsonArray pictured;
+            for (auto const& value : sessions->values()) {
+                if (!value.is_object()) {
+                    pictured.must_append(value);
+                    continue;
+                }
+                auto session = value.as_object();
+                if (auto view_id = session.get_integer<u64>("viewId"sv); view_id.has_value()) {
+                    if (auto* win = Application::the().window_of_view_id(*view_id); win && win->is_private() == m_context.is_private) {
+                        win->for_each_tab([&](Tab& tab) {
+                            if (tab.is_loaded() && tab.view().view_id() == *view_id)
+                                session.set("faviconBase64Png"sv, favicon_base64_png(tab.favicon()));
+                        });
+                    }
+                }
+                pictured.must_append(move(session));
+            }
+            auto out = snapshot.as_object();
+            out.set("sessions"sv, move(pictured));
+            reply_ok(request_id, move(out));
+            return;
+        }
+    }
+    reply_ok(request_id, move(snapshot));
 }
 
 void DashboardPage::handle_media_action(i64 request_id, JsonObject const& params)

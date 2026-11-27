@@ -6,7 +6,7 @@
  * Reopens closed tabs/windows by stable SessionWindowId.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function splitUrl(urlStr) {
     try {
@@ -70,7 +70,13 @@ export function mount(root, api) {
             text.append(primary);
             if (tier !== "compact" && secondary.textContent)
                 text.append(secondary);
-            btn.append(text);
+            const logo = siteIcon({
+                className: "dash-site-icon",
+                url: item.url,
+                label: host,
+                fallback: item.wasWindow ? icon("open-tabs", 13) : undefined,
+            });
+            btn.append(logo, text);
 
             if (tier === "expanded" && item.fromStartupRecovery) {
                 const badge = document.createElement("span");

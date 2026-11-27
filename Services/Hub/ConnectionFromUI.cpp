@@ -6,6 +6,7 @@
 
 #include <AK/AnyOf.h>
 #include <AK/Array.h>
+#include <AK/Base64.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/Math.h>
@@ -16,6 +17,7 @@
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Timer.h>
+#include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibHTTP/HeaderList.h>
 #include <LibImageDecoderClient/Client.h>
 #include <LibPrivacy/Identity/Types.h>
@@ -740,7 +742,47 @@ Messages::HubServer::WebUiExtensionsSnapshotResponse ConnectionFromUI::web_ui_ex
         return JsonValue { move(result) };
     }
     result.set("available"sv, true);
-    result.set("summary"sv, session->extension_manager->summary_json());
+    auto& manager = *session->extension_manager;
+    auto summary = manager.summary_json();
+
+    // The dashboard pictures each extension by its package icon, as about:addons does. An icon that is still being
+    // decoded is left out, and the dashboard asks again once.
+    HashMap<String, String> icons;
+    for (auto const* ext : manager.all_extensions()) {
+        auto path = ext->manifest.package_icon_path();
+        if (!path.has_value())
+            continue;
+        auto url = manager.package_page_url(*ext, *path);
+        if (!url.has_value())
+            continue;
+        auto icon = extension_icon(*url, ext->manifest.version(), manager);
+        if (!icon.has_value() || !icon->is_valid() || !icon->bitmap())
+            continue;
+        auto png = Gfx::PNGWriter::encode(*icon->bitmap());
+        if (png.is_error() || png.value().size() > 256 * KiB)
+            continue;
+        if (auto encoded = encode_base64(png.value().bytes()); !encoded.is_error())
+            icons.set(ext->extension_id, encoded.release_value());
+    }
+    if (!icons.is_empty()) {
+        if (auto list = summary.get_array("extensions"sv); list.has_value()) {
+            JsonArray pictured;
+            for (auto const& value : list->values()) {
+                if (!value.is_object()) {
+                    pictured.must_append(value);
+                    continue;
+                }
+                auto item = value.as_object();
+                if (auto id = item.get_string("extension_id"sv); id.has_value()) {
+                    if (auto icon = icons.get(*id); icon.has_value())
+                        item.set("iconBase64Png"sv, *icon);
+                }
+                pictured.must_append(move(item));
+            }
+            summary.set("extensions"sv, move(pictured));
+        }
+    }
+    result.set("summary"sv, move(summary));
     return JsonValue { move(result) };
 }
 

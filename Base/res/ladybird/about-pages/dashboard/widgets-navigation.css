@@ -497,6 +497,21 @@
     color: #ffffff;
 }
 
+/* A tab with a logo keeps it on a plain tile; the current one is ringed in the accent. */
+.tabs-mark.has-logo,
+.dash-list-item.is-current .tabs-mark.has-logo {
+    background-color: var(--control);
+}
+
+.dash-list-item.is-current .tabs-mark.has-logo {
+    box-shadow: 0 0 0 1.5px var(--tint);
+}
+
+.tabs-mark > img {
+    width: 16px;
+    height: 16px;
+}
+
 .tabs-close {
     opacity: 0;
 }

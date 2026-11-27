@@ -7,7 +7,7 @@
  * Uses opaque server-issued tab handles for focus/mute/close.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function hostOf(urlStr) {
     try {
@@ -93,9 +93,7 @@ export function mount(root, api) {
                 const focusBtn = document.createElement("button");
                 focusBtn.type = "button";
                 focusBtn.className = "dash-link-btn";
-                const mark = document.createElement("span");
-                mark.className = "tabs-mark";
-                mark.textContent = (tab.title || hostOf(tab.url) || "N").slice(0, 1).toUpperCase();
+                const mark = siteIcon({ className: "tabs-mark", url: tab.url, label: tab.title || hostOf(tab.url) || "N", favicon: tab.faviconBase64Png });
                 const title = document.createElement("span");
                 title.className = "tabs-title dash-truncate";
                 title.textContent = tab.title || tab.url || "New Tab";

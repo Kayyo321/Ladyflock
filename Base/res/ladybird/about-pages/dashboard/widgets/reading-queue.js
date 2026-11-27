@@ -6,7 +6,7 @@
  * Offline-first reading list; duplicate URL detection offers existing item; zero network requests on add.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function hostOf(url) {
     try {
@@ -117,7 +117,7 @@ export function mount(root, api) {
             const txt = document.createElement("span");
             txt.className = "dash-truncate rq-title";
             txt.textContent = it.value.title || it.value.url;
-            linkBtn.append(txt);
+            linkBtn.append(siteIcon({ className: "dash-site-icon", url: it.value.url, label: hostOf(it.value.url) || it.value.title }), txt);
             const host = hostOf(it.value.url);
             if (tier !== "compact" && host && !(it.value.title || "").startsWith(host)) {
                 const hostEl = document.createElement("span");

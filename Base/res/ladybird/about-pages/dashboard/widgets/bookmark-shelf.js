@@ -6,7 +6,7 @@
  * Shows one bookmark folder per card instance; live updates on BookmarkStore changes.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 export function mount(root, api) {
     let config = { folderId: "root", ...api.config };
@@ -106,18 +106,9 @@ export function mount(root, api) {
             btn.type = "button";
             btn.className = "shelf-link";
 
-            const iconEl = document.createElement("span");
-            iconEl.className = "shelf-icon";
-            if (item.type === "folder") {
-                iconEl.append(icon("folder", 16));
-            } else if (item.faviconBase64Png) {
-                const img = document.createElement("img");
-                img.src = `data:image/png;base64,${item.faviconBase64Png}`;
-                img.alt = "";
-                iconEl.append(img);
-            } else {
-                iconEl.textContent = (item.title || "B").slice(0, 1).toUpperCase();
-            }
+            const iconEl = item.type === "folder"
+                ? siteIcon({ className: "shelf-icon", fallback: icon("folder", 16) })
+                : siteIcon({ className: "shelf-icon", url: item.url, label: item.title || "B", favicon: item.faviconBase64Png });
 
             const lbl = document.createElement("span");
             lbl.className = "shelf-label dash-truncate";

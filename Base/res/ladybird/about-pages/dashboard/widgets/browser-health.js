@@ -7,7 +7,7 @@
  * never summing per-tab shares as browser RAM), and native discard for eligible background tabs.
  */
 
-import { icon } from "../icons.js";
+import { icon, siteIcon } from "../icons.js";
 
 function fmtMiB(bytes) {
     if (typeof bytes !== "number" || !Number.isFinite(bytes))
@@ -83,7 +83,7 @@ export function mount(root, api) {
                 parts.push("Discarded");
 
             const meta = el("span", "health-meta dash-muted tabular dash-truncate", parts.length ? parts.join(" · ") : "No sample");
-            li.append(title, meta);
+            li.append(siteIcon({ className: "dash-site-icon", url: t.url, label: t.title, favicon: t.faviconBase64Png }), title, meta);
 
             if (t.canDiscard && t.handle) {
                 const actions = el("span", "dash-row-actions");
