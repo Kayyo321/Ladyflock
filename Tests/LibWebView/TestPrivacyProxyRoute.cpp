@@ -558,8 +558,11 @@ TEST_CASE(a_download_uses_the_network_of_the_identity_it_belongs_to)
     auto routed = download(WebView::FileDownloader::owner_for(*tor_session), "routed.txt"sv);
     EXPECT_EQ(routed.status, WebView::FileDownloader::DownloadStatus::Completed);
     EXPECT_EQ(routed.identity_id, "tor-reader"sv);
-    EXPECT(tor.streams().size() > streams_before);
-    EXPECT_EQ(tor.streams().last().host, "fixture.example"sv);
+    EXPECT_EQ(destination.connection_count(), 0u);
+    auto streams = tor.streams();
+    EXPECT(streams.size() > streams_before);
+    if (!streams.is_empty())
+        EXPECT_EQ(streams.last().host, "fixture.example"sv);
 
     // A download whose identity is gone fails, rather than use another identity's network.
     EXPECT(WebView::IdentityManager::the().destroy_identity("tor-reader"sv));
