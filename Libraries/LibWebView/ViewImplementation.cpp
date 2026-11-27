@@ -2435,6 +2435,9 @@ void ViewImplementation::start_node_picker_for_owner(InteractiveOwner owner, Dev
     m_node_picker_hovered_node_id.clear();
     m_pending_node_picker_requests.clear();
     m_on_node_picker_event = move(on_node_picker_event);
+
+    // The UI routes the tab's pointer and key input to the picker by this state, so it has to learn of it at once.
+    did_change_state();
 }
 
 void ViewImplementation::stop_node_picker_for_owner(InteractiveOwner owner)
@@ -2447,6 +2450,9 @@ void ViewImplementation::stop_node_picker_for_owner(InteractiveOwner owner)
     m_node_picker_owner = InteractiveOwner::None;
     m_pending_node_picker_requests.clear();
     m_on_node_picker_event = nullptr;
+
+    // Otherwise the UI keeps sending the tab's input to a picker that is gone, and the page gets none of it.
+    did_change_state();
 }
 
 void ViewImplementation::clear_node_picker()
@@ -4478,6 +4484,10 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
     page.async_set_has_devtools_client(m_devtools_connected);
     if (m_devtools_takes_console_messages || m_devtools_takes_console_errors)
         page.async_start_sending_console_output(m_devtools_takes_console_messages, m_devtools_takes_console_errors);
+    // Mutation listening is per page too: without this, an inspector's Elements tree stops updating after a
+    // cross-site navigation or a crashed page's replacement.
+    if (m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0)
+        page.async_set_listen_for_dom_mutations(true);
     handle_resize();
     update_ui_overlays();
 
