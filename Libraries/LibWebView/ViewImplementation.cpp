@@ -420,6 +420,11 @@ void ViewImplementation::did_change_active_document(Badge<CanonicalTraversable>)
     set_title(Utf16String::from_utf8(url().serialize()));
     set_favicon({});
     did_update_url();
+
+    for (auto const& [id, listener] : m_navigation_listeners) {
+        if (listener.on_active_document_change)
+            listener.on_active_document_change(url());
+    }
 }
 
 void ViewImplementation::update_displayed_url()

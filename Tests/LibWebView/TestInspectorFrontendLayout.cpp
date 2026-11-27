@@ -608,3 +608,83 @@ TEST_CASE(inspector_event_handler_listeners)
     )JS"sv, "handlers:"sv);
     EXPECT_EQ(fixture.target->title().to_byte_string(), "handlers:attr:true:1,prop:true:1:0"sv);
 }
+
+constexpr auto navigation_html = R"HTML(<!doctype html><title>First</title>
+<a id="javascript-link" href="javascript:void(0)">Does nothing</a>
+<p id="first">First page</p>
+<script>document.title = "First ready";</script>
+)HTML"sv;
+
+// A load that never replaces the document leaves the Inspector as it was, and a new document is shown as soon as it
+// replaces the old one, never the old one under the new document's generation.
+TEST_CASE(inspector_resets_when_a_document_replaces_another)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorDocumentReplacement"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { navigation_html, "First ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+    auto& target = *fixture.target;
+
+    evaluate(frontend, R"JS(
+        await select(n => n.attributes?.id === "first");
+        window.treesSet = [];
+        const setTree = app.elementsTree.setTree.bind(app.elementsTree);
+        app.elementsTree.setTree = tree => {
+            const ids = [];
+            const walk = node => {
+                if (!node || typeof node !== "object")
+                    return;
+                if (node.id !== undefined)
+                    ids.push(node.id);
+                for (const value of Object.values(node))
+                    if (value && typeof value === "object")
+                        walk(value);
+            };
+            walk(tree);
+            const text = JSON.stringify(tree);
+            window.treesSet.push({ generation: app.state.documentGeneration, ids, first: text.includes('"first"'), second: text.includes('"second"') });
+            return setTree(tree);
+        };
+        window.firstGeneration = app.state.documentGeneration;
+        window.previousIds = new Set([...app.elementsTree.nodesById.keys()]);
+    )JS"sv);
+
+    run_in_target(target, R"JS(
+        document.getElementById("javascript-link").click();
+        setTimeout(() => { document.title = "clicked"; }, 300);
+    )JS"sv, "clicked"sv);
+    expect_holds(frontend, "A javascript: link does not reset the Inspector"sv, R"JS(
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const selected = app.state.selectedNode?.attributes?.id;
+        return app.state.documentGeneration === window.firstGeneration && selected === "first" ? null : { generation: app.state.documentGeneration, first: window.firstGeneration, selected };
+    )JS"sv);
+
+    // NB: A tree may come before the new document has parsed its body, but none may hold the old document's nodes:
+    //     its marker element, or for a reload of the same page, its node ids. Ids are only unique within a WebContent
+    //     process, and these pages are loaded in different ones.
+    auto expect_new_document = [&](StringView description, StringView expected, StringView previous) {
+        expect_holds(frontend, description, MUST(String::formatted(R"JS(
+            await until(() => app.state.documentGeneration > window.firstGeneration && findElement(n => n.attributes?.id === "{}"));
+            const previous = "{}";
+            const stale = window.treesSet.filter(t => t.generation > window.firstGeneration && (previous ? t[previous] : t.ids.some(id => window.previousIds.has(id))));
+            window.firstGeneration = app.state.documentGeneration;
+            window.previousIds = new Set([...app.elementsTree.nodesById.keys()]);
+            window.treesSet = [];
+            return stale.length ? stale.map(t => t.generation) : null;
+        )JS", expected, previous)));
+    };
+
+    // NB: A file, not load_html(), whose navigation to about:srcdoc would replace the first page's history entry.
+    auto second_path = LexicalPath::join(environment.directory(), "second.html"sv).string();
+    auto second_page = TRY_OR_FAIL(Core::File::open(second_path, Core::File::OpenMode::Write));
+    TRY_OR_FAIL(second_page->write_until_depleted("<!doctype html><title>Second</title><p id=second>Second page</p>"sv.bytes()));
+    second_page->close();
+    target.load_from_browser_ui(URL::create_with_file_scheme(second_path).release_value());
+    expect_new_document("A navigation shows the new document"sv, "second"sv, "first"sv);
+
+    target.reload();
+    expect_new_document("A reload shows the reloaded document"sv, "second"sv, ""sv);
+
+    target.traverse_the_history_by_delta(-1);
+    expect_new_document("Going back shows the previous document"sv, "first"sv, "second"sv);
+}

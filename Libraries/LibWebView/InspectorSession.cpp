@@ -313,10 +313,7 @@ InspectorSession::InspectorSession(ViewImplementation& target_view)
     , m_is_private(target_view.is_private())
 {
     m_navigation_listener_id = target_view.add_navigation_listener({
-        .on_load_start = [weak_this = make_weak_ptr()](URL::URL const& url) {
-            if (auto self = weak_this.strong_ref())
-                self->target_did_navigate(url);
-        },
+        .on_load_start = {},
         .on_load_finish = [weak_this = make_weak_ptr()](URL::URL const& url) {
             if (auto self = weak_this.strong_ref()) {
                 JsonObject payload;
@@ -325,6 +322,12 @@ InspectorSession::InspectorSession(ViewImplementation& target_view)
                 self->send_event("targetLoadFinished"sv, move(payload));
                 self->restore_dom_breakpoints(url);
             }
+        },
+        // NB: Not on load start: until a load commits the old document is still the page's, and the load can
+        //     still be cancelled, become a download, or answer 204.
+        .on_active_document_change = [weak_this = make_weak_ptr()](URL::URL const& url) {
+            if (auto self = weak_this.strong_ref())
+                self->target_did_navigate(url);
         },
     });
 }

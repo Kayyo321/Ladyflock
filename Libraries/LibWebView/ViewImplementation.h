@@ -707,6 +707,9 @@ public:
     struct NavigationListener {
         Function<void(URL::URL const&)> on_load_start;
         Function<void(URL::URL const&)> on_load_finish;
+        // The top-level traversable's active document was replaced: a load committed, or a traversal or reload
+        // brought in another document. A load that starts can still be cancelled or become a download.
+        Function<void(URL::URL const&)> on_active_document_change;
     };
     u64 add_navigation_listener(NavigationListener);
     void remove_navigation_listener(u64 listener_id);
