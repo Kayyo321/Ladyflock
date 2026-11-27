@@ -2584,7 +2584,7 @@ void PageClient::page_did_mutate_dom(Utf16FlyString const& type, Web::DOM::Node 
         }
         if (pause_reason.has_value()) {
             if (auto* debugger = client().devtools_debugger())
-                debugger->pause_for_dom_breakpoint(*this, *pause_reason);
+                debugger->request_pause_for_dom_breakpoint(*this, *pause_reason);
         }
     }
 

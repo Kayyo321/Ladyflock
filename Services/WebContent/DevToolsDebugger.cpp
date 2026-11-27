@@ -69,6 +69,8 @@ void DevToolsDebugger::detach(PageClient& page)
     update_exception_pause_mode();
     remove_breakpoints_for_page(page.id());
     m_blackboxed_sources.remove(page.id());
+    if (m_pending_dom_breakpoint.has_value() && m_pending_dom_breakpoint->page_id == page.id())
+        m_pending_dom_breakpoint.clear();
     if (m_paused_page_id == page.id()) {
         m_resume_mode = WebView::DebuggerResumeMode::Continue;
         m_resume_requested = true;
@@ -83,92 +85,40 @@ void DevToolsDebugger::interrupt(PageClient& page)
         return;
 
     auto& vm = Web::Bindings::main_thread_vm();
-    if (auto* debugger = vm.debugger())
+    if (auto* debugger = vm.debugger()) {
+        m_interrupt_requested = true;
         debugger->request_pause_on_next_bytecode_execution();
+    }
 }
 
-void DevToolsDebugger::pause_for_dom_breakpoint(PageClient& page, String const& reason_message)
+void DevToolsDebugger::request_pause_for_dom_breakpoint(PageClient& page, String const& reason_message)
 {
-    if (!m_attached_page_ids.contains(page.id()) || m_is_handling_pause)
+    if (!m_attached_page_ids.contains(page.id()) || m_is_handling_pause || m_pending_dom_breakpoint.has_value())
         return;
 
     auto configuration = m_configurations.get(page.id()).value_or(WebView::DebuggerConfiguration {});
     if (configuration.skip_breakpoints)
         return;
 
+    // Only a script can stop. A change that the parser or the engine makes with no script running has no frame.
     auto& vm = Web::Bindings::main_thread_vm();
-    auto stack = vm.stack_trace();
-    if (stack.is_empty())
+    auto* debugger = vm.debugger();
+    if (!debugger || vm.stack_trace().is_empty())
         return;
 
-    m_paused_frames.clear();
-    m_paused_object_table.clear();
+    // NB: The change is still being made: its steps, the parent's children-changed steps and the custom element
+    //     reactions are still to run, and a pause would leave the tree half-updated with garbage collection
+    //     deferred, for the Inspector and the console to work on. Stop at the script's next instruction instead.
+    auto request_id = m_next_dom_breakpoint_request_id++;
+    m_pending_dom_breakpoint = PendingDOMBreakpoint { page.id(), reason_message, request_id };
+    debugger->request_pause_on_next_bytecode_execution();
 
-    WebView::DebuggerPause debugger_pause {
-        .reason = WebView::DebuggerPauseReason::Breakpoint,
-        .reason_message = Utf16String::from_utf8(reason_message),
-        .exception = {},
-        .frames = {},
-    };
-
-    for (auto const& frame : stack) {
-        auto* execution_context = frame.execution_context;
-        auto const* source_code = execution_context->source_code();
-        if (!source_code)
-            continue;
-        auto source = page.devtools_source_description(*source_code);
-        if (!source.has_value())
-            continue;
-
-        auto line = source->source_start_line;
-        auto column = source->source_start_column;
-        if (frame.source_range.has_value()) {
-            line = frame.source_range->start.line;
-            column = frame.source_range->start.column > 0 ? frame.source_range->start.column - 1 : 0;
-        }
-        auto frame_id = m_next_frame_id++;
-        m_paused_frames.set(frame_id, execution_context);
-        Vector<WebView::DebuggerValue> arguments;
-        for (auto argument : execution_context->arguments_span().slice(0, execution_context->passed_argument_count))
-            arguments.append(serialize_value(argument));
-        debugger_pause.frames.append(WebView::DebuggerFrame {
-            .id = frame_id,
-            .display_name = execution_context->function_name().to_utf16_string(),
-            .location = {
-                .source = source.release_value(),
-                .line = line,
-                .column = column,
-            },
-            .this_value = serialize_value(execution_context->this_value.value_or(JS::js_undefined())),
-            .arguments = move(arguments),
-        });
-    }
-
-    if (debugger_pause.frames.is_empty()) {
-        m_paused_frames.clear();
-        m_paused_object_table.clear();
-        return;
-    }
-
-    auto paused_page_id = page.id();
-    m_paused_page_id = paused_page_id;
-    m_resume_mode = WebView::DebuggerResumeMode::Continue;
-    m_resume_requested = false;
-    m_is_handling_pause = true;
-
-    auto event_loop_pause = Web::HTML::main_thread_event_loop().pause();
-    m_client.async_did_pause_debugger(page.id(), move(debugger_pause));
-    Core::EventLoop::current().spin_until([this] {
-        return m_resume_requested;
+    // A change that no more script follows in this task leaves the request for whatever script runs next, which
+    // the pause then lets go.
+    Core::deferred_invoke([weak_this = make_weak_ptr<DevToolsDebugger>(), request_id] {
+        if (weak_this && weak_this->m_pending_dom_breakpoint.has_value() && weak_this->m_pending_dom_breakpoint->request_id == request_id)
+            weak_this->m_pending_dom_breakpoint.clear();
     });
-
-    m_is_handling_pause = false;
-    m_paused_page_id.clear();
-    m_paused_frames.clear();
-    m_paused_object_table.clear();
-    if (m_attached_page_ids.contains(paused_page_id))
-        m_client.async_did_resume_debugger(paused_page_id);
-    schedule_disable_if_unused();
 }
 
 void DevToolsDebugger::update_blackboxing(PageClient& page, Utf16String url, Vector<WebView::DebuggerBlackboxRange> ranges, WebView::DebuggerBlackboxingOperation operation)
@@ -567,6 +517,18 @@ void DevToolsDebugger::handle_pause(JS::Debugger::PauseInfo const& pause)
         return;
     }
 
+    Optional<String> dom_breakpoint_message;
+    if (pause.reason == JS::Debugger::PauseReason::Entry) {
+        auto pending_dom_breakpoint = exchange(m_pending_dom_breakpoint, {});
+        auto interrupt_requested = exchange(m_interrupt_requested, false);
+        if (pending_dom_breakpoint.has_value() && pending_dom_breakpoint->page_id == page->id()) {
+            dom_breakpoint_message = move(pending_dom_breakpoint->reason_message);
+        } else if (!interrupt_requested) {
+            Web::Bindings::main_thread_vm().debugger()->continue_execution_preserving_step_state();
+            return;
+        }
+    }
+
     auto configuration = m_configurations.get(page->id()).value_or(WebView::DebuggerConfiguration {});
     auto continue_after_filtered_pause = [&] {
         if (pause.reason == JS::Debugger::PauseReason::Breakpoint)
@@ -592,6 +554,7 @@ void DevToolsDebugger::handle_pause(JS::Debugger::PauseInfo const& pause)
             return configuration.skip_breakpoints || !configuration.pause_on_exceptions
                 || (configuration.ignore_caught_exceptions && pause.exception_will_be_caught);
         case JS::Debugger::PauseReason::Entry:
+            return dom_breakpoint_message.has_value() && configuration.skip_breakpoints;
         case JS::Debugger::PauseReason::Step:
             return false;
         }
@@ -651,7 +614,7 @@ void DevToolsDebugger::handle_pause(JS::Debugger::PauseInfo const& pause)
             case JS::Debugger::PauseReason::DebuggerStatement:
                 return WebView::DebuggerPauseReason::DebuggerStatement;
             case JS::Debugger::PauseReason::Entry:
-                return WebView::DebuggerPauseReason::Entry;
+                return dom_breakpoint_message.has_value() ? WebView::DebuggerPauseReason::Breakpoint : WebView::DebuggerPauseReason::Entry;
             case JS::Debugger::PauseReason::Exception:
                 return WebView::DebuggerPauseReason::Exception;
             case JS::Debugger::PauseReason::Step:
@@ -659,7 +622,9 @@ void DevToolsDebugger::handle_pause(JS::Debugger::PauseInfo const& pause)
             }
             VERIFY_NOT_REACHED();
         }(),
-        .reason_message = move(condition_error),
+        .reason_message = condition_error.has_value()
+            ? move(condition_error)
+            : dom_breakpoint_message.map([](auto const& message) { return Utf16String::from_utf8(message); }),
         .exception = pause.exception.map([&](auto value) { return serialize_value(value); }),
         .frames = {},
     };

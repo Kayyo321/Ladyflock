@@ -32,7 +32,8 @@ public:
     void configure(PageClient&, WebView::DebuggerConfiguration);
     void detach(PageClient&);
     void interrupt(PageClient&);
-    void pause_for_dom_breakpoint(PageClient&, String const& reason_message);
+    // Pauses the running script once the DOM change it made has finished, at the next instruction it runs.
+    void request_pause_for_dom_breakpoint(PageClient&, String const& reason_message);
     void resume(PageClient&, WebView::DebuggerResumeMode);
     void update_blackboxing(PageClient&, Utf16String, Vector<WebView::DebuggerBlackboxRange>, WebView::DebuggerBlackboxingOperation);
     ErrorOr<void> set_breakpoint(PageClient&, WebView::DebuggerBreakpointLocation, WebView::DebuggerBreakpointOptions);
@@ -77,6 +78,17 @@ private:
     bool m_resume_requested { false };
     bool m_is_handling_pause { false };
     bool m_pause_callback_is_installed { false };
+
+    // A pause at the next instruction reports why it was requested: the user interrupted, or a DOM breakpoint
+    // matched a change. One that has neither left is a DOM breakpoint's whose task ended first, and does not stop.
+    struct PendingDOMBreakpoint {
+        Web::PageId page_id;
+        String reason_message;
+        u64 request_id { 0 };
+    };
+    Optional<PendingDOMBreakpoint> m_pending_dom_breakpoint;
+    u64 m_next_dom_breakpoint_request_id { 1 };
+    bool m_interrupt_requested { false };
 };
 
 }

@@ -688,3 +688,63 @@ TEST_CASE(inspector_resets_when_a_document_replaces_another)
     target.traverse_the_history_by_delta(-1);
     expect_new_document("Going back shows the previous document"sv, "first"sv, "second"sv);
 }
+
+constexpr auto dom_breakpoints_html = R"HTML(<!doctype html><title>Breakpoints</title>
+<ul id="list"><li id="victim">Victim</li><li id="keep">Keep</li></ul>
+<p id="other">Other</p>
+<script>
+  function removeVictim() {
+      document.getElementById("victim").remove();
+      window.remaining = document.getElementById("list").children.length;
+  }
+  document.title = "Breakpoints ready";
+</script>
+)HTML"sv;
+
+// A DOM breakpoint stops the script that made the change once the change is complete, and a request that no script
+// was left to honour does not stop the next unrelated one.
+TEST_CASE(inspector_dom_breakpoints_pause_after_the_change)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorDOMBreakpoints"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { dom_breakpoints_html, "Breakpoints ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+    auto& target = *fixture.target;
+
+    evaluate(frontend, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        window.pauses = [];
+        document.addEventListener("WebUIMessage", event => {
+            if (event.detail?.name === "debuggerPaused")
+                window.pauses.push(event.detail.data);
+        });
+        const victim = findElement(n => n.attributes?.id === "victim");
+        const other = findElement(n => n.attributes?.id === "other");
+        await sendCommand("setDomBreakpoint", { nodeId: victim.id, type: "node-removed", nodePath: "#victim" });
+        await sendCommand("setDomBreakpoint", { nodeId: other.id, type: "attribute-modified", nodePath: "#other" });
+    )JS"sv);
+
+    target.run_javascript("removeVictim(); document.title = 'removed:' + window.remaining;"_string);
+    expect_holds(frontend, "A removal breakpoint stops after the node is gone"sv, R"JS(
+        await until(() => window.pauses.length === 1);
+        const pause = window.pauses[0];
+        // The change has been made, and reported, before the script stops.
+        await until(() => !findElement(n => n.attributes?.id === "victim"), 3000).catch(() => {});
+        const victimGone = !findElement(n => n.attributes?.id === "victim");
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendCommand("resumeDebugger", { mode: "continue" });
+        const ok = pause.reason === "breakpoint" && String(pause.reasonMessage).includes("removed") && pause.frames?.[0]?.displayName === "removeVictim" && victimGone;
+        return ok ? null : { reason: pause.reason, message: pause.reasonMessage, frame: pause.frames?.[0]?.displayName, victimGone };
+    )JS"sv);
+    wait_for([&] { return target.title().to_byte_string().starts_with("removed:"sv); });
+    EXPECT_EQ(target.title().to_byte_string(), "removed:1"sv);
+
+    // A bound native function as the timer's callback changes the attribute with no instruction of script after it.
+    run_in_target(target, R"JS(
+        const other = document.getElementById("other");
+        setTimeout(Element.prototype.setAttribute.bind(other, "data-changed", "yes"));
+        setTimeout(function unrelated() { document.title = "unrelated:" + other.dataset.changed; }, 100);
+    )JS"sv, "unrelated:"sv);
+    EXPECT_EQ(target.title().to_byte_string(), "unrelated:yes"sv);
+    expect_holds(frontend, "No later script stops for an earlier change"sv, "return window.pauses.length === 1 ? null : window.pauses.map(p => p.frames?.[0]?.displayName);"sv);
+}
