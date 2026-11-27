@@ -6,7 +6,7 @@ A person can open a new tab, keep typing in the address bar, or use the page to 
 
 ## 1. What opens on a new tab
 
-Use the existing **Settings → Tabs and startup → New tab page** control and URL preference. Keep Blank as the installation and reset default. Offer Dashboard beside it, with a preview that opens the actual local page. This honors the documented empty, focused address field and gives the dashboard a discoverable entry point. [Quiet Design, “New tabs”](Documentation/UI/QuietDesign.md#new-tabs) · [Startup settings](Base/res/ladybird/about-pages/settings/startup.js)
+Use the existing **Settings → Tabs and startup → New tab page** control and URL preference. A new profile starts on Dashboard; a frontend that can't host it opens Blank instead and Settings shows Blank. Profiles that already stored a choice keep it. Offer Blank and a custom URL beside it, with a preview that opens the actual local page. This honors the documented empty, focused address field and gives the dashboard a discoverable entry point. [Quiet Design, “New tabs”](Documentation/UI/QuietDesign.md#new-tabs) · [Startup settings](Base/res/ladybird/about-pages/settings/startup.js)
 
 | User choice | Stored `newTabPageURL` | Opening a new tab |
 |---|---|---|

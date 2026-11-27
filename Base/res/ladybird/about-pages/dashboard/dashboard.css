@@ -957,10 +957,14 @@ html.is-editing .dashboard-empty-actions {
     cursor: pointer;
 }
 
-.dash-customize {
+.dash-customize-wrap {
     position: fixed;
     inset-inline-end: 22px;
     bottom: 18px;
+    z-index: 5;
+}
+
+.dash-customize {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -982,6 +986,40 @@ html.is-editing .dashboard-empty-actions {
     color: var(--text);
 }
 
+/* A small close button on the Customize button's corner offers to hide it. */
+.dash-customize-hide {
+    position: absolute;
+    top: -6px;
+    inset-inline-end: -6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background-color: var(--badge-fill);
+    box-shadow: 0 0 0 2px var(--page);
+    color: var(--body);
+    cursor: pointer;
+}
+
+.dash-customize-hide:hover,
+.dash-customize-hide[aria-expanded="true"] {
+    background-color: var(--tint-fill);
+    color: #ffffff;
+}
+
+.dash-customize-hide:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 2px var(--page),
+        0 0 0 3px var(--focus-edge),
+        0 0 0 5px var(--focus-ring);
+}
+
+html:not(.is-ready) .dash-customize-wrap,
 html:not(.is-ready) .dash-customize {
     visibility: hidden;
 }

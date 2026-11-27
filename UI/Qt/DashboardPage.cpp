@@ -46,6 +46,8 @@ struct DashboardCoordinator {
     HashMap<u64, NonnullOwnPtr<DashboardStore>> ephemeral_stores;
     Vector<DashboardPage*> live_pages;
     HashMap<String, size_t> active_fetches_per_scope;
+    // Boards whose Customize button was hidden until the browser quits.
+    HashTable<String> customize_hidden_for_session;
     u64 next_nonce { 1 };
 
     DashboardStore& store_for(Hub::WebUIPageContext const& ctx)
@@ -549,6 +551,8 @@ void DashboardPage::received_message(String const& name, JsonValue const& data)
 
     if (method == "dashboard.init"sv)
         handle_init(request_id);
+    else if (method == "dashboard.setCustomizeButton"sv)
+        handle_set_customize_button(request_id, params);
     else if (method == "dashboard.commitLayout"sv)
         handle_commit_layout(request_id, params);
     else if (method == "dashboard.deleteAllData"sv)
@@ -666,11 +670,59 @@ void DashboardPage::handle_init(i64 request_id)
     ctx.set("maxGridRows"sv, DashboardStore::MAX_GRID_ROWS);
     ctx.set("maxNoteBytes"sv, static_cast<i64>(DashboardStore::MAX_NOTE_BYTES));
     ctx.set("accent"sv, accent_json());
+    ctx.set("customizeHidden"sv, is_customize_button_hidden());
 
     JsonObject payload;
     payload.set("context"sv, move(ctx));
     payload.set("layout"sv, DashboardStore::serialize_layout_snapshot(layout));
     reply_ok(request_id, move(payload));
+}
+
+// The Customize button can be hidden until the browser quits, or for good. "Forever" is kept in the board's own
+// store, so it lasts as long as the board's other data does: a private board forgets it with the rest.
+static constexpr auto PREFERENCES_COLLECTION = "dashboard-prefs"sv;
+static constexpr auto CUSTOMIZE_BUTTON_ITEM = "customize-button"sv;
+
+bool DashboardPage::is_customize_button_hidden()
+{
+    if (coordinator().customize_hidden_for_session.contains(m_scope_key))
+        return true;
+    auto item = store().get_item(m_scope_key, MUST(String::from_utf8(PREFERENCES_COLLECTION)), MUST(String::from_utf8(CUSTOMIZE_BUTTON_ITEM)));
+    return item.has_value() && item->value.get_bool("hidden"sv).value_or(false);
+}
+
+void DashboardPage::handle_set_customize_button(i64 request_id, JsonObject const& params)
+{
+    auto visibility = params.get_string("visibility"sv).value_or(String {});
+    auto collection = MUST(String::from_utf8(PREFERENCES_COLLECTION));
+    auto item_id = MUST(String::from_utf8(CUSTOMIZE_BUTTON_ITEM));
+    auto& st = store();
+
+    if (visibility == "session"sv) {
+        coordinator().customize_hidden_for_session.set(m_scope_key);
+    } else if (visibility == "forever"sv) {
+        JsonObject value;
+        value.set("hidden"sv, true);
+        if (auto res = st.save_item(m_scope_key, collection, item_id, {}, value); !res.ok) {
+            reply_error(request_id, res.error);
+            return;
+        }
+        coordinator().customize_hidden_for_session.set(m_scope_key);
+    } else if (visibility == "shown"sv) {
+        coordinator().customize_hidden_for_session.remove(m_scope_key);
+        (void)st.delete_item(m_scope_key, collection, item_id);
+    } else {
+        reply_error(request_id, "Unknown visibility."sv);
+        return;
+    }
+
+    auto hidden = is_customize_button_hidden();
+    JsonObject out;
+    out.set("hidden"sv, hidden);
+    reply_ok(request_id, out);
+    coordinator().broadcast_to_scope(m_scope_key, this, [&](DashboardPage& peer) {
+        peer.push_event("customizeButtonChanged"sv, out);
+    });
 }
 
 void DashboardPage::handle_commit_layout(i64 request_id, JsonObject const& params)
@@ -778,6 +830,7 @@ void DashboardPage::handle_delete_all_data(i64 request_id)
         return;
     }
     cancel_in_flight_requests();
+    coordinator().customize_hidden_for_session.remove(m_scope_key);
     auto& st = store();
     if (!st.delete_scope_data(m_scope_key)) {
         reply_error(request_id, "Couldn’t delete dashboard data."sv);

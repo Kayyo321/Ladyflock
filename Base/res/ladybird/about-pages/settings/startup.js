@@ -18,7 +18,8 @@ const syncNewTabModeControls = url => {
     if (!newTabPageMode)
         return;
 
-    const isBlank = !url || url === defaultNewTabURL;
+    // Where the dashboard can't be shown, new tabs open the blank page instead.
+    const isBlank = !url || url === defaultNewTabURL || (url === dashboardNewTabURL && !supportsNewTabDashboard);
     const isDashboard = url === dashboardNewTabURL;
 
     if (supportsNewTabDashboard && isDashboard) {

@@ -33,7 +33,7 @@ export function isCardMenuOpen() {
 }
 
 document.addEventListener("pointerdown", e => {
-    if (activeMenuEl && !activeMenuEl.contains(e.target) && !e.target.closest?.(".dash-card-menu-btn"))
+    if (activeMenuEl && !activeMenuEl.contains(e.target) && !e.target.closest?.(".dash-card-menu-btn, [aria-haspopup='menu']"))
         closeCardMenus(false);
 });
 
@@ -227,6 +227,40 @@ export function createCardElement({ instance, def, handlers }) {
     return { section, face, head, body, metaEl, titleEl, dragBtn, menuBtn, removeBtn, resizeBtn, sizeBadge };
 }
 
+/**
+ * A menu of plain actions for a control outside the tiles. `items` are
+ * { glyph, label, onClick, danger } objects, or "separator".
+ */
+export function openActionMenu(anchorBtn, label, items) {
+    closeCardMenus(false);
+    const menu = document.createElement("div");
+    menu.className = "dash-card-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", label);
+    for (const item of items) {
+        if (item === "separator") {
+            const sep = document.createElement("div");
+            sep.className = "dash-menu-sep";
+            sep.setAttribute("role", "separator");
+            menu.append(sep);
+            continue;
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "dash-menu-item" + (item.danger ? " danger" : "");
+        btn.setAttribute("role", "menuitem");
+        const text = document.createElement("span");
+        text.textContent = item.label;
+        btn.append(icon(item.glyph, 16), text);
+        btn.addEventListener("click", () => {
+            closeCardMenus(!item.keepsFocus);
+            item.onClick();
+        });
+        menu.append(btn);
+    }
+    presentMenu(menu, anchorBtn);
+}
+
 /** Records where a tile sits on the grid. Pixel geometry is applied by the board. */
 export function applyPlacementData(section, placement, def, cols) {
     section.dataset.col = String(placement.col);
@@ -309,9 +343,21 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
         addItem("configure", "Settings…", () => handlers.onOpenConfigure(id));
     addItem("swap", "Swap with…", () => handlers.onStartSwap(id), { disabled: handlers.cardCount() < 2 });
     addItem("replace", "Replace…", () => handlers.onOpenReplacePicker(id));
+    // With the Customize button hidden, a tile's menu is the way into editing, and back to the button.
+    if (handlers.isCustomizeHidden?.()) {
+        addSeparator();
+        if (!handlers.isEditing())
+            addItem("customize", "Customize dashboard", () => handlers.onCustomizeBoard());
+        addItem("eye", "Show Customize button", () => handlers.onShowCustomizeButton());
+    }
     addSeparator();
     addItem("trash", "Remove", () => handlers.onRemove(id), { danger: true });
 
+    presentMenu(menu, anchorBtn, point);
+}
+
+// Places a menu beside its anchor, or at a point, inside the window, and moves focus into it.
+function presentMenu(menu, anchorBtn, point = null) {
     document.body.append(menu);
     const anchorRect = anchorBtn.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();

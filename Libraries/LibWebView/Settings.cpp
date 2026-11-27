@@ -794,7 +794,9 @@ void Settings::reset_to_defaults()
 {
     static_cast<SettingsData&>(*this) = SettingsData();
 
-    m_new_tab_page_url = default_new_tab_page_url();
+    // A new profile opens new tabs on the dashboard. A frontend that can't show it opens the blank page instead, as
+    // Application::effective_new_tab_page_url() decides.
+    m_new_tab_page_url = URL::about_dashboard();
     m_languages = Web::default_preferred_languages();
 
     for (auto const& variable : config_variable_definitions()) {

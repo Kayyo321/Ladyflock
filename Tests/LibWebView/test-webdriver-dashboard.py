@@ -92,6 +92,9 @@ def test_headless_fallback_and_settings(webdriver_binary):
                 """,
             )
             assert dashboard_opt_disabled, "Headless frontend must hide/disable Dashboard choice in Settings"
+            # A new profile starts on the dashboard, which this frontend can't show, so Settings presents Blank.
+            headless_mode = wait_for(port, session, "return document.querySelector('#new-tab-page-mode').value;")
+            assert headless_mode == "blank", headless_mode
 
             # 2. Direct visit to about:dashboard on headless frontend shows intelligible fallback.
             command(port, session, "url", {"url": "about:dashboard"})
@@ -132,7 +135,7 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
             assert status == 200, raw
             session = payload["value"]["sessionId"]
 
-            # 1. Verify Settings offers Dashboard on Qt and preserves Blank as default.
+            # 1. Verify Settings offers Dashboard on Qt, and that a new profile opens new tabs on it.
             command(port, session, "url", {"url": "about:settings#browsing"})
             mode_state = wait_for(
                 port,
@@ -145,8 +148,8 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 return { mode: sel.value, url: urlInput.value };
                 """,
             )
-            assert mode_state["mode"] == "blank", mode_state
-            assert mode_state["url"] == "about:newtab", mode_state
+            assert mode_state["mode"] == "dashboard", mode_state
+            assert mode_state["url"] == "about:dashboard", mode_state
 
             # 2. Open about:dashboard and verify starter 3 cards (World Clock, Quick Tasks, Scratchpad).
             command(port, session, "url", {"url": "about:dashboard"})

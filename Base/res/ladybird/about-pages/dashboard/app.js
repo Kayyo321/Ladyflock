@@ -30,6 +30,7 @@ import {
     computeCardTier,
     createCardElement,
     isCardMenuOpen,
+    openActionMenu,
     renderCardError,
 } from "./widget-chrome.js";
 import { createPickerController } from "./widget-picker.js";
@@ -50,6 +51,8 @@ const swapTextEl = document.getElementById("dashboard-swap-text");
 const swapCancelBtn = document.getElementById("dashboard-swap-cancel");
 const editToolbarEl = document.getElementById("edit-toolbar");
 const btnCustomize = document.getElementById("btn-customize");
+const customizeWrapEl = document.getElementById("customize-wrap");
+const btnCustomizeHide = document.getElementById("btn-customize-hide");
 const btnDoneEdit = document.getElementById("btn-done-edit");
 const btnAddWidget = document.getElementById("btn-add-widget");
 const btnPresets = document.getElementById("btn-presets");
@@ -124,6 +127,8 @@ let ctx = null;
 let layout = { layoutRevision: 0, initialized: false, compactMode: false, widgets: [], placements: {} };
 let currentBp = getBreakpointForWidth(window.innerWidth - 56);
 let isEditing = false;
+// Whether the person hid the Customize button, for the session or for good.
+let customizeHidden = false;
 let selectedId = null;
 let swapSourceId = null;
 let undoStack = [];
@@ -559,6 +564,12 @@ const cardHandlers = {
     },
     onResizeTo: (id, w, h) => handleResizeTo(id, w, h),
     onOpenReplacePicker: id => openReplacePicker(id),
+    isCustomizeHidden: () => customizeHidden,
+    onCustomizeBoard: () => {
+        setEditing(true);
+        btnAddWidget.focus({ preventScroll: true });
+    },
+    onShowCustomizeButton: () => setCustomizeButton("shown"),
     onOpenConfigure: id => openConfigureDialog(id),
     onRemove: id => handleRemoveWidget(id),
     onKeyboardMove: (id, dx, dy) => handleKeyboardMove(id, dx, dy),
@@ -689,7 +700,7 @@ function updateToolbarState() {
     rootEl.classList.toggle("is-editing", isEditing);
     gridEl.classList.toggle("is-editing", isEditing);
     editToolbarEl.classList.toggle("hidden", !isEditing);
-    btnCustomize.classList.toggle("hidden", isEditing);
+    customizeWrapEl.classList.toggle("hidden", isEditing || customizeHidden);
     btnCompact.setAttribute("aria-pressed", layout.compactMode ? "true" : "false");
     btnUndo.disabled = undoStack.length === 0;
     btnRedo.disabled = redoStack.length === 0;
@@ -1559,7 +1570,44 @@ btnCustomize.addEventListener("click", e => {
 
 btnDoneEdit.addEventListener("click", () => {
     setEditing(false);
-    btnCustomize.focus({ preventScroll: true });
+    if (customizeHidden)
+        document.body.focus({ preventScroll: true });
+    else
+        btnCustomize.focus({ preventScroll: true });
+});
+
+btnCustomizeHide.append(icon("close", 10));
+
+// The host remembers the choice, for this browser session or in the board's own store, and
+// tells the board's other tabs.
+async function setCustomizeButton(visibility) {
+    try {
+        const res = await request("dashboard.setCustomizeButton", { visibility });
+        customizeHidden = Boolean(res.hidden);
+        updateToolbarState();
+        if (visibility === "session")
+            announce("The Customize button is hidden until you quit the browser. A tile’s menu can still customize the board.");
+        else if (visibility === "forever")
+            announce("The Customize button is hidden. A tile’s menu can customize the board or bring the button back.");
+        else
+            announce("The Customize button is back.");
+    } catch (err) {
+        setSaveStatus(err.message || "Couldn’t change the Customize button.", true);
+    }
+}
+
+btnCustomizeHide.addEventListener("click", () => {
+    openActionMenu(btnCustomizeHide, "Hide the Customize button", [
+        { glyph: "close", label: "Cancel", onClick: () => {} },
+        "separator",
+        { glyph: "eye", label: "Hide for this session", keepsFocus: true, onClick: () => setCustomizeButton("session") },
+        { glyph: "eye", label: "Hide forever", keepsFocus: true, onClick: () => setCustomizeButton("forever") },
+    ]);
+});
+
+onDashboardEvent("customizeButtonChanged", data => {
+    customizeHidden = Boolean(data?.hidden);
+    updateToolbarState();
 });
 
 btnAddWidget.addEventListener("click", () => openAddPicker("widgets"));
@@ -1623,6 +1671,7 @@ btnDeleteData.addEventListener("click", () => {
             try {
                 const res = await request("dashboard.deleteAllData", {});
                 layout = res.layout;
+                customizeHidden = false;
                 undoStack = [];
                 redoStack = [];
                 selectedId = null;
@@ -1711,6 +1760,7 @@ onDashboardEvent("dataReset", freshLayout => {
     if (gestureState)
         cancelPointerGesture();
     layout = freshLayout;
+    customizeHidden = false;
     undoStack = [];
     redoStack = [];
     selectedId = null;
@@ -1771,6 +1821,7 @@ async function init() {
         if (ctx.isPrivate)
             rootEl.classList.add("is-private");
         applyAccent(ctx.accent);
+        customizeHidden = Boolean(ctx.customizeHidden);
         dots.refreshColors();
 
         currentBp = getBreakpointForWidth(gridWrapEl.clientWidth || (window.innerWidth - 56));
