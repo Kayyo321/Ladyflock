@@ -7,9 +7,11 @@
 #include <UI/Qt/BrowserWindow.h>
 #include <UI/Qt/HubConnection.h>
 #include <UI/Qt/InspectorHost.h>
+#include <UI/Qt/Menu.h>
 #include <UI/Qt/Theme.h>
 #include <UI/Qt/WebContentView.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QKeyEvent>
@@ -124,6 +126,33 @@ InspectorHost::InspectorHost(QWidget* parent, BrowserWindow& browser_window, Web
 InspectorHost::~InspectorHost()
 {
     close_inspector(false);
+}
+
+Vector<NonnullRefPtr<Action>> InspectorHost::add_undocked_window_shortcuts(QWidget& window, UndockedWindowCommands commands)
+{
+    Vector<NonnullRefPtr<Action>> actions;
+    // NB: The actions take the shortcuts of their IDs, which include F12 for the Inspector's, as the browser window's do.
+    auto add = [&](StringView text, ActionID id, Function<void()> command) {
+        auto action = Action::create(text, id, AK::move(command));
+        window.addAction(create_application_action(window, *action, IncludeActionIcon::No));
+        actions.append(AK::move(action));
+    };
+    add("Close Inspector"sv, ActionID::ToggleInspector, AK::move(commands.close_inspector));
+    add("Pick Element"sv, ActionID::ToggleInspectorPicker, AK::move(commands.toggle_picker));
+    add("Open Console"sv, ActionID::OpenInspectorConsole, AK::move(commands.open_console));
+
+    // The key that closes a tab in a browser window closes this window, which is the Inspector.
+    auto* close = new QAction("Close Inspector", &window);
+    auto close_shortcuts = QKeySequence::keyBindings(QKeySequence::StandardKey::Close);
+#if !defined(AK_OS_MACOS)
+    QKeySequence control_f4(Qt::CTRL | Qt::Key_F4);
+    if (!close_shortcuts.contains(control_f4))
+        close_shortcuts.append(control_f4);
+#endif
+    close->setShortcuts(close_shortcuts);
+    QObject::connect(close, &QAction::triggered, &window, [action = actions.first()] { action->activate(); });
+    window.addAction(close);
+    return actions;
 }
 
 InspectorHost::DockMode InspectorHost::choose_initial_dock_mode() const
@@ -268,8 +297,21 @@ void InspectorHost::apply_dock_layout()
             m_undocked_window = new QWidget(nullptr, Qt::Window);
             auto* focus_chrome = new QShortcut(QKeySequence(Qt::Key_F6), m_undocked_window);
             connect(focus_chrome, &QShortcut::activated, this, &InspectorHost::focus_target_chrome_requested);
-            auto* toggle = new QShortcut(QKeySequence(Qt::Key_F12), m_undocked_window);
-            connect(toggle, &QShortcut::activated, this, [this] { close_inspector(); });
+            m_undocked_window_actions = add_undocked_window_shortcuts(*m_undocked_window,
+                {
+                    .close_inspector = [host = QPointer(this)] {
+                        if (host)
+                            host->close_inspector();
+                    },
+                    .toggle_picker = [host = QPointer(this)] {
+                        if (host)
+                            HubConnection::the().async_view_inspector_toggle_picker(host->m_content_view.view_id());
+                    },
+                    .open_console = [host = QPointer(this)] {
+                        if (host)
+                            host->open("console"_string);
+                    },
+                });
             m_undocked_window->resize(960, 640);
             auto* win_layout = new QVBoxLayout(m_undocked_window);
             win_layout->setContentsMargins(0, 0, 0, 0);

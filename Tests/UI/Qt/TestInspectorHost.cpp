@@ -79,6 +79,41 @@ TEST_CASE(local_inspector_shortcuts_dispatch_without_toggling_remote_debugging)
     EXPECT_EQ(remote_count, 0);
 }
 
+TEST_CASE(an_undocked_inspector_window_answers_the_inspector_shortcuts)
+{
+    QWidget window;
+    int close_count = 0;
+    int picker_count = 0;
+    int console_count = 0;
+    auto actions = Ladybird::InspectorHost::add_undocked_window_shortcuts(window,
+        {
+            .close_inspector = [&] { ++close_count; },
+            .toggle_picker = [&] { ++picker_count; },
+            .open_console = [&] { ++console_count; },
+        });
+    window.show();
+    window.activateWindow();
+    QApplication::processEvents();
+#if defined(AK_OS_MACOS)
+    constexpr auto modifiers = Qt::ControlModifier | Qt::AltModifier;
+#else
+    constexpr auto modifiers = Qt::ControlModifier | Qt::ShiftModifier;
+#endif
+    auto press = [&](QKeySequence const& sequence) {
+        auto combination = sequence[0];
+        QKeyEvent event(QEvent::KeyPress, combination.key(), combination.keyboardModifiers());
+        QApplication::sendEvent(&window, &event);
+    };
+    press(QKeySequence(Qt::Key_F12));
+    press(QKeySequence(modifiers | Qt::Key_I));
+    press(QKeySequence(modifiers | Qt::Key_C));
+    press(QKeySequence(modifiers | Qt::Key_J));
+    press(QKeySequence::keyBindings(QKeySequence::StandardKey::Close).first());
+    EXPECT_EQ(close_count, 3);
+    EXPECT_EQ(picker_count, 1);
+    EXPECT_EQ(console_count, 1);
+}
+
 TEST_CASE(close_returns_focus_to_the_opener_or_the_page_when_the_opener_is_hidden)
 {
     QWidget window;

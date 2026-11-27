@@ -6,8 +6,11 @@
 
 #pragma once
 
+#include <AK/Function.h>
+#include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
 #include <AK/String.h>
+#include <AK/Vector.h>
 #include <AK/kmalloc.h>
 #include <LibWebView/BrowsingSession.h>
 
@@ -19,6 +22,7 @@ class QCloseEvent;
 
 namespace Ladybird {
 
+class Action;
 class BrowserWindow;
 class WebContentView;
 
@@ -56,6 +60,15 @@ public:
     void close_inspector();
     static void restore_focus_after_close(QWidget& page, QWidget* opener);
 
+    // The browser window's Inspector shortcuts belong to it, so the Inspector's own window needs its own: the same
+    // keys, acting on this Inspector and its page, and the key that closes a window to close the Inspector.
+    struct UndockedWindowCommands {
+        Function<void()> close_inspector;
+        Function<void()> toggle_picker;
+        Function<void()> open_console;
+    };
+    static Vector<NonnullRefPtr<Action>> add_undocked_window_shortcuts(QWidget& window, UndockedWindowCommands);
+
     bool is_open() const { return m_inspector_view != nullptr; }
     DockMode dock_mode() const { return m_dock_mode; }
     void set_dock_mode(DockMode, bool explicit_user_choice = true);
@@ -92,6 +105,7 @@ private:
     QSplitter* m_splitter { nullptr };
     QPointer<WebContentView> m_inspector_view;
     QPointer<QWidget> m_undocked_window;
+    Vector<NonnullRefPtr<Action>> m_undocked_window_actions;
 
     DockMode m_dock_mode { DockMode::Right };
     bool m_has_explicit_dock_choice { false };
