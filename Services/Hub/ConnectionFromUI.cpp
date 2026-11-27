@@ -14,6 +14,7 @@
 #include <LibHTTP/HeaderList.h>
 #include <LibImageDecoderClient/Client.h>
 #include <LibRequests/RequestClient.h>
+#include <LibURL/InternalURLs.h>
 #include <LibWebCommon/Loader/UserAgent.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CrashReportStore.h>
@@ -21,6 +22,7 @@
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
 #include <LibWebView/ImageDecoderManager.h>
+#include <LibWebView/InspectorSession.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/PrivacyPolicyCoordinator.h>
@@ -51,6 +53,26 @@ ConnectionFromUI::ConnectionFromUI(NonnullOwnPtr<IPC::Transport> transport)
         .on_message = [this](u64 id, String name, JsonValue data) { async_web_ui_message(id, move(name), move(data)); },
         .on_close = [this](u64 id) { async_web_ui_closed(id); },
     });
+    WebView::InspectorSession::set_ui_callbacks({
+        .on_open_requested = [this](u64 target_view_id, String panel, Optional<Web::UniqueNodeID> node_id, u64 menu_generation) {
+            async_view_inspector_open_requested(target_view_id, move(panel), node_id.map([](auto id) { return id.value(); }), menu_generation);
+        },
+        .on_close_requested = [this](u64 target_view_id) {
+            async_view_inspector_close_requested(target_view_id);
+        },
+        .on_dock_mode_changed = [this](u64 target_view_id, String dock_mode) {
+            async_view_inspector_dock_mode_changed(target_view_id, move(dock_mode));
+        },
+        .on_picker_state_changed = [this](u64 target_view_id, bool picker_active) {
+            async_view_inspector_picker_state_changed(target_view_id, picker_active);
+        },
+        .on_copy_text = [this](String text) {
+            async_app_set_clipboard_text(move(text), WebView::Application::ClipboardType::Text);
+        },
+        .on_open_url_in_new_tab = [this](URL::URL url, u64 source_view_id, WebView::IsPrivate is_private) {
+            async_app_open_url_in_new_tab(move(url), Web::HTML::ActivateTab::Yes, source_view_id, is_private);
+        },
+    });
     (void)WebView::TabPerformanceMonitor::the();
 
     auto& browser_process = Application::the().browser_process();
@@ -66,6 +88,7 @@ ConnectionFromUI::ConnectionFromUI(NonnullOwnPtr<IPC::Transport> transport)
 ConnectionFromUI::~ConnectionFromUI()
 {
     Application::privacy_policy_coordinator().on_policy_committed = nullptr;
+    WebView::InspectorSession::set_ui_callbacks({});
     WebView::ApplicationWebUI::set_callbacks({});
     Application::settings().on_persist = nullptr;
     auto& browser_process = Application::the().browser_process();
@@ -1820,6 +1843,46 @@ void ConnectionFromUI::view_reset_site_permissions(u64 view_id, URL::Origin orig
         view->reset_site_permissions(origin);
         view->push_state_to_ui();
     }
+}
+
+void ConnectionFromUI::view_attach_inspector(u64 target_view_id, u64 frontend_view_id, String initial_panel, String dock_mode)
+{
+    auto* target_view = find_view(target_view_id);
+    auto* frontend_view = find_view(frontend_view_id);
+    if (!target_view || !frontend_view)
+        return;
+
+    auto session = WebView::InspectorSession::authorize_frontend_view(*target_view, frontend_view_id);
+    if (!session)
+        return;
+
+    session->set_initial_panel(move(initial_panel));
+    session->set_dock_mode(move(dock_mode));
+    frontend_view->load_from_browser_ui(URL::about_inspector());
+}
+
+void ConnectionFromUI::view_detach_inspector(u64 target_view_id)
+{
+    if (auto session = WebView::InspectorSession::find_for_target_view(target_view_id))
+        session->detach_frontend();
+}
+
+void ConnectionFromUI::view_inspector_select_panel(u64 target_view_id, String panel)
+{
+    if (auto session = WebView::InspectorSession::find_for_target_view(target_view_id))
+        session->select_panel(panel);
+}
+
+void ConnectionFromUI::view_inspector_set_dock_mode(u64 target_view_id, String dock_mode)
+{
+    if (auto session = WebView::InspectorSession::find_for_target_view(target_view_id))
+        session->set_dock_mode(move(dock_mode));
+}
+
+void ConnectionFromUI::view_inspector_toggle_picker(u64 target_view_id)
+{
+    if (auto session = WebView::InspectorSession::find_for_target_view(target_view_id))
+        session->toggle_node_picker();
 }
 
 }

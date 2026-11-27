@@ -29,6 +29,7 @@
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/Extensions/ExtensionManager.h>
 #include <LibWebView/GamepadManager.h>
+#include <LibWebView/InspectorSession.h>
 #include <LibWebView/MicrophoneAuthorizer.h>
 #include <LibWebView/NavigationLoader.h>
 #include <LibWebView/NotificationManager.h>
@@ -1208,24 +1209,33 @@ void WebContentPage::did_inspect_storage(u64 request_id, String storage_items)
 void WebContentPage::did_inspect_grid_layouts(String grid_layouts)
 {
     if (displays_tab()) {
+        auto parsed = parse_json_array(grid_layouts, "grid layouts"sv);
+        if (auto* session = view().inspector_session())
+            session->did_receive_grid_layouts(parsed);
         if (view().on_received_grid_layouts)
-            view().on_received_grid_layouts(parse_json_array(grid_layouts, "grid layouts"sv));
+            view().on_received_grid_layouts(move(parsed));
     }
 }
 
 void WebContentPage::did_inspect_current_grid(String grid_layout)
 {
     if (displays_tab()) {
+        auto parsed = parse_optional_json_object(grid_layout, "current grid"sv);
+        if (auto* session = view().inspector_session())
+            session->did_receive_current_grid(parsed);
         if (view().on_received_current_grid)
-            view().on_received_current_grid(parse_optional_json_object(grid_layout, "current grid"sv));
+            view().on_received_current_grid(move(parsed));
     }
 }
 
 void WebContentPage::did_inspect_current_flexbox(String flexbox_layout)
 {
     if (displays_tab()) {
+        auto parsed = parse_optional_json_object(flexbox_layout, "current flexbox"sv);
+        if (auto* session = view().inspector_session())
+            session->did_receive_current_flexbox(parsed);
         if (view().on_received_current_flexbox)
-            view().on_received_current_flexbox(parse_optional_json_object(flexbox_layout, "current flexbox"sv));
+            view().on_received_current_flexbox(move(parsed));
     }
 }
 
@@ -1238,8 +1248,11 @@ void WebContentPage::did_inspect_indexed_database(u64 request_id, String result)
 void WebContentPage::did_inspect_accessibility_tree(String accessibility_tree)
 {
     if (displays_tab()) {
+        auto parsed = parse_json(accessibility_tree, "accessibility tree"sv);
+        if (auto* session = view().inspector_session())
+            session->did_receive_accessibility_tree(parsed);
         if (view().on_received_accessibility_tree)
-            view().on_received_accessibility_tree(parse_json(accessibility_tree, "accessibility tree"sv));
+            view().on_received_accessibility_tree(move(parsed));
     }
 }
 
@@ -1285,6 +1298,8 @@ void WebContentPage::did_get_node_id_at_position(u64 request_id, Web::UniqueNode
 void WebContentPage::did_list_style_sheets(Vector<Web::CSS::StyleSheetIdentifier> stylesheets)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_style_sheet_list(stylesheets);
         if (view().on_received_style_sheet_list)
             view().on_received_style_sheet_list(stylesheets);
     }
@@ -1293,6 +1308,8 @@ void WebContentPage::did_list_style_sheets(Vector<Web::CSS::StyleSheetIdentifier
 void WebContentPage::did_get_style_sheet_source(Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Utf16String source)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_style_sheet_source(identifier, base_url, source);
         if (view().on_received_style_sheet_source)
             view().on_received_style_sheet_source(identifier, base_url, source);
     }
@@ -1319,6 +1336,8 @@ void WebContentPage::did_get_devtools_source(Web::HTML::ScriptRegistryIdentifier
 void WebContentPage::did_add_devtools_source(Web::HTML::ScriptRegistryDescription source)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_add_devtools_source(source);
         if (view().on_devtools_source_available)
             view().on_devtools_source_available(move(source));
     }
@@ -1328,6 +1347,8 @@ void WebContentPage::did_pause_debugger(DebuggerPause pause)
 {
     if (displays_tab()) {
         view().did_pause_debugger({});
+        if (auto* session = view().inspector_session())
+            session->did_pause_debugger(pause);
         if (view().on_debugger_paused)
             view().on_debugger_paused(move(pause));
     }
@@ -1390,6 +1411,8 @@ void WebContentPage::did_cut_selected_text(u64 request_id, ByteString selection)
 void WebContentPage::did_execute_js_console_input(DebuggerValue result)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_js_console_result(result);
         if (view().on_received_js_console_result)
             view().on_received_js_console_result(move(result));
     }
@@ -1398,6 +1421,8 @@ void WebContentPage::did_execute_js_console_input(DebuggerValue result)
 void WebContentPage::did_output_js_console_message(ConsoleOutput console_output)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_console_message(console_output);
         if (view().on_console_message)
             view().on_console_message(move(console_output));
     }
@@ -1421,6 +1446,8 @@ void WebContentPage::did_start_network_request(u64 request_id, URL::URL url, Byt
 {
     if (displays_tab()) {
         Application::privacy_activity().record_capture_event(view(), url, PrivacyActivity::CaptureEventKind::Request);
+        if (auto* session = view().inspector_session())
+            session->did_start_network_request(request_id, url, method, request_headers, request_body, initiator_type, referrer_policy, is_navigation_request, priority);
         if (view().on_network_request_started)
             view().on_network_request_started(request_id, url, method, request_headers, move(request_body), move(initiator_type), move(referrer_policy), is_navigation_request, priority);
     }
@@ -1429,6 +1456,8 @@ void WebContentPage::did_start_network_request(u64 request_id, URL::URL url, Byt
 void WebContentPage::did_receive_network_response_body(u64 request_id, ByteBuffer data)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_network_response_body(request_id, data);
         if (view().on_network_response_body_received)
             view().on_network_response_body_received(request_id, move(data));
     }
@@ -1437,6 +1466,8 @@ void WebContentPage::did_receive_network_response_body(u64 request_id, ByteBuffe
 void WebContentPage::did_finish_network_request(u64 request_id, u64 body_size, Requests::RequestTimingInfo timing_info, Optional<Requests::NetworkError> network_error)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_finish_network_request(request_id, body_size, timing_info, network_error);
         if (view().on_network_request_finished)
             view().on_network_request_finished(request_id, body_size, timing_info, network_error);
     }
@@ -2613,14 +2644,19 @@ void WebContentPage::did_request_close_of_traversable(Web::HTML::CrossProcessId 
 void WebContentPage::did_inspect_dom_tree(String dom_tree)
 {
     if (displays_tab()) {
+        auto parsed = parse_json(dom_tree, "DOM tree"sv);
+        if (auto* session = view().inspector_session())
+            session->did_receive_dom_tree(parsed);
         if (view().on_received_dom_tree)
-            view().on_received_dom_tree(parse_json(dom_tree, "DOM tree"sv));
+            view().on_received_dom_tree(move(parsed));
     }
 }
 
 void WebContentPage::did_inspect_dom_node(DOMNodeProperties properties)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_dom_node_properties(properties);
         if (view().on_received_dom_node_properties)
             view().on_received_dom_node_properties(move(properties));
     }
@@ -2629,6 +2665,8 @@ void WebContentPage::did_inspect_dom_node(DOMNodeProperties properties)
 void WebContentPage::did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_finish_editing_dom_node(node_id);
         if (view().on_finished_editing_dom_node)
             view().on_finished_editing_dom_node(node_id);
     }
@@ -2637,6 +2675,8 @@ void WebContentPage::did_finish_editing_dom_node(Optional<Web::UniqueNodeID> nod
 void WebContentPage::did_mutate_dom(Mutation mutation)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_dom_mutation(mutation);
         if (view().on_dom_mutation_received)
             view().on_dom_mutation_received(move(mutation));
     }
@@ -2645,6 +2685,8 @@ void WebContentPage::did_mutate_dom(Mutation mutation)
 void WebContentPage::did_get_dom_node_html(String html)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_dom_node_html(html);
         if (view().on_received_dom_node_html)
             view().on_received_dom_node_html(move(html));
     }
@@ -2671,6 +2713,8 @@ void WebContentPage::did_complete_js_console_input(u64 request_id, Optional<Vect
 void WebContentPage::did_receive_network_response_headers(u64 request_id, u32 status_code, Optional<String> reason_phrase, Vector<HTTP::Header> response_headers, Requests::CacheState cache_state)
 {
     if (displays_tab()) {
+        if (auto* session = view().inspector_session())
+            session->did_receive_network_response_headers(request_id, status_code, reason_phrase, response_headers, cache_state);
         if (view().on_network_response_headers_received)
             view().on_network_response_headers_received(request_id, status_code, reason_phrase, response_headers, cache_state);
     }
@@ -3304,10 +3348,10 @@ void WebContentPage::did_change_title(Utf16String title)
     }
 }
 
-void WebContentPage::did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
+void WebContentPage::did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
 {
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_page_context_menu({}, *this, document_id, target->position, for_input_events_target, move(misspelled_word), text_fragment_generation_id);
+        target->view.did_request_page_context_menu({}, *this, document_id, inspect_node_id, target->position, for_input_events_target, move(misspelled_word), text_fragment_generation_id);
 }
 
 void WebContentPage::did_request_spelling_menu_action_for_testing(Web::SpellingMenuActionForTesting action, u32 guess_index)
@@ -3330,13 +3374,13 @@ void WebContentPage::did_request_page_translation_for_testing(String target_lang
     view().page_translation().translate_for_testing({}, move(target_language));
 }
 
-void WebContentPage::did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<u64> text_fragment_generation_id)
+void WebContentPage::did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<u64> text_fragment_generation_id)
 {
     auto verified_navigation = navigation_from_page(client(), move(navigation));
     if (!verified_navigation.has_value())
         return;
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_link_context_menu({}, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, verified_navigation.release_value(), text_fragment_generation_id);
+        target->view.did_request_link_context_menu({}, *this, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, inspect_node_id, target->position, verified_navigation.release_value(), text_fragment_generation_id);
 }
 
 void WebContentPage::did_generate_text_fragment_url(u64 request_id, Optional<URL::URL> url)
@@ -3344,7 +3388,7 @@ void WebContentPage::did_generate_text_fragment_url(u64 request_id, Optional<URL
     view().did_generate_text_fragment_url(request_id, move(url));
 }
 
-void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString, unsigned, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
     auto verified_navigation = navigation_from_page(client(), move(navigation));
     if (!verified_navigation.has_value())
@@ -3354,10 +3398,10 @@ void WebContentPage::did_request_image_context_menu(Web::HTML::CrossProcessId lo
     if (link_navigation.has_value())
         verified_link_navigation = navigation_from_page(client(), link_navigation.release_value());
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_image_context_menu({}, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, verified_navigation.release_value(), move(bitmap), move(verified_link_navigation), move(image_mime_type));
+        target->view.did_request_image_context_menu({}, *this, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, inspect_node_id, target->position, verified_navigation.release_value(), move(bitmap), move(verified_link_navigation), move(image_mime_type));
 }
 
-void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, ByteString, unsigned, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, ByteString, unsigned, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
     Optional<Web::HTML::PreparedNavigationDescriptor> verified_navigation;
     if (navigation.has_value()) {
@@ -3366,7 +3410,7 @@ void WebContentPage::did_request_media_context_menu(Web::HTML::CrossProcessId lo
             return;
     }
     if (auto target = view_position(local_root_id, content_position); target.has_value())
-        target->view.did_request_media_context_menu({}, *this, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, target->position, move(menu), move(verified_navigation));
+        target->view.did_request_media_context_menu({}, *this, hosted_document_with_id(document_id) ? Optional<Web::HTML::CrossProcessId> { document_id } : OptionalNone {}, inspect_node_id, target->position, move(menu), move(verified_navigation));
 }
 
 void WebContentPage::did_get_highlighted_source(String html)

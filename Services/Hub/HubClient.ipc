@@ -440,4 +440,8 @@ endpoint HubClient
     view_crash_report_saved(u64 view_id) =|
     view_performance_stats(u64 view_id, WebView::TabPerformanceStats stats) =|
     view_compositor_layers_change(u64 view_id, Compositing::CompositorLayersDescription layers) =|
+    view_inspector_open_requested(u64 target_view_id, String panel, Optional<i64> node_id, u64 menu_generation) =|
+    view_inspector_close_requested(u64 target_view_id) =|
+    view_inspector_dock_mode_changed(u64 target_view_id, String dock_mode) =|
+    view_inspector_picker_state_changed(u64 target_view_id, bool picker_active) =|
 }

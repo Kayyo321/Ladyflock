@@ -35,6 +35,7 @@
 #include <LibWebView/CrashReportReview.h>
 #include <LibWebView/HelperProcess.h>
 #include <LibWebView/HistoryDebug.h>
+#include <LibWebView/InspectorSession.h>
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/PrivacyActivity.h>
@@ -157,6 +158,10 @@ ViewImplementation::ViewImplementation(NonnullRefPtr<BrowsingSession> session)
 
 ViewImplementation::~ViewImplementation()
 {
+    if (auto session = m_inspector_session.strong_ref())
+        session->target_did_close();
+    if (auto owned_session = InspectorSession::find_for_frontend_view(m_view_id))
+        owned_session->detach_frontend();
     stop_counting_as_owned_view();
     Application::the().media_session_coordinator().remove_view(view_id());
     // A tab's capture goes away with the tab.
@@ -2405,19 +2410,41 @@ void ViewImplementation::get_hovered_node_id()
 
 void ViewImplementation::start_node_picker(DevTools::DevToolsDelegate::OnNodePickerEvent on_node_picker_event)
 {
+    start_node_picker_for_owner(InteractiveOwner::RemoteDevTools, move(on_node_picker_event));
+}
+
+void ViewImplementation::stop_node_picker()
+{
+    stop_node_picker_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+void ViewImplementation::start_node_picker_for_owner(InteractiveOwner owner, DevTools::DevToolsDelegate::OnNodePickerEvent on_node_picker_event)
+{
+    if (m_node_picker_active && m_node_picker_owner != InteractiveOwner::None && m_node_picker_owner != owner) {
+        // Cancel the previous owner cleanly before handing over interactive picker control.
+        if (m_on_node_picker_event) {
+            m_on_node_picker_event({
+                .type = DevTools::DevToolsDelegate::NodePickerEvent::Type::Canceled,
+                .node_id = {},
+            });
+        }
+        clear_node_picker();
+    }
     m_node_picker_active = true;
+    m_node_picker_owner = owner;
     m_node_picker_hovered_node_id.clear();
     m_pending_node_picker_requests.clear();
     m_on_node_picker_event = move(on_node_picker_event);
 }
 
-void ViewImplementation::stop_node_picker()
+void ViewImplementation::stop_node_picker_for_owner(InteractiveOwner owner)
 {
-    if (!m_node_picker_active)
+    if (!m_node_picker_active || m_node_picker_owner != owner)
         return;
 
     clear_node_picker();
     m_node_picker_active = false;
+    m_node_picker_owner = InteractiveOwner::None;
     m_pending_node_picker_requests.clear();
     m_on_node_picker_event = nullptr;
 }
@@ -2474,8 +2501,21 @@ void ViewImplementation::did_receive_node_hit_test(u64 request_id, Web::UniqueNo
             m_inspect_element_node_id = node_id;
 
         // The user chose Inspect Element before the hit test came back.
-        if (exchange(m_inspect_element_activated_before_hit_test, false) && m_inspect_element_node_id.has_value() && on_inspect_element_request)
-            on_inspect_element_request(*m_inspect_element_node_id);
+        if (exchange(m_inspect_element_activated_before_hit_test, false)) {
+            if (!m_owner_view_id.has_value()) {
+                auto session = InspectorSession::ensure_for_target_view(*this);
+                session->queue_inspect_target({
+                    .page = m_inspect_element_page,
+                    .document_id = m_inspect_element_document_id,
+                    .node_id = node_id,
+                    .menu_generation = m_inspect_element_menu_generation,
+                });
+                if (auto& on_open = InspectorSession::ui_callbacks().on_open_requested)
+                    on_open(view_id(), "elements"_string, node_id != 0 ? Optional<Web::UniqueNodeID> { node_id } : OptionalNone {}, m_inspect_element_menu_generation);
+            }
+            if (m_inspect_element_node_id.has_value() && on_inspect_element_request)
+                on_inspect_element_request(*m_inspect_element_node_id);
+        }
         return;
     }
 
@@ -2611,8 +2651,16 @@ void ViewImplementation::attach_debugger(DevTools::DevToolsDelegate::OnDebuggerP
 {
     on_debugger_paused = move(on_paused);
     on_debugger_resumed = move(on_resumed);
-    m_debugger_is_attached = true;
-    page().async_attach_debugger();
+    attach_debugger_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+void ViewImplementation::attach_debugger_for_owner(InteractiveOwner owner)
+{
+    m_debugger_owner = owner;
+    if (!m_debugger_is_attached) {
+        m_debugger_is_attached = true;
+        page().async_attach_debugger();
+    }
 }
 
 void ViewImplementation::configure_debugger(DebuggerConfiguration configuration)
@@ -2622,10 +2670,18 @@ void ViewImplementation::configure_debugger(DebuggerConfiguration configuration)
 
 void ViewImplementation::detach_debugger()
 {
-    fail_pending_debugger_requests();
-    m_debugger_is_attached = false;
     on_debugger_paused = nullptr;
     on_debugger_resumed = nullptr;
+    detach_debugger_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+void ViewImplementation::detach_debugger_for_owner(InteractiveOwner owner)
+{
+    if (m_debugger_owner != owner && m_debugger_owner != InteractiveOwner::None)
+        return;
+    fail_pending_debugger_requests();
+    m_debugger_is_attached = false;
+    m_debugger_owner = InteractiveOwner::None;
     page().async_detach_debugger();
 }
 
@@ -2672,6 +2728,8 @@ void ViewImplementation::did_resume_debugger(Badge<WebContentPage>)
     set_debugger_paused(false);
     if (on_debugger_resumed)
         on_debugger_resumed();
+    if (auto session = m_inspector_session.strong_ref())
+        session->did_resume_debugger();
 }
 
 void ViewImplementation::did_request_cursor_change(Badge<WebContentPage>, Gfx::Cursor cursor)
@@ -3162,13 +3220,29 @@ void ViewImplementation::clear_grid_highlight(Web::UniqueNodeID node_id)
 
 void ViewImplementation::set_listen_for_dom_mutations(bool listen_for_dom_mutations)
 {
-    page().async_set_listen_for_dom_mutations(listen_for_dom_mutations);
+    m_remote_dom_mutation_listening = listen_for_dom_mutations;
+    page().async_set_listen_for_dom_mutations(m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0);
+}
+
+void ViewImplementation::add_dom_mutation_listener_ref()
+{
+    ++m_dom_mutation_listener_count;
+    page().async_set_listen_for_dom_mutations(true);
+}
+
+void ViewImplementation::remove_dom_mutation_listener_ref()
+{
+    if (m_dom_mutation_listener_count > 0)
+        --m_dom_mutation_listener_count;
+    page().async_set_listen_for_dom_mutations(m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0);
 }
 
 void ViewImplementation::did_connect_devtools_client()
 {
+    ++m_devtools_client_count;
     m_devtools_connected = true;
-    page().async_set_has_devtools_client(true);
+    if (m_devtools_client_count == 1)
+        page().async_set_has_devtools_client(true);
 }
 
 void ViewImplementation::start_sending_console_output(bool messages, bool errors)
@@ -3180,10 +3254,36 @@ void ViewImplementation::start_sending_console_output(bool messages, bool errors
 
 void ViewImplementation::did_disconnect_devtools_client()
 {
-    m_devtools_connected = false;
-    m_devtools_takes_console_messages = false;
-    m_devtools_takes_console_errors = false;
-    page().async_set_has_devtools_client(false);
+    if (m_devtools_client_count > 0)
+        --m_devtools_client_count;
+    if (m_devtools_client_count == 0) {
+        m_devtools_connected = false;
+        m_devtools_takes_console_messages = false;
+        m_devtools_takes_console_errors = false;
+        page().async_set_has_devtools_client(false);
+    }
+}
+
+InspectorSession* ViewImplementation::inspector_session() const
+{
+    return m_inspector_session.ptr();
+}
+
+void ViewImplementation::set_inspector_session(Badge<InspectorSession>, WeakPtr<InspectorSession> session)
+{
+    m_inspector_session = move(session);
+}
+
+void ViewImplementation::dispatch_inspector_engine_command(u64, String const& action, JsonObject const&, InspectorEngineReplyCallback callback)
+{
+    if (callback)
+        callback(false, JsonValue {}, MUST(String::formatted("Inspector engine action '{}' not yet implemented in renderer.", action)));
+}
+
+void ViewImplementation::did_complete_inspector_engine_command(u64 request_id, bool ok, JsonValue result, Optional<String> error)
+{
+    if (auto cb = m_pending_inspector_engine_commands.take(request_id); cb.has_value() && *cb)
+        (*cb)(ok, move(result), move(error));
 }
 
 void ViewImplementation::get_dom_node_inner_html(Web::UniqueNodeID node_id)
@@ -5723,15 +5823,34 @@ ErrorOr<LexicalPath> ViewImplementation::dump_gc_graph()
 void ViewImplementation::send_context_menu_request(ContextMenuRequest request, Gfx::IntPoint content_position)
 {
     request.widget_position = to_widget_position(content_position);
-    request.can_inspect_element = static_cast<bool>(on_inspect_element_request);
+    request.can_inspect_element = !m_owner_view_id.has_value();
     did_request_context_menu(move(request));
 }
 
 void ViewImplementation::inspect_context_menu_element()
 {
-    if (m_inspect_element_hit_test_request_id.has_value())
+    if (m_inspect_element_hit_test_request_id.has_value()) {
         m_inspect_element_activated_before_hit_test = true;
-    else if (m_inspect_element_node_id.has_value() && on_inspect_element_request)
+        return;
+    }
+
+    auto node_id = m_inspect_element_node_id.value_or(0);
+    auto generation = m_inspect_element_menu_generation;
+
+    // Open or focus the built-in Ladyflock Inspector on the captured original node, even with remote debugging off.
+    if (!m_owner_view_id.has_value()) {
+        auto session = InspectorSession::ensure_for_target_view(*this);
+        session->queue_inspect_target({
+            .page = m_inspect_element_page,
+            .document_id = m_inspect_element_document_id,
+            .node_id = node_id,
+            .menu_generation = generation,
+        });
+        if (auto& on_open = InspectorSession::ui_callbacks().on_open_requested)
+            on_open(view_id(), "elements"_string, node_id != 0 ? Optional<Web::UniqueNodeID> { node_id } : OptionalNone {}, generation);
+    }
+
+    if (m_inspect_element_node_id.has_value() && on_inspect_element_request)
         on_inspect_element_request(*m_inspect_element_node_id);
 }
 
@@ -5962,24 +6081,29 @@ void ViewImplementation::did_generate_text_fragment_url(u64 request_id, Optional
     did_make_link_to_highlight(move(url));
 }
 
-void ViewImplementation::prepare_inspect_element(Gfx::IntPoint content_position)
+void ViewImplementation::prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position)
 {
+    ++m_inspect_element_menu_generation;
     m_inspect_element_node_id.clear();
+    m_inspect_element_page = requesting_page;
+    m_inspect_element_document_id = document_id;
     m_inspect_element_hit_test_request_id.clear();
     m_inspect_element_activated_before_hit_test = false;
 
-    if (!on_inspect_element_request)
+    if (inspect_node_id != 0) {
+        m_inspect_element_node_id = inspect_node_id;
         return;
+    }
 
     auto request_id = m_next_node_hit_test_request_id++;
     m_inspect_element_hit_test_request_id = request_id;
-    page().async_get_node_id_at_position(request_id, { content_position.x(), content_position.y() });
+    requesting_page.async_get_node_id_at_position(request_id, { content_position.x(), content_position.y() });
 }
 
-void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id, content_position);
     m_spelling_context_menu_page = requesting_page;
 
     auto request_id = ++m_context_menu_request_id;
@@ -6028,10 +6152,10 @@ void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, We
     });
 }
 
-void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id, content_position);
     ++m_context_menu_request_id;
 
     ContextMenuRequest request;
@@ -6065,9 +6189,9 @@ void ViewImplementation::download_url(URL::URL const& url, PromptForPath prompt_
     });
 }
 
-void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id, content_position);
     ++m_context_menu_request_id;
 
     ContextMenuRequest request;
@@ -6080,9 +6204,9 @@ void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, O
     send_context_menu_request(move(request), content_position);
 }
 
-void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id, content_position);
     ++m_context_menu_request_id;
 
     m_media_context_menu_page = requesting_page;

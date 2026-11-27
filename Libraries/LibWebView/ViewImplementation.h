@@ -501,6 +501,27 @@ public:
     void node_picker_preview(Web::DevicePixelPoint);
     void node_picker_cancel();
 
+    enum class InteractiveOwner : u8 {
+        None,
+        LocalInspector,
+        RemoteDevTools,
+    };
+    InteractiveOwner node_picker_owner() const { return m_node_picker_owner; }
+    InteractiveOwner debugger_owner() const { return m_debugger_owner; }
+    void start_node_picker_for_owner(InteractiveOwner, DevTools::DevToolsDelegate::OnNodePickerEvent);
+    void stop_node_picker_for_owner(InteractiveOwner);
+    void attach_debugger_for_owner(InteractiveOwner);
+    void detach_debugger_for_owner(InteractiveOwner);
+    void add_dom_mutation_listener_ref();
+    void remove_dom_mutation_listener_ref();
+
+    InspectorSession* inspector_session() const;
+    void set_inspector_session(Badge<InspectorSession>, WeakPtr<InspectorSession>);
+
+    using InspectorEngineReplyCallback = Function<void(bool ok, JsonValue result, Optional<String> error)>;
+    void dispatch_inspector_engine_command(u64 request_id, String const& action, JsonObject const& params, InspectorEngineReplyCallback);
+    void did_complete_inspector_engine_command(u64 request_id, bool ok, JsonValue result, Optional<String> error);
+
     void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {});
     void inspect_grid_layouts(Web::UniqueNodeID root_node_id);
     void inspect_current_grid(Web::UniqueNodeID node_id);
@@ -797,16 +818,16 @@ public:
     Function<void()> on_crash_report_saved;
     Function<void()> on_web_content_process_change_for_cross_site_navigation;
 
-    void did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id);
+    void did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id);
     void activate_spelling_menu_action_for_testing(Badge<WebContentPage>, WebContentPage& requesting_page, Web::SpellingMenuActionForTesting, u32 guess_index);
 
     void did_request_spell_check(Badge<WebContentPage>, WebContentPage& requesting_page, u64 request_id, Utf16String text);
     void did_request_writing_suggestion(Badge<WebContentPage>, WebContentPage& requesting_page, u64 request_id, Utf16String text, u32 caret_offset);
     void reset_spell_checking();
-    void did_request_link_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<u64> text_fragment_generation_id);
+    void did_request_link_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<u64> text_fragment_generation_id);
     void did_generate_text_fragment_url(u64 request_id, Optional<URL::URL>);
-    void did_request_image_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type);
-    void did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::MediaContextMenu, Optional<Web::HTML::PreparedNavigationDescriptor>);
+    void did_request_image_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type);
+    void did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::MediaContextMenu, Optional<Web::HTML::PreparedNavigationDescriptor>);
 
     void did_request_color_picker(Badge<WebContentPage>, WebContentPage& requesting_page, Color current_color);
     void did_request_date_picker(Badge<WebContentPage>, WebContentPage& requesting_page, Utf16String input_type, Utf16String value, Utf16String minimum, Utf16String maximum);
@@ -1065,9 +1086,12 @@ protected:
     HashMap<u64, NonnullRefPtr<Core::Promise<bool>>> m_pending_select_word_for_dictionary_lookup_requests;
     HashMap<u64, NonnullRefPtr<Core::Promise<ByteString>>> m_pending_cut_selected_text_requests;
 
-    void prepare_inspect_element(Gfx::IntPoint content_position);
+    void prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position);
     Optional<u64> m_inspect_element_hit_test_request_id;
     Optional<Web::UniqueNodeID> m_inspect_element_node_id;
+    RefPtr<WebContentPage> m_inspect_element_page;
+    Optional<Web::HTML::CrossProcessId> m_inspect_element_document_id;
+    u64 m_inspect_element_menu_generation { 0 };
     bool m_inspect_element_activated_before_hit_test { false };
 
     struct PendingInputEvent {
@@ -1383,14 +1407,22 @@ protected:
     void did_receive_indexed_database_inspection(u64 request_id, JsonObject);
 
     bool m_node_picker_active { false };
+    InteractiveOwner m_node_picker_owner { InteractiveOwner::None };
+    InteractiveOwner m_debugger_owner { InteractiveOwner::None };
     Optional<Web::UniqueNodeID> m_node_picker_hovered_node_id;
     u64 m_next_node_hit_test_request_id { 1 };
     HashMap<u64, NodePickerRequestType> m_pending_node_picker_requests;
     DevTools::DevToolsDelegate::OnNodePickerEvent m_on_node_picker_event;
 
     bool m_devtools_connected { false };
+    size_t m_devtools_client_count { 0 };
+    size_t m_dom_mutation_listener_count { 0 };
+    bool m_remote_dom_mutation_listening { false };
     bool m_devtools_takes_console_messages { false };
     bool m_devtools_takes_console_errors { false };
+    WeakPtr<InspectorSession> m_inspector_session;
+    HashMap<u64, InspectorEngineReplyCallback> m_pending_inspector_engine_commands;
+    u64 m_next_inspector_engine_command_id { 1 };
 
     // NB: A view starts out hidden, until the UI shows it.
     Optional<MonotonicTime> m_hidden_since { MonotonicTime::now() };

@@ -269,6 +269,11 @@ private:
     virtual void view_deny_fullscreen_window(u64 view_id) override;
     virtual void view_set_is_fullscreen(u64 view_id, Web::ViewportIsFullscreen is_fullscreen) override;
     virtual void view_reset_site_permissions(u64 view_id, URL::Origin origin) override;
+    virtual void view_attach_inspector(u64 target_view_id, u64 frontend_view_id, String initial_panel, String dock_mode) override;
+    virtual void view_detach_inspector(u64 target_view_id) override;
+    virtual void view_inspector_select_panel(u64 target_view_id, String panel) override;
+    virtual void view_inspector_set_dock_mode(u64 target_view_id, String dock_mode) override;
+    virtual void view_inspector_toggle_picker(u64 target_view_id) override;
 };
 
 }

@@ -48,6 +48,8 @@ class HSTSStore;
 class IdentityManager;
 class ImageDecoderControlClient;
 class ImageDecoderManager;
+class InspectorSession;
+class InspectorUI;
 class MicrophoneAuthorizer;
 class NavigationLoader;
 class OutOfProcessWebView;
