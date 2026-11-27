@@ -760,6 +760,20 @@ TEST_CASE(inspector_dom_breakpoints_pause_after_the_change)
     EXPECT_EQ(target.title().to_byte_string(), "unrelated:yes"sv);
     expect_holds(frontend, "No later script stops for an earlier change"sv, "return window.pauses.length === 1 ? null : window.pauses.map(p => p.frames?.[0]?.displayName);"sv);
 
+    // The Pause button still stops the next script, which the end-of-task cleanup above must not have let go.
+    evaluate(frontend, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendCommand("interruptDebugger");
+    )JS"sv);
+    target.run_javascript("(function interrupted() { document.title = 'after-interrupt'; })();"_string);
+    expect_holds(frontend, "Pause stops the next script"sv, R"JS(
+        await until(() => window.pauses.length === 2);
+        const pause = window.pauses[1];
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await sendCommand("resumeDebugger", { mode: "continue" });
+        return pause.reason === "entry" && !pause.reasonMessage ? null : { reason: pause.reason, message: pause.reasonMessage };
+    )JS"sv);
+    wait_for([&] { return target.title().to_byte_string() == "after-interrupt"sv; });
 }
 
 constexpr auto cascade_html = R"HTML(<!doctype html><title>Cascade</title>
@@ -835,7 +849,7 @@ TEST_CASE(inspector_frames_and_shadow_trees)
     )JS"sv);
 
     for (auto id : { "inner"sv, "shadowed"sv }) {
-        expect_holds(frontend, MUST(String::formatted("A new rule for #{} matches it, and can be edited", id)), MUST(String::formatted(R"JS(
+        expect_holds(frontend, MUST(String::formatted("A new rule for #{} matches it, and can be edited and undone", id)), MUST(String::formatted(R"JS(
             const {{ sendEngineCommand }} = await import("resource://ladybird/about-pages/inspector/bridge.js");
             const node = await select(n => n.attributes?.id === "{}", () => app.state.lastComputedStyle);
             const rule = () => app.stylesPane.rules.find(r => r.attribution?.kind === "inspector" && (r.selectors || []).includes("#{}"));
@@ -846,9 +860,17 @@ TEST_CASE(inspector_frames_and_shadow_trees)
             await app.stylesPane.commitDeclarationEdit(rule(), declaration, rule().declarations.indexOf(declaration), "color", "rgb(4, 5, 6)");
             app.refreshSelectedNodeProperties();
             await until(() => app.state.lastComputedStyle?.color === "rgb(4, 5, 6)");
+            // Undoing the edit finds the same sheet again.
+            const {{ sendCommand }} = await import("resource://ladybird/about-pages/inspector/bridge.js");
+            const edit = [...(app.drawers.editJournal.entries || [])].reverse().find(entry => entry.canUndo && !entry.undone);
+            if (!edit)
+                throw new Error("The edit is not in the journal: " + JSON.stringify(app.drawers.editJournal));
+            await sendCommand("undoEdit", {{ id: edit.id }});
+            app.refreshSelectedNodeProperties();
+            await until(() => app.state.lastComputedStyle?.color === "rgb(1, 2, 3)");
             return null;
         )JS",
-                                                                                                                    id, id, id)));
+                                                                                                                               id, id, id)));
     }
 }
 
