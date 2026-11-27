@@ -3021,6 +3021,34 @@ static u8 parse_dom_breakpoint_flag(StringView type)
     return 0;
 }
 
+// Visits a tree's nodes in tree order. The callback may name trees to enter at the node it is given, such as an
+// element's shadow root or a frame's document; each is visited before the rest of the tree it is in. A loop rather
+// than recursion, since a page can nest elements deeper than the stack can.
+template<typename Callback>
+static void walk_inspected_trees(Web::DOM::Node& root, Callback callback)
+{
+    struct Tree {
+        GC::Ref<Web::DOM::Node> root;
+        GC::Ptr<Web::DOM::Node> next;
+    };
+    Vector<Tree> trees;
+    trees.append({ root, root });
+    while (!trees.is_empty()) {
+        auto& tree = trees.last();
+        auto node = tree.next;
+        if (!node) {
+            trees.take_last();
+            continue;
+        }
+        tree.next = node->next_in_pre_order(tree.root.ptr());
+        Vector<GC::Ref<Web::DOM::Node>, 2> trees_to_enter;
+        if (callback(*node, trees_to_enter) == IterationDecision::Break)
+            return;
+        for (auto nested_root : trees_to_enter.in_reverse())
+            trees.append({ nested_root, nested_root });
+    }
+}
+
 static Web::CSS::StyleSheetState* find_style_sheet_by_occurrence_id(Web::DOM::Document& document, u64 occurrence_id, Web::DOM::Element* selected_element = nullptr)
 {
     Web::CSS::StyleSheetState* found = nullptr;
@@ -3595,9 +3623,9 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             };
 
             auto needle = query_trimmed.bytes_as_string_view();
-            Function<void(Web::DOM::Node&)> walk_tree = [&](Web::DOM::Node& node) {
+            walk_inspected_trees(*document, [&](Web::DOM::Node& node, auto& trees_to_enter) {
                 if (matches.size() >= 250)
-                    return;
+                    return IterationDecision::Break;
                 if (auto* doc_node = as_if<Web::DOM::Document>(node))
                     run_selector_in_root(*doc_node);
                 else if (auto* shadow = as_if<Web::DOM::ShadowRoot>(node))
@@ -3623,13 +3651,13 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                     }
                     if (auto shadow = element->shadow_root()) {
                         if (!shadow->is_user_agent_internal())
-                            walk_tree(*shadow);
+                            trees_to_enter.append(*shadow);
                     }
                     if (element->is_navigable_container()) {
                         auto& container = static_cast<Web::HTML::NavigableContainer&>(*element);
                         if (auto* navigable = as_if<Web::HTML::LocalNavigable>(container.content_navigable().ptr())) {
                             if (auto content_document = navigable->active_document())
-                                walk_tree(*content_document);
+                                trees_to_enter.append(*content_document);
                         }
                     }
                 } else if (auto* text = as_if<Web::DOM::Text>(node)) {
@@ -3641,11 +3669,8 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                     if (data_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive))
                         append_match(node);
                 }
-
-                for (auto* child = node.first_child(); child && matches.size() < 250; child = child->next_sibling())
-                    walk_tree(*child);
-            };
-            walk_tree(*document);
+                return IterationDecision::Continue;
+            });
         }
 
         JsonObject out;
@@ -4038,8 +4063,12 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
         HashTable<String> fonts;
         JsonArray issues;
 
-        Function<void(Web::DOM::Node&)> audit_walk = [&](Web::DOM::Node& node) {
+        // The page may have changed since its style was last computed; an element it just added has none yet.
+        document->update_style();
+        walk_inspected_trees(*document, [&](Web::DOM::Node& node, auto& trees_to_enter) {
             if (auto* element = as_if<Web::DOM::Element>(node)) {
+                if (auto shadow = element->shadow_root(); shadow && !shadow->is_user_agent_internal())
+                    trees_to_enter.append(*shadow);
                 ++element_count;
                 if (auto computed = element->computed_style()) {
                     if (colors.size() < 40)
@@ -4073,10 +4102,8 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                     }
                 }
             }
-            for (auto* child = node.first_child(); child; child = child->next_sibling())
-                audit_walk(*child);
-        };
-        audit_walk(*document);
+            return IterationDecision::Continue;
+        });
 
         auto set_to_json = [](HashTable<String> const& set) {
             JsonArray arr;

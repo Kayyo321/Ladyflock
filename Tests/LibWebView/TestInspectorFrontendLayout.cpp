@@ -971,6 +971,29 @@ TEST_CASE(inspector_edits_a_sheet_two_shadow_trees_share)
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(1, 1, 1)/rgb(2, 2, 2)"sv);
 }
 
+// The CSS overview reads the page as it is now, shadow trees included, even while the page is not rendering.
+TEST_CASE(inspector_css_overview_reads_current_styles)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorCssOverview"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+
+    // NB: A hidden page has no rendering updates, so nothing but the audit brings the new element's style up to date.
+    fixture.target->set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
+    run_in_target(*fixture.target, R"JS(
+        const added = document.createElement("b");
+        added.style.color = "rgb(7, 8, 9)";
+        document.body.append(added);
+        document.title = "Added " + document.getElementsByTagName("*").length;
+    )JS"sv, "Added "sv);
+    expect_holds(*fixture.frontend, "The audit counts and colors every element"sv, R"JS(
+        const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const audit = await sendEngineCommand("runCssOverviewAudit");
+        const colors = audit?.colors || [];
+        return colors.includes("rgb(7, 8, 9)") && colors.includes("rgb(1, 1, 1)") ? null : audit;
+    )JS"sv);
+}
+
 // Answers every request on the loopback interface with the same small page.
 class TestPageServer {
 public:
