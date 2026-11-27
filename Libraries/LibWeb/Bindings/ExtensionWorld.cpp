@@ -761,33 +761,27 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
     Optional<size_t> message_index;
     if (ns_name == "runtime"sv && method_name == "sendMessage"sv) {
         // Firefox's forms: (message), (extensionId, message), (message, options) and (extensionId, message, options).
-        // As in Firefox, two arguments are a message and options when the second is nullish or valid options, which
-        // have no keys other than toProxyScript.
-        JS::Value extension_id = JS::js_undefined();
+        // As in Firefox, valid options are nullish or an object with no keys, and two arguments are a message and
+        // options when the second is valid options.
         auto are_options = [&](JS::Value value) -> JS::ThrowCompletionOr<bool> {
             if (value.is_nullish())
                 return true;
             if (!value.is_object())
                 return false;
-            auto keys = TRY(value.as_object().internal_own_property_keys());
-            for (auto const& key : keys) {
-                if (!key.is_string() || key.as_string().utf16_string() != u"toProxyScript"sv)
-                    return false;
-            }
-            return true;
+            return TRY(value.as_object().enumerable_own_property_names(JS::Object::PropertyKind::Key)).is_empty();
         };
-        if (arguments.size() == 2 && TRY(are_options(arguments[1]))) {
-            arguments.take_last();
-        } else if (arguments.size() == 2) {
-            extension_id = arguments.take_first();
-        } else if (arguments.size() == 3 || (arguments.size() == 4 && arguments[3].is_nullish())) {
-            extension_id = arguments[0];
-            arguments = { arguments[1] };
-        }
-        if (arguments.size() != 1)
+        if (arguments.size() == 1 || (arguments.size() == 2 && TRY(are_options(arguments[1]))))
+            arguments.prepend(JS::js_null());
+        if (arguments.size() < 2 || arguments.size() > 4 || (arguments.size() == 4 && !arguments[3].is_nullish()))
             return vm.throw_completion<JS::TypeError>("Expected a message for this extension"_utf16);
+        if (arguments.size() > 2 && !TRY(are_options(arguments[2])))
+            return vm.throw_completion<JS::TypeError>("runtime.sendMessage's options argument is invalid"_utf16);
+        auto extension_id = arguments[0];
+        if (extension_id.to_boolean() && !extension_id.is_string())
+            return vm.throw_completion<JS::TypeError>("runtime.sendMessage's extensionId argument is invalid"_utf16);
+        arguments = { arguments[1] };
         // Ladyflock delivers messages within an extension only, so another extension never answers.
-        if (!extension_id.is_nullish() && (!extension_id.is_string() || extension_id.as_string().utf16_string().to_utf8() != m_extension_id)) {
+        if (extension_id.to_boolean() && extension_id.as_string().utf16_string().to_utf8() != m_extension_id) {
             WebIDL::reject_promise(*m_realm, *promise, JS::Error::create(*m_realm, "Could not establish connection. Receiving end does not exist."_utf16));
             return promise->promise();
         }

@@ -645,11 +645,15 @@ TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
             const plain = await browser.tabs.sendMessage(tabId, 'to-content');
             const missingFrame = await browser.tabs.sendMessage(tabId, 'to-content', { frameId: 99 }).then(() => 'answered', error => error.message);
             const other = await browser.runtime.sendMessage('other@example.test', 'ping', {}).then(() => 'answered', error => error.message);
+            // Options with a key aren't valid options, so the string is another extension's ID.
+            const otherByOptions = await browser.runtime.sendMessage('other@example.test', { ping: true }).then(() => 'answered', error => error.message);
+            let badOptions;
+            try { browser.runtime.sendMessage(browser.runtime.id, 'ping', { toProxyScript: true }); } catch (error) { badOptions = error.message; }
             const port = browser.runtime.connect(undefined, { name: 'sync' }).name;
             const enums = [browser.tabs.TabStatus.LOADING, browser.webRequest.ResourceType.CSP_REPORT,
                 browser.webRequest.OnBeforeSendHeadersOptions.REQUESTHEADERS, typeof browser.webNavigation.onTabReplaced.addListener,
                 typeof browser.menus.onShown.addListener, typeof browser.menus.onHidden.addListener].join(',');
-            await browser.storage.local.set({ forms, top, plain, missingFrame, other, port, enums, done: true });
+            await browser.storage.local.set({ forms, top, plain, missingFrame, other, otherByOptions, badOptions, port, enums, done: true });
         }
     )"sv);
     write_file(directory, "content.js"sv, R"(
@@ -694,6 +698,8 @@ TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
     EXPECT_EQ(results.get_string("plain"sv).value_or({}), "from-content"sv);
     EXPECT_EQ(results.get_string("missingFrame"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
     EXPECT_EQ(results.get_string("other"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
+    EXPECT_EQ(results.get_string("otherByOptions"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
+    EXPECT_EQ(results.get_string("badOptions"sv).value_or({}), "runtime.sendMessage's options argument is invalid"sv);
     EXPECT_EQ(results.get_string("port"sv).value_or({}), "sync"sv);
     EXPECT_EQ(results.get_string("enums"sv).value_or({}), "loading,csp_report,requestHeaders,function,function,function"sv);
     EXPECT(server.request_count() > 0);
