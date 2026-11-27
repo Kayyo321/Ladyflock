@@ -2,15 +2,15 @@
 
 This document records which Firefox extensions Ladyflock can run, how that was measured, what each API does here, and what is still missing. Everything here was checked against the 100 most-used extensions on Mozilla Add-ons as of 26 November 2026, downloaded as their signed packages.
 
-**Bottom line.** 63 of the 100 now pass Ladyflock's install check. Before this work about 15 did, by a script that applied the earlier rules; the earlier check itself wasn't run. All 63 load, and 32 of them start with no error at all. 8 more report only errors that Firefox would give under the same test, mostly because the test refuses network access. The other 23 run into a gap listed in section 5, or an error not yet explained.
+**Bottom line.** 63 of the 100 now pass Ladyflock's install check. Before this work about 15 did, by a script that applied the earlier rules; the earlier check itself wasn't run. All 63 load, and 33 of them start with no error at all, though five of those register request-header changes that Ladyflock doesn't make. 9 more report only errors that Firefox would give under the same test, mostly because the test refuses network access. The other 21 run into a gap listed in section 5, or an error not yet explained.
 
 **Starting without an error does not mean an extension works.** Nothing here signed in, synced, or used an extension's features past its first screen.
 
 | | Before | After |
 |---|---|---|
 | Pass the install check (manifest and packaged rulesets) | about 15 | 63 |
-| Start with no error (background, popup, a page with a sign-in form) | not measured | 32 of 63 |
-| Start with only the errors Firefox would also give here | not measured | 8 more |
+| Start with no error (background, popup, a page with a sign-in form) | not measured | 33 of 63 |
+| Start with only the errors Firefox would also give here | not measured | 9 more |
 | Crash the browser or the tab when started | not measured | 0 (two crashes found and fixed, section 3) |
 
 ## 1. How Ladyflock decides to install an extension
@@ -25,7 +25,7 @@ This document records which Firefox extensions Ladyflock can run, how that was m
 
 ## 2. What each new API does
 
-Each row is covered by a test in `Tests/LibWebView/TestExtensionCompat.cpp`, `TestExtensionRuntime.cpp` or `Tests/LibWeb/TestWebExtensions.cpp`.
+Rows are covered by tests in `Tests/LibWebView/TestExtensionCompat.cpp`, `TestExtensionRuntime.cpp` or `Tests/LibWeb/TestWebExtensions.cpp`, except where a row says otherwise.
 
 | API | Behaviour in Ladyflock | Limits |
 |---|---|---|
@@ -33,21 +33,22 @@ Each row is covered by a test in `Tests/LibWebView/TestExtensionCompat.cpp`, `Te
 | `runtime.getBrowserInfo` | `name` and `vendor` are `"Ladyflock"`. `version` is `156.0`, the Firefox release whose WebExtensions behaviour Ladyflock follows. | An extension that branches on `name === "Firefox"` takes its other path. In the corpus, only Privacy Badger does, to choose a help link. See also the user agent in section 5. |
 | `runtime.onStartup`, `onSuspend`, `onMessageExternal`, `onConnectExternal`, enums | Events and constants as in Firefox. | Ladyflock has no messaging between extensions, so the external events never fire. |
 | `runtime.setUninstallURL`, `runtime.reload` | The URL, which must be http or https, opens when the extension is removed. `reload` disables and re-enables the extension. | — |
-| `runtime.sendMessage`, `tabs.sendMessage`, `runtime.connect` | Every form Firefox accepts: with or without an extension ID and options, and with a callback in either namespace. `tabs.sendMessage` with `frameId` reaches that frame. | A message to another extension fails with Firefox's `Could not establish connection. Receiving end does not exist.` Without `frameId`, `tabs.sendMessage` reaches only the top-level frame. |
-| `extension.getBackgroundPage`, `runtime.getBackgroundPage` | From the background page, its own window. | **From any other page they throw.** Ladyflock's extension pages run apart from the background page, so they can't reach its window. `extension.getViews` is missing. |
-| Cross-origin requests from extension pages | As in Firefox, an extension's own page may read responses from hosts it has access to, without CORS and without a preflight. The browser decides from the current grants, so withdrawing a host takes effect at once. | Content scripts and web pages are unchanged. Mixed-content blocking still applies, so an extension page can't fetch plain `http:` from a remote host. |
+| `runtime.sendMessage`, `tabs.sendMessage`, `runtime.connect` | Every form Firefox accepts: with or without an extension ID and options, and with a callback in either namespace. As in Firefox, two arguments are a message and options when the second is nullish or valid options, and otherwise an extension ID and a message. `tabs.sendMessage` with `frameId` reaches that frame. | A message to another extension fails with Firefox's `Could not establish connection. Receiving end does not exist.` Without `frameId`, `tabs.sendMessage` reaches only the top-level frame. |
+| `extension.getBackgroundPage`, `runtime.getBackgroundPage` | On the background page, its own window. NordPass uses this to learn it is the background page. | **Other pages don't have them**: Ladyflock's extension pages run apart from the background page, so they can't reach its window. Bitwarden, Norton and Violentmonkey check for them and send messages instead. `extension.getViews` is missing. |
+| Cross-origin requests from extension pages | As in Firefox, an extension's own page may read responses from hosts it has access to, without CORS and without a preflight. The browser decides from the current grants, so withdrawing a host takes effect at once. A redirect to a host the extension may not access is not readable. | **No cookie goes with these requests**, even with `credentials: 'include'`, because each is third-party to the site. Whether Firefox sends the site's cookie there is unconfirmed. Content scripts are unchanged, though in Manifest V2 Firefox gives them the extension's cross-origin access. Mixed-content blocking still applies, so an extension page can't fetch plain `http:` from a remote host. |
 | `storage.sync` | Kept on this device, in its own table, under Firefox's sync quotas: 100 KiB in total, 8 KiB per item, 512 items. This is what Firefox does when it isn't signed in. | Never leaves the device. |
 | `storage.managed` | Rejects with Firefox's `Managed storage manifest not found`. | No enterprise policy for extensions. |
 | `storage.<area>.onChanged` | Each area's own event. | — |
+| Packaged files | Served with the type their extension names, including `application/wasm`, so WebAssembly can compile as it streams in. | — |
 | Content scripts: `runtime.getManifest`, `i18n`, `extension.getURL` | Content scripts now see their real manifest and messages; before, `getManifest()` returned `{}` and `i18n` was missing. | — |
 | `content_scripts` `world: "MAIN"` | Runs in the page's own realm, without extension APIs, including at `document_start` before the page's first script. | `scripting.executeScript` with `world: "MAIN"` is still refused. |
-| `tabs.executeScript`, `tabs.insertCSS`, `tabs.removeCSS`, `scripting` with `allFrames` | Reaches the top-level frame and each other frame the extension may access. Results come back in frame order; the first frame's error fails the call. | Frames the extension may not access are skipped, as in Firefox. |
+| `tabs.executeScript`, `tabs.insertCSS`, `tabs.removeCSS`, `scripting` with `allFrames` | Reaches the top-level frame and each other frame the extension may access. Results come back in frame order; the first frame's error fails the call. | Frames the extension may not access are skipped, as in Firefox. The `scripting` form shares the code but has no test of its own. |
 | `management.getSelf`, `uninstallSelf`; with the permission, `getAll`, `get` and events | As in Firefox. | `uninstallSelf({showConfirmDialog: true})` declines, as Firefox does when the user cancels, since there is no dialog. |
 | `windows.get`, `getAll`, `getLastFocused`, `create`, `onCreated`, `onRemoved` | `create` opens the URL, or the extension's own page, in a new normal window and resolves with it. | Every window is `normal`: `type: "popup"`, size and position are not applied. No `windows.update` or `remove`. |
 | `tabs.getCurrent`, `tabs.onReplaced`, `tabs.onHighlighted`, tabs enums | `getCurrent` is the tab an extension page is shown in. Ladyflock highlights only the active tab, so `onHighlighted` fires with `onActivated`. `TabStatus`, `WindowType` and the other enums are Firefox's. | Ladyflock never replaces a tab's page, so `onReplaced` never fires. |
 | `webNavigation.onTabReplaced` | Present. | Never fires, for the same reason. |
 | `webRequest` options and resource types | The `extraInfoSpec` options Firefox accepts for each event, including `responseHeaders` on `onResponseStarted`, `onBeforeRedirect` and `onCompleted`, which now carry the headers. All of Firefox's resource types and options enums. | `requestBody` is accepted, but the details have no request body. |
-| `webRequest.onBeforeSendHeaders` | Fires before each request with its headers, when asked for `requestHeaders`. | **A blocking listener can't change the headers.** What it returns has no effect, and the extension's console says so. Decentraleyes, Ghostery's Global Privacy Control, Greasemonkey, LastPass and Proton Pass listen to it. Their other features start, but these header changes don't happen. |
+| `webRequest.onBeforeSendHeaders` | Fires before each request with its headers, when asked for `requestHeaders`. | **A blocking listener can't change the headers.** What it returns has no effect, and the extension's console warns. In the corpus, AdBlocker Ultimate, AdGuard, Decentraleyes, Ghostery, Greasemonkey, LastPass, Privacy Badger and Proton Pass register such a listener at startup. Their other features start, but these header changes don't happen. |
 | `action.setIcon`, `browserAction.setIcon` | A relative path is relative to the calling page, as in Firefox. | The toolbar draws bitmaps from the package only. An SVG path or `imageData` succeeds but leaves the current icon. `setBadgeTextColor` is missing. |
 | `notifications` | Shown through the system's notifications, under the extension's name. `onShown`, `onClicked` and `onClosed` (with `byUser`) come from the platform. | Every template shows as `basic`, as in Firefox. No icon yet. |
 | `idle` | From the system's idle time and screen lock, on macOS. `onStateChanged` is checked every 5 seconds. | **Elsewhere the system always counts as active**, so an auto-lock that waits for idle or for the screen to lock never fires. |
@@ -71,7 +72,7 @@ Extensions run only in the default profile, so none of these APIs reaches a priv
 
 - `cookies` and `downloads` see only the default profile's data.
 - Native hosts are not started.
-- The CORS exemption applies only to the extension's own documents, which the browser identifies. It never applies to its content scripts. Requests still go through the profile's network routing, including proxy-only mode.
+- The CORS exemption applies only to the extension's own documents, which the browser identifies. It never applies to its content scripts. It sends no cookies. Requests still go through the profile's network routing.
 - Request headers can't be changed by extensions.
 - `proxy`, `contextualIdentities` and `browsingData` are still refused. Each would interact with identity routing or purge, so each needs its own policy first.
 
@@ -85,6 +86,9 @@ Extensions run only in the default profile, so none of these APIs reaches a priv
 | API errors reached extensions wrapped in JSON quotes, as `"\"No such …\""`. | Extensions that match error text misread every error. | Plain messages. |
 | `idle.onStateChanged` compared the new state with itself. | It never fired. | Found by its test before shipping. |
 | The first CORS exemption read the scheme of an opaque origin. | Any `about:blank` or sandboxed page's fetch would have crashed the renderer. | Found by the full `TestLibWebView` run before it was committed. |
+| Packaged `.wasm` files were served as `application/octet-stream`. | Streaming WebAssembly compilation failed, as for Webroot Web Threat Shield. | Served as `application/wasm`. |
+| A first `getBackgroundPage` threw from popups. | Bitwarden, Norton and Violentmonkey, which check for it and otherwise send messages, broke. | Found by the corpus run; only the background page has it now. |
+| The `onBeforeSendHeaders` warning went to the debug log only. | The extension's console didn't say its header changes had no effect. | It now uses the console's `warn`, and a test checks the background page's console. |
 
 ## 4. The corpus
 
@@ -150,7 +154,7 @@ The results, extension by extension, are in [corpus-results.md](corpus-results.m
 
 Roughly in order of how many of the top 100 each holds back:
 
-1. **Changing request headers.** This covers `declarativeNetRequest` `modifyHeaders` with `requestHeaders`, and what a blocking `webRequest.onBeforeSendHeaders` returns. It blocks 1Password's install and leaves header features inert in five extensions that start. The decision has to reach the request before `ResourceLoader::load` in `Fetching.cpp`.
+1. **Changing request headers.** This covers `declarativeNetRequest` `modifyHeaders` with `requestHeaders`, and what a blocking `webRequest.onBeforeSendHeaders` returns. It blocks 1Password's install, and leaves header changes undone in eight extensions that start. The decision has to reach the request before `ResourceLoader::load` in `Fetching.cpp`.
 2. **The user agent names Chrome.** Ladyflock's default user agent ends in `Chrome/… Safari/…`, so an extension that checks `navigator.userAgent` for `Firefox/` takes its Chrome path. Malwarebytes then adds rules with Chrome-only resource types, which fail. Firefox APIs plus a Chrome user agent is a combination no extension is tested against. Whether extension pages should report Firefox's user agent is a product decision still to make.
 3. **`identity`** (8 refused): `getRedirectURL` and `launchWebAuthFlow`, for Grammarly, MetaMask and others.
 4. **`proxy`** (7 refused, mostly VPNs): deliberately refused until it can be bounded by the managed policy and kept out of Tor identities.
@@ -168,7 +172,9 @@ Roughly in order of how many of the top 100 each holds back:
     - `privacy.network` (AdGuard)
     - `document_start` scripts run before the `<html>` element exists (Malwarebytes)
     - `runtime.getContexts`, `tabs.captureVisibleTab` and keyboard shortcuts for commands
-    - Whether Firefox exempts extension pages from mixed-content blocking is unconfirmed.
+    - Content scripts' cross-origin access, which Firefox gives Manifest V2 content scripts
+    - Proton VPN once found no browser window when the full corpus ran, and not when started alone. Whether a real startup can hit this is open.
+    - Whether Firefox exempts extension pages from mixed-content blocking, and whether it sends cookies with their cross-origin reads, is unconfirmed.
 
 ## 6. How to repeat this
 
