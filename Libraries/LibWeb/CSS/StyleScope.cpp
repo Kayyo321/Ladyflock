@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/JsonObject.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf16StringBuilder.h>
 #include <LibCore/EventLoop.h>
@@ -314,12 +313,8 @@ void StyleScope::build_user_style_sheet_if_needed()
             continue;
         auto sheet = parse_css_stylesheet(CSS::Parser::ParsingParams(doc), entry.css.bytes_as_string_view());
         String label = entry.extension_id;
-        if (auto metadata = Extensions::ExtensionContentScriptHost::extension_metadata(entry.extension_id); metadata.has_value()) {
-            if (auto parsed = JsonValue::from_string(metadata->manifest_json); !parsed.is_error() && parsed.value().is_object()) {
-                if (auto name = parsed.value().as_object().get_string("name"sv); name.has_value() && !name->is_empty() && !name->starts_with_bytes("__MSG_"sv))
-                    label = *name;
-            }
-        }
+        if (auto metadata = Extensions::ExtensionContentScriptHost::extension_metadata(entry.extension_id); metadata.has_value() && !metadata->display_name.is_empty())
+            label = metadata->display_name;
         sheet->set_attribution(StyleSheetState::AttributionKind::Extension, entry.extension_id, move(label));
         m_user_style_sheets.append(move(sheet));
     }

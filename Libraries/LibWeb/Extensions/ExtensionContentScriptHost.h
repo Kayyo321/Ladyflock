@@ -32,6 +32,9 @@ public:
     struct ExtensionMetadata {
         String manifest_json;
         String locale_messages_json;
+        // The name the manifest gives the extension, read once here rather than each time a document rebuilds its
+        // style sheets; empty when the manifest names it through a message (__MSG_name__).
+        String display_name;
     };
     static void set_extension_metadata(String extension_id, String manifest_json, String locale_messages_json);
     static Optional<ExtensionMetadata const&> extension_metadata(StringView extension_id);
