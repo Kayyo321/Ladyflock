@@ -857,6 +857,14 @@ body.splitter-dragging {
     z-index: 2;
 }
 
+.pane-toolbar-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .pane-toolbar input[type="search"],
 .pane-toolbar input[type="text"] {
     flex: 1;

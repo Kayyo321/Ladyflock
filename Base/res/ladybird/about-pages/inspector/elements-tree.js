@@ -355,6 +355,8 @@ export class ElementsTreeController {
             return;
         }
         this.renderDeferred = false;
+        // Rebuilding the rows must not move the tree: a page that keeps mutating re-renders it many times a second.
+        const { scrollTop, scrollLeft } = this.treeEl;
         this.treeEl.removeAttribute("aria-activedescendant");
         this.treeEl.textContent = "";
         if (!this.rootNode) {
@@ -439,6 +441,8 @@ export class ElementsTreeController {
         }
 
         this.treeEl.appendChild(frag);
+        this.treeEl.scrollTop = scrollTop;
+        this.treeEl.scrollLeft = scrollLeft;
     }
 
     renderRowContent(rowEl, node, showEllipsis) {

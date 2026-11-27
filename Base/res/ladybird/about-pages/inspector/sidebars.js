@@ -588,7 +588,7 @@ export class SidebarsController {
         root.appendChild(el(
             "div",
             { class: "pane-toolbar" },
-            el("span", { class: "muted", text: "Properties of the selected element ($0) and its prototypes" }),
+            el("span", { class: "muted pane-toolbar-label", text: "$0 and its prototypes" }),
             el("button", { class: "chip-btn", type: "button", text: "Refresh", onClick: () => this.loadProperties() })
         ));
 

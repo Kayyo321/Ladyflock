@@ -176,11 +176,12 @@ class InspectorApp {
             this.enableMenuKeyboard(document.getElementById(menuId));
         window.addEventListener("resize", () => this.hideContextMenu());
         window.addEventListener("blur", () => this.hideContextMenu());
-        document.addEventListener("scroll", e => {
-            // Strips scroll themselves to reveal the selection; only a scroll the person makes dismisses the menu.
-            if (!e.target.closest?.("#context-menu, .dom-breadcrumbs, .panel-tabs, .sidebar-tabs, .drawer-tabs"))
+        // Scrolling elsewhere dismisses the menu. A wheel, not a scroll event: panes also scroll when their content
+        // changes, as the Styles pane does when the menu's own right-click selects another element.
+        document.addEventListener("wheel", e => {
+            if (!e.target.closest?.("#context-menu"))
                 this.hideContextMenu();
-        }, true);
+        }, { capture: true, passive: true });
         document.getElementById("btn-settings-close").addEventListener("click", () => document.getElementById("settings-dialog").close());
     }
 
@@ -929,7 +930,11 @@ class InspectorApp {
                 return;
             e.preventDefault();
             pointerId = e.pointerId;
-            splitter.setPointerCapture(e.pointerId);
+            try {
+                splitter.setPointerCapture(e.pointerId);
+            } catch {
+                // A pointer that is no longer down cannot be captured; the drag still follows it over the splitter.
+            }
             splitter.classList.add("dragging");
             document.body.classList.add("splitter-dragging");
             // The pointer keeps the resize cursor when it outruns the thin splitter.
