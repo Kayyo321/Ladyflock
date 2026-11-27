@@ -889,7 +889,8 @@ constexpr auto edits_html = R"HTML(<!doctype html><title>Edits</title>
 
 constexpr FixturePage edits_fixture { edits_html, "Edits ready"sv, 10 };
 
-// An edit names what the Inspector showed, and leaves alone what the page has changed since.
+// An edit names what the Inspector showed, and leaves alone what the page has changed since. An edit that changes
+// nothing, such as a selector retyped with other spacing, succeeds without an entry in Changes.
 TEST_CASE(inspector_edits_check_what_they_replace)
 {
     Test::HeadlessTestEnvironment environment { "TestInspectorEditChecks"sv };
@@ -918,6 +919,26 @@ TEST_CASE(inspector_edits_check_what_they_replace)
     )JS"sv);
     run_in_target(*fixture.target, R"JS(document.title = "Edited:" + document.getElementById("para").textContent + "," + document.getElementById("labelled").dataset.x;)JS"sv, "Edited:"sv);
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Edited:Edited,two"sv);
+
+    expect_holds(frontend, "An equivalent selector applies quietly, and an invalid one is refused"sv, R"JS(
+        const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const outcome = promise => promise.then(result => result?.conflict ? "conflict" : "applied", error => error.message);
+        const ruleFor = () => app.stylesPane.rules.find(r => (r.selectors || []).includes("div > p"));
+        const para = await select(n => n.attributes?.id === "para", () => ruleFor());
+        const rule = ruleFor();
+        const entries = () => (app.drawers.editJournal.entries || []).length;
+        await frames();
+        const before = entries();
+        const command = (selectorText, revision) => sendEngineCommand("editStyleRuleSelector", { nodeId: para.id, ruleIdentity: rule.ruleIdentity, sheetId: rule.sheetId, baseRevision: revision, selectorText });
+        const results = {
+            equivalent: await outcome(command("div>p", rule.sheetRevision)),
+            invalid: await outcome(command("div >", undefined)),
+        };
+        await frames();
+        results.newEntries = entries() - before;
+        const expected = { equivalent: "applied", invalid: "The selector could not be changed.", newEntries: 0 };
+        return JSON.stringify(results) === JSON.stringify(expected) ? null : results;
+    )JS"sv);
 }
 
 // Answers every request on the loopback interface with the same small page.

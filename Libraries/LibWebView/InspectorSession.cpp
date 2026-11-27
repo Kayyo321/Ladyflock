@@ -1848,7 +1848,13 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
             auto self = weak_this.strong_ref();
             if (!self || generation != self->m_document_generation)
                 return;
-            if (ok && (edits_style || edits_dom) && result.is_object() && !result.as_object().get_bool("conflict"sv).value_or(false)) {
+            // An edit that changed nothing, such as a selector retyped with other spacing, has nothing to list or undo.
+            auto changed_nothing = [](JsonObject const& edit) {
+                return !edit.has("inverse"sv) && edit.get_string("beforeText"sv).has_value()
+                    && edit.get_string("beforeText"sv) == edit.get_string("afterText"sv);
+            };
+            if (ok && (edits_style || edits_dom) && result.is_object() && !result.as_object().get_bool("conflict"sv).value_or(false)
+                && !changed_nothing(result.as_object())) {
                 auto const& edit = result.as_object();
                 EditJournalEntry entry;
                 entry.request_id = request_id;

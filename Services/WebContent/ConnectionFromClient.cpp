@@ -3474,9 +3474,13 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             reply_err("The rule's selector changed since this edit."_string);
             return;
         }
+        // A selector that parses replaces the rule's and marks the rule's sheet edited, even when it serializes as
+        // the old one did (div>p for div > p); one that does not parse leaves both as they were.
+        auto* rule_sheet = style_rule.parent_style_sheet();
+        auto revision_before_change = rule_sheet ? rule_sheet->edit_revision() : 0;
         auto selector_u16 = Utf16String::from_utf8(selector_text);
         style_rule.set_selector_text(selector_u16.utf16_view());
-        if (style_rule.selector_text().to_utf8() == before && before != selector_text) {
+        if (!rule_sheet || rule_sheet->edit_revision() == revision_before_change) {
             reply_err("The selector could not be changed."_string);
             return;
         }
