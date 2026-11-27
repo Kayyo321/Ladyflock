@@ -112,7 +112,10 @@ fn paint_box_model_highlight<O: Observer>(
     let viewport = recorder.viewport;
     let moves_with_root_scroller = recorder.source.paintable_row_is_populated(viewport)
         && recorder.data(paintable).accumulated_visual_context.spatial
-            == recorder.data(viewport).accumulated_visual_context_for_descendants.spatial;
+            == recorder
+                .data(viewport)
+                .accumulated_visual_context_for_descendants
+                .spatial;
     if moves_with_root_scroller {
         if size_text_rect.y + size_text_rect.height > viewport_rect.y + viewport_rect.height {
             size_text_rect.y = border_rect.y - label_h - CssPixels::from_integer(4);

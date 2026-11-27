@@ -297,21 +297,20 @@ void InspectorHost::apply_dock_layout()
             m_undocked_window = new QWidget(nullptr, Qt::Window);
             auto* focus_chrome = new QShortcut(QKeySequence(Qt::Key_F6), m_undocked_window);
             connect(focus_chrome, &QShortcut::activated, this, &InspectorHost::focus_target_chrome_requested);
-            m_undocked_window_actions = add_undocked_window_shortcuts(*m_undocked_window,
-                {
-                    .close_inspector = [host = QPointer(this)] {
-                        if (host)
-                            host->close_inspector();
-                    },
-                    .toggle_picker = [host = QPointer(this)] {
-                        if (host)
-                            HubConnection::the().async_view_inspector_toggle_picker(host->m_content_view.view_id());
-                    },
-                    .open_console = [host = QPointer(this)] {
-                        if (host)
-                            host->open("console"_string);
-                    },
-                });
+            UndockedWindowCommands commands;
+            commands.close_inspector = [host = QPointer(this)] {
+                if (host)
+                    host->close_inspector();
+            };
+            commands.toggle_picker = [host = QPointer(this)] {
+                if (host)
+                    HubConnection::the().async_view_inspector_toggle_picker(host->m_content_view.view_id());
+            };
+            commands.open_console = [host = QPointer(this)] {
+                if (host)
+                    host->open("console"_string);
+            };
+            m_undocked_window_actions = add_undocked_window_shortcuts(*m_undocked_window, AK::move(commands));
             m_undocked_window->resize(960, 640);
             auto* win_layout = new QVBoxLayout(m_undocked_window);
             win_layout->setContentsMargins(0, 0, 0, 0);

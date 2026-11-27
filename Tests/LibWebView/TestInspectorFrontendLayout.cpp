@@ -967,7 +967,8 @@ TEST_CASE(inspector_edits_a_sheet_two_shadow_trees_share)
     run_in_target(*fixture.target, R"JS(
         const color = id => getComputedStyle(document.getElementById(id).shadowRoot.getElementById(id + "-item")).color;
         document.title = "Colors:" + color("first-host") + "/" + color("second-host");
-    )JS"sv, "Colors:"sv);
+    )JS"sv,
+        "Colors:"sv);
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(1, 1, 1)/rgb(2, 2, 2)"sv);
 }
 
@@ -985,7 +986,8 @@ TEST_CASE(inspector_css_overview_reads_current_styles)
         added.style.color = "rgb(7, 8, 9)";
         document.body.append(added);
         document.title = "Added " + document.getElementsByTagName("*").length;
-    )JS"sv, "Added "sv);
+    )JS"sv,
+        "Added "sv);
     expect_holds(*fixture.frontend, "The audit counts and colors every element"sv, R"JS(
         const { sendEngineCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
         const audit = await sendEngineCommand("runCssOverviewAudit");
