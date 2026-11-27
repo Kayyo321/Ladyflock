@@ -550,8 +550,11 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
         auto style = rule.type() == CSSRule::Type::Style
             ? static_cast<CSSStyleRule const&>(rule).style()
             : static_cast<CSSNestedDeclarations const&>(rule).style();
-        serialized_rule.set("authoredText"sv, style->serialized().to_utf8());
-        serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, declaration));
+        // The block stores longhands once the CSSOM has edited it. Its serialization folds them back into the
+        // shorthands they came from, so list what that says rather than every longhand.
+        auto serialized = style->serialized();
+        serialized_rule.set("authoredText"sv, serialized.to_utf8());
+        serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, parse_devtools_style_declarations(document, serialized.utf16_view())));
     }
     if (auto* sheet = rule.parent_style_sheet()) {
         if (sheet->owner_node() || sheet->owner_import() || sheet->constructed()) {

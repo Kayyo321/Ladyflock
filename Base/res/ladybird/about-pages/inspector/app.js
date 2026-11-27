@@ -370,8 +370,7 @@ class InspectorApp {
         this.sidebars.computedData = {};
         this.sidebars.layoutMetrics = {};
         this.sidebars.usedFonts = [];
-        this.stylesPane.cosmeticFilterDraft = null;
-        this.stylesPane.forcedStates.clear();
+        this.stylesPane.resetDocument();
         this.stylesPane.setRules([]);
         this.toolboxPanels.activeSource = null;
         this.toolboxPanels.activeSourceText = "";

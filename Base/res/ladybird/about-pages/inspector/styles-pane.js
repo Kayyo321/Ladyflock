@@ -50,6 +50,23 @@ export class StylesPaneController {
         this.expandedStories = new Set();
         this.openColorKey = null;
         this.lastSavedFilter = null;
+        // Turning a declaration off removes it from the rule, so the pane remembers it to draw it unchecked and to
+        // put it back when it is turned on again. Keyed by ruleKey().
+        this.disabledDeclarations = new Map();
+    }
+
+    ruleKey(rule) {
+        if (rule.type === 100)
+            return `inline:${rule.nodeId ?? rule.inheritedNodeId ?? this.app.state.selectedNodeId}`;
+        return rule.sheetId ? `${rule.sheetId}:${rule.ruleIdentity}` : null;
+    }
+
+    resetDocument() {
+        this.disabledDeclarations.clear();
+        this.forcedStates.clear();
+        this.cosmeticFilterDraft = null;
+        this.expandedStories.clear();
+        this.openColorKey = null;
     }
 
     setRules(appliedPayload) {
@@ -421,7 +438,18 @@ export class StylesPaneController {
                 container.appendChild(el("div", { class: "style-section-header", text: `Pseudo ::${pseudoTag} element` }));
             }
 
-            const decls = rule.declarations || [];
+            // Declarations turned off in this session come back as unchecked rows, unless the rule has one by that name
+            // again (an edit or the page put it back).
+            const ruleKey = this.ruleKey(rule);
+            const presentNames = new Set((rule.declarations || []).map(decl => decl.name));
+            const disabled = ruleKey ? (this.disabledDeclarations.get(ruleKey) || []).filter(decl => !presentNames.has(decl.name)) : [];
+            if (ruleKey && this.disabledDeclarations.has(ruleKey)) {
+                if (disabled.length)
+                    this.disabledDeclarations.set(ruleKey, disabled);
+                else
+                    this.disabledDeclarations.delete(ruleKey);
+            }
+            const decls = [...(rule.declarations || []), ...disabled.map(decl => ({ ...decl, disabled: true }))];
             const selectorLabel = rule.type === 100
                 ? "element.style"
                 : (rule.selectors || []).join(", ") || rule.selectorText || "(rule)";
@@ -493,6 +521,7 @@ export class StylesPaneController {
                 const declRow = el("div", {
                     class: [
                         "decl-row",
+                        isDisabled ? "disabled" : "",
                         isOverridden ? "overridden" : "",
                         !isValid ? "invalid" : "",
                         inactiveReason ? "inactive" : "",
@@ -758,6 +787,7 @@ export class StylesPaneController {
     }
 
     async toggleDeclaration(rule, decl, declIdx, enabled) {
+        const ruleKey = this.ruleKey(rule);
         try {
             await sendEngineCommand("toggleStyleDeclaration", {
                 nodeId: rule.nodeId ?? rule.inheritedNodeId ?? this.app.state.selectedNodeId,
@@ -771,9 +801,20 @@ export class StylesPaneController {
                 value: decl.value,
                 enabled,
             });
+            if (ruleKey) {
+                const list = (this.disabledDeclarations.get(ruleKey) || []).filter(entry => entry.name !== decl.name);
+                if (!enabled)
+                    list.push({ name: decl.name, value: decl.value, priority: decl.priority || "", isValid: decl.isValid, isNameValid: decl.isNameValid });
+                if (list.length)
+                    this.disabledDeclarations.set(ruleKey, list);
+                else
+                    this.disabledDeclarations.delete(ruleKey);
+            }
+            announce(`${enabled ? "Enabled" : "Disabled"} ${decl.name}`);
             this.app.refreshSelectedNodeProperties();
         } catch (err) {
             this.app.showToast(err.message);
+            this.render();
         }
     }
 

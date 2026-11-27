@@ -1000,6 +1000,16 @@ span.source-link {
     opacity: 0.55;
 }
 
+.decl-row.disabled .decl-text {
+    text-decoration: line-through;
+    color: var(--muted);
+    opacity: 0.7;
+}
+
+.decl-row.disabled .decl-text * {
+    color: inherit;
+}
+
 .decl-row.invalid .decl-text {
     text-decoration: line-through wavy var(--error);
     opacity: 0.7;
