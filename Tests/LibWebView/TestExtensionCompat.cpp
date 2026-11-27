@@ -681,3 +681,79 @@ TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
     EXPECT(server.request_count() > 0);
     EXPECT(!saw_ignored_header.load());
 }
+
+TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
+{
+    // Three origins on the loopback interface, none of which sends CORS headers: the page's, the API's (another
+    // port of the same host, which the extension may access), and one the extension may not access.
+    using Server = PrivacyTest::IndependentHTTPServer;
+    auto respond = [](StringView body) {
+        return ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.length(), body);
+    };
+    static Atomic<size_t> preflights { 0 };
+    Server api(Server::Protocol::HTTP, Server::Family::IPv4, [&](ByteString const& request_head) {
+        if (request_head.starts_with("OPTIONS "sv))
+            preflights.fetch_add(1);
+        return respond("secret"sv);
+    });
+    auto api_url = ByteString::formatted("http://127.0.0.1:{}/data", api.port());
+    Server other(Server::Protocol::HTTP, Server::Family::IPv6, [&](ByteString const&) { return respond("secret"sv); });
+    auto page_script = ByteString::formatted("<!DOCTYPE html><script>fetch('{}').then(r => r.text(), () => 'blocked').then(t => {{ document.title = 'page:' + t; }});</script>", api_url);
+    Server site(Server::Protocol::HTTP, Server::Family::IPv4, [&](ByteString const&) { return respond(page_script); });
+
+    Test::HeadlessTestEnvironment env { "TestExtCompatCORS"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "cors"sv).string();
+    write_file(directory, "urls.js"sv, ByteString::formatted("const api = '{}'; const other = 'http://[::1]:{}/data';", api_url, other.port()));
+    write_file(directory, "background.js"sv, R"(
+        const read = (url, init) => fetch(url, init).then(response => response.text(), () => 'blocked');
+        browser.runtime.onMessage.addListener(message => { browser.storage.local.set({ content: message.content }); });
+        (async () => {
+            const allowed = await read(api);
+            const unsafe = await read(api, { method: 'PUT', headers: { 'X-Custom': '1' } });
+            const unpermitted = await read(other);
+            await browser.storage.local.set({ allowed, unsafe, unpermitted, done: true });
+            // Keeps reading until the user withdraws the access.
+            const timer = setInterval(async () => {
+                if (await read(api) === 'blocked') {
+                    clearInterval(timer);
+                    browser.storage.local.set({ withdrawn: true });
+                }
+            }, 100);
+        })().catch(error => browser.storage.local.set({ error: String(error), done: true }));
+    )"sv);
+    write_file(directory, "content.js"sv, ByteString::formatted(R"(
+        fetch('{}').then(response => response.text(), () => 'blocked').then(content => browser.runtime.sendMessage({{ content }}));
+    )",
+                                              api_url));
+    // The background page gets the servers' addresses from urls.js.
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "CORS", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "cors@example.test"}},
+        "permissions": ["storage", "http://127.0.0.1/*"],
+        "background": {"scripts": ["urls.js", "background.js"]},
+        "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"]}]
+    })"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("allowed"sv).value_or({}), "secret"sv);
+    EXPECT_EQ(results.get_string("unsafe"sv).value_or({}), "secret"sv);
+    EXPECT_EQ(results.get_string("unpermitted"sv).value_or({}), "blocked"sv);
+    EXPECT_EQ(preflights.load(), 0u);
+
+    // Neither the page nor the extension's content script in it reads the API's responses.
+    app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/page", site.port())).release_value(), WebView::IsPrivate::No);
+    spin_until([&] { return !app->windows.is_empty() && app->windows.last()->title().to_utf8().starts_with_bytes("page:"sv); });
+    EXPECT_EQ(app->windows.last()->title().to_utf8(), "page:blocked"sv);
+    wait_for_results(manager, installed.extension_id, "content"sv);
+    EXPECT_EQ(manager.storage().get(installed.extension_id, {}).get_string("content"sv).value_or({}), "blocked"sv);
+
+    TRY_OR_FAIL(manager.set_site_access(installed.extension_id, true, "127.0.0.1"_string, false));
+    wait_for_results(manager, installed.extension_id, "withdrawn"sv);
+}

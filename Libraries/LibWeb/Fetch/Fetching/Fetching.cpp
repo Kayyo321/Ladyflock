@@ -649,6 +649,19 @@ void upgrade_request_to_https_for_known_hsts_host_if_appropriate(Page& page, Inf
     }
 }
 
+// The browser decides, since what the extension may access changes as the user grants and withdraws it.
+static bool extension_page_may_read_cross_origin(Infrastructure::Request const& request, URL::Origin const& origin)
+{
+    auto client = HTML::settings_object_of_fetch_client(resolve_fetch_client(request));
+    auto* window = client ? HTML::window_from_global_object(client->global_object()) : nullptr;
+    if (!window)
+        return false;
+    auto& document = window->associated_document();
+    if (!document.origin().is_same_origin(origin))
+        return false;
+    return document.page().client().page_did_request_extension_cross_origin_access(document.id(), request.current_url());
+}
+
 // https://fetch.spec.whatwg.org/#concept-main-fetch
 GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, Recursive recursive)
 {
@@ -785,6 +798,15 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm& realm, Infrastructure::FetchParam
 
             // NOTE: HTML assigns any documents and workers created from URLs whose scheme is "data" a unique
             //       opaque origin. Service workers can only be created from URLs whose scheme is an HTTP(S) scheme.
+        }
+
+        // AD-HOC: As in Firefox, an extension's own page may read responses from the hosts the extension has access to,
+        //         so its cross-origin request to one of them is fetched as a same-origin request would be.
+        if (origin && !origin->is_opaque() && origin->scheme() == "moz-extension"sv && request->mode() == Infrastructure::Request::Mode::CORS
+            && Infrastructure::is_http_or_https_scheme(request->current_url().scheme())
+            && extension_page_may_read_cross_origin(*request, *origin)) {
+            request->set_response_tainting(Infrastructure::Request::ResponseTainting::Basic);
+            return scheme_fetch(realm, *fetch_params);
         }
 
         // -> request’s mode is "same-origin"

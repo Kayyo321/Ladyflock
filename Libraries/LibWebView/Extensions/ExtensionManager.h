@@ -172,6 +172,8 @@ public:
     void clear_active_tab(u64 tab_id);
     void clear_tab_grants_on_navigation(u64 tab_id);
     bool has_host_permission(StringView extension_id, URL::URL const& url, Optional<u64> tab_id = {}) const;
+    // As in Firefox, an extension's own pages may read responses from the hosts the extension has access to.
+    bool extension_page_may_read_cross_origin(WebContentClient&, Web::PageId, Web::HTML::CrossProcessId document_id, URL::URL const&) const;
 
     // Pre-activation content scripts & world revocation.
     void attach_content_scripts_for_document(WebContentPage&, CanonicalNavigable const&, CanonicalDocument&, URL::URL const& document_url) const;

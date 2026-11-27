@@ -280,6 +280,7 @@ private:
     virtual void gamepad_stop_effects(Web::Gamepad::GamepadHandle handle) override;
 
     virtual Messages::WebContentClient::DidRequestExtensionResourceResponse did_request_extension_resource(Web::PageId, URL::URL, Web::HTML::CrossProcessId) override;
+    virtual Messages::WebContentClient::DidRequestExtensionCrossOriginAccessResponse did_request_extension_cross_origin_access(Web::PageId, Web::HTML::CrossProcessId document_id, URL::URL) override;
     virtual void did_call_extension_api(Web::PageId, u64 call_id, String extension_id, Web::Extensions::ContextType, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json) override;
     virtual void did_reply_extension_event(Web::PageId, u64 reply_id, bool has_value, String result_json) override;
     virtual void did_finish_extension_script_execution(Web::PageId, u64 call_id, bool success, String result_or_error_json) override;

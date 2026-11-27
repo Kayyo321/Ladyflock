@@ -1510,6 +1510,13 @@ Messages::WebContentClient::DidRequestExtensionResourceResponse WebContentClient
     return m_session->extension_manager->serve_resource(url, document->origin());
 }
 
+Messages::WebContentClient::DidRequestExtensionCrossOriginAccessResponse WebContentClient::did_request_extension_cross_origin_access(Web::PageId page_id, Web::HTML::CrossProcessId document_id, URL::URL url)
+{
+    if (is_private() == IsPrivate::Yes || !m_session->extension_manager)
+        return false;
+    return m_session->extension_manager->extension_page_may_read_cross_origin(*this, page_id, document_id, url);
+}
+
 void WebContentClient::did_call_extension_api(Web::PageId page_id, u64 call_id, String extension_id, Web::Extensions::ContextType context_type, Web::HTML::CrossProcessId document_id, u64 grant_generation, String namespace_name, String method_name, String args_json)
 {
     if (is_private() == IsPrivate::Yes || !m_session->extension_manager) {

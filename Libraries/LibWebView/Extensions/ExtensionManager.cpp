@@ -1683,6 +1683,20 @@ bool ExtensionManager::has_host_permission(StringView extension_id, URL::URL con
     return ext->manifest.has_host_permission_for(url);
 }
 
+bool ExtensionManager::extension_page_may_read_cross_origin(WebContentClient& caller, Web::PageId page_id, Web::HTML::CrossProcessId document_id, URL::URL const& url) const
+{
+    // The answer is for the extension this renderer hosts, and only for one of that extension's documents. A content
+    // script, which runs in the web page's renderer, never gets it.
+    auto const& extension_id = caller.hosted_extension_id();
+    if (!extension_id.has_value())
+        return false;
+    auto* page = caller.page(page_id);
+    auto document = page && page->is_open() && page->has_traversable() ? page->hosted_document_with_id(document_id) : nullptr;
+    if (!document || document->unload_counter() > 0 || document->extension_id() != *extension_id || document->origin().is_opaque())
+        return false;
+    return has_host_permission(*extension_id, url);
+}
+
 static bool is_legacy_registration_owner_active(RegisteredExtensionContentScript::Owner const& owner)
 {
     auto renderer = owner.renderer.strong_ref();

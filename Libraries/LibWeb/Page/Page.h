@@ -1141,6 +1141,7 @@ public:
     virtual void page_did_take_screenshot(Gfx::ShareableBitmap const&) { }
 
     virtual Extensions::ExtensionResourceResponse page_did_request_extension_resource(URL::URL const&, HTML::CrossProcessId) { return {}; }
+    virtual bool page_did_request_extension_cross_origin_access([[maybe_unused]] HTML::CrossProcessId document_id, [[maybe_unused]] URL::URL const& url) { return false; }
     virtual void page_did_call_extension_api([[maybe_unused]] u64 call_id, [[maybe_unused]] String const& extension_id, [[maybe_unused]] Extensions::ContextType context_type, [[maybe_unused]] HTML::CrossProcessId document_id, [[maybe_unused]] u64 grant_generation, [[maybe_unused]] String const& namespace_name, [[maybe_unused]] String const& method_name, [[maybe_unused]] String const& args_json) { }
     virtual void page_did_reply_extension_event([[maybe_unused]] u64 reply_id, [[maybe_unused]] bool has_value, [[maybe_unused]] String const& result_json) { }
     virtual void page_did_finish_extension_script_execution([[maybe_unused]] u64 call_id, [[maybe_unused]] bool success, [[maybe_unused]] String const& result_or_error_json) { }
