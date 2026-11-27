@@ -130,6 +130,7 @@ public:
     static void update_keeps_long_stack_traces();
     bool has_devtools_client() const { return m_has_devtools_client; }
     void clear_inspected_listeners() { m_inspected_listeners.clear(); }
+    void forget_collected_inspected_listeners();
     u64 remember_inspected_listener(Web::DOM::DOMEventListener&);
     GC::Ptr<Web::DOM::DOMEventListener> inspected_listener(u64 id) const;
 

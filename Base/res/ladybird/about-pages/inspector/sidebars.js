@@ -363,6 +363,10 @@ export class SidebarsController {
 
     // 3. Event Listeners
     async loadEventListeners() {
+        // Each request forgets the listener ids the one before it handed out, so only the latest reply's Remove
+        // buttons work: drop any reply a later request has superseded.
+        const load = (this.listenerLoad || 0) + 1;
+        this.listenerLoad = load;
         const nodeId = this.app.state.selectedNodeId;
         if (!nodeId || this.app.state.ghostSnapshot) {
             this.listeners = [];
@@ -374,11 +378,11 @@ export class SidebarsController {
                 nodeId,
                 includeAncestors: this.includeAncestorListeners,
             });
-            if (this.app.state.selectedNodeId !== nodeId || this.app.state.ghostSnapshot)
+            if (this.listenerLoad !== load || this.app.state.selectedNodeId !== nodeId || this.app.state.ghostSnapshot)
                 return;
             this.listeners = res?.listeners || [];
         } catch {
-            if (this.app.state.selectedNodeId !== nodeId)
+            if (this.listenerLoad !== load || this.app.state.selectedNodeId !== nodeId)
                 return;
             this.listeners = [];
         }

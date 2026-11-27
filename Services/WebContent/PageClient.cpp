@@ -2784,9 +2784,19 @@ void PageClient::page_did_receive_network_response_body(u64 request_id, Readonly
 
 u64 PageClient::remember_inspected_listener(Web::DOM::DOMEventListener& listener)
 {
+    // A listener keeps its id while it lives, so a list that a later request superseded still names it correctly.
+    for (auto const& [id, remembered] : m_inspected_listeners) {
+        if (remembered.ptr().ptr() == &listener)
+            return id;
+    }
     auto id = m_next_inspected_listener_id++;
     m_inspected_listeners.set(id, listener);
     return id;
+}
+
+void PageClient::forget_collected_inspected_listeners()
+{
+    m_inspected_listeners.remove_all_matching([](u64, GC::Weak<Web::DOM::DOMEventListener> const& listener) { return !listener; });
 }
 
 GC::Ptr<Web::DOM::DOMEventListener> PageClient::inspected_listener(u64 id) const

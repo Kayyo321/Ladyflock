@@ -10,6 +10,7 @@
 
 #include "HeadlessTest.h"
 #include <AK/LexicalPath.h>
+#include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/SystemTheme.h>
@@ -157,11 +158,19 @@ struct Fixture {
     RefPtr<WebView::InspectorSession> session;
 };
 
-static Fixture open_inspector(Web::DevicePixelSize frontend_size)
+struct FixturePage {
+    StringView html;
+    StringView ready_title;
+    size_t minimum_tree_size { 20 };
+};
+
+constexpr FixturePage layout_fixture { fixture_html, "Inspector layout fixture ready"sv };
+
+static Fixture open_inspector(Web::DevicePixelSize frontend_size, FixturePage const& page = layout_fixture)
 {
     auto target = make_view({ 800, 600 });
-    target->load_html(fixture_html);
-    wait_for([&] { return target->title() == "Inspector layout fixture ready"_utf16; });
+    target->load_html(page.html);
+    wait_for([&] { return target->title().to_byte_string() == page.ready_title; });
 
     auto frontend = make_view(frontend_size);
     auto session = WebView::InspectorSession::authorize_frontend_view(*target, frontend->view_id());
@@ -173,11 +182,11 @@ static Fixture open_inspector(Web::DevicePixelSize frontend_size)
     frontend->on_load_finish = nullptr;
     wait_for([&] { return session->is_attached(); });
 
-    evaluate(*frontend, R"JS(
+    evaluate(*frontend, MUST(String::formatted(R"JS(
         window.cspViolations = [];
-        document.addEventListener("securitypolicyviolation", e => window.cspViolations.push(`${e.violatedDirective}: ${e.target?.outerHTML?.slice(0, 120)}`), true);
-        await until(() => app.elementsTree.nodesById.size > 20);
-    )JS"sv);
+        document.addEventListener("securitypolicyviolation", e => window.cspViolations.push(`${{e.violatedDirective}}: ${{e.target?.outerHTML?.slice(0, 120)}}`), true);
+        await until(() => app.elementsTree.nodesById.size > {});
+    )JS", page.minimum_tree_size)));
     return { move(target), move(frontend), move(session) };
 }
 
@@ -544,4 +553,58 @@ TEST_CASE(inspector_console_helpers)
         const names = [...document.querySelectorAll("#sidebar-properties td.decl-prop")].map(cell => cell.textContent);
         return sections.includes("HTMLButtonElement") && sections.includes("Element") && names.includes("disabled") ? null : { sections, names: names.slice(0, 10) };
     )JS"sv);
+}
+
+// Waits for the target page's title to become the given one, after running a script that sets it.
+static void run_in_target(WebView::HeadlessWebView& target, StringView script, StringView expected_title_prefix)
+{
+    target.run_javascript(MUST(String::from_utf8(script)));
+    wait_for([&] { return target.title().to_byte_string().starts_with(expected_title_prefix); });
+}
+
+constexpr auto handlers_html = R"HTML(<!doctype html><title>Handlers</title>
+<button id="attr" onclick="window.attributeClicks = (window.attributeClicks || 0) + 1">Attribute handler</button>
+<button id="prop">Property handler</button>
+<script>
+  document.getElementById("prop").onclick = function propertyHandler() {};
+  document.title = "Handlers ready";
+</script>
+)HTML"sv;
+
+// An event handler's listener is named after the handler, and removing it clears the handler, which can then be set again.
+TEST_CASE(inspector_event_handler_listeners)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorEventHandlerListeners"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { handlers_html, "Handlers ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+
+    for (auto id : { "attr"sv, "prop"sv }) {
+        evaluate(frontend, MUST(String::formatted(R"JS(
+            await select(n => n.attributes?.id === "{}");
+            app.selectSidebar("listeners");
+            await until(() => document.querySelectorAll("#sidebar-listeners .listener-row").length > 0);
+            const row = [...document.querySelectorAll("#sidebar-listeners .listener-row")].find(r => r.querySelector(".listener-desc").textContent.includes("#{}"));
+            if (!row)
+                throw new Error("No listener row for #{}: " + document.getElementById("sidebar-listeners").textContent);
+            if (!row.querySelector(".listener-desc").textContent.includes("onclick"))
+                throw new Error("The handler's listener is not named onclick: " + row.textContent);
+            [...row.querySelectorAll("button")].find(b => b.textContent === "Remove").click();
+            await until(() => ![...document.querySelectorAll("#sidebar-listeners .listener-row")].some(r => r.querySelector(".listener-desc").textContent.includes("#{}")));
+        )JS", id, id, id, id)));
+    }
+
+    run_in_target(*fixture.target, R"JS(
+        const results = [];
+        for (const id of ["attr", "prop"]) {
+            const button = document.getElementById(id);
+            const cleared = button.onclick === null;
+            let later = 0;
+            button.onclick = () => { later++; };
+            button.click();
+            results.push(`${id}:${cleared}:${later}`);
+        }
+        document.title = "handlers:" + results.join(",") + ":" + (window.attributeClicks || 0);
+    )JS"sv, "handlers:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "handlers:attr:true:1,prop:true:1:0"sv);
 }

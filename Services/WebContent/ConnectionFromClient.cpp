@@ -3658,7 +3658,7 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
         }
 
         JsonArray listeners;
-        page->clear_inspected_listeners();
+        page->forget_collected_inspected_listeners();
         auto collect_target = [&](Web::DOM::EventTarget const& target, i64 target_node_id, String target_label, bool is_ancestor, bool window_target = false) {
             for (auto const& listener : target.event_listener_list()) {
                 if (listener->removed)
@@ -3674,7 +3674,11 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                 item.set("listenerId"sv, String::number(page->remember_inspected_listener(*listener)));
                 item.set("windowTarget"sv, window_target);
                 String handler_name = "anonymous"_string;
-                if (listener->callback) {
+                if (auto event_handler_name = target.event_handler_name_for_listener(*listener); event_handler_name.has_value()) {
+                    // The listener of an event handler calls a function of the engine's that has no name, so name the handler.
+                    handler_name = MUST(String::formatted("on{}", *event_handler_name));
+                    item.set("eventHandler"sv, true);
+                } else if (listener->callback) {
                     auto& cb_obj = listener->callback->callback().callback;
                     if (auto const* fn = as_if<JS::FunctionObject>(*cb_obj)) {
                         auto fn_name = fn->name_for_call_stack();
@@ -3718,7 +3722,8 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             reply_err("This listener has changed. Refresh the listener list."_string);
             return;
         }
-        target->remove_an_event_listener(*listener);
+        if (!target->deactivate_event_handler_for_listener(*listener))
+            target->remove_an_event_listener(*listener);
         JsonObject out;
         out.set("ok"sv, true);
         reply_ok(move(out));
