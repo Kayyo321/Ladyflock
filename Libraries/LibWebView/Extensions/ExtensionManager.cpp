@@ -4161,6 +4161,24 @@ void ExtensionManager::handle_api_call(
                 reply_err("Target tab not found");
                 return;
             }
+            // The message goes to the frame the options name, or else to the tab's top-level document.
+            i64 frame_id = 0;
+            if (auto const& arguments = parsed_args.value().as_array(); arguments.size() > 2 && arguments.at(2).is_object()) {
+                auto const& options = arguments.at(2).as_object();
+                if (options.has("frameId"sv)) {
+                    auto requested = options.get_i64("frameId"sv);
+                    if (!requested.has_value() || *requested < 0) {
+                        reply_err("Invalid frame ID");
+                        return;
+                    }
+                    frame_id = *requested;
+                }
+            }
+            auto const* frame = scripting_target_frame(*view, frame_id);
+            if (!frame) {
+                reply_err("Could not establish connection. Receiving end does not exist.");
+                return;
+            }
             auto weak_caller = caller.make_weak_ptr<WebContentClient>();
             auto rid = register_event_reply([weak_caller, page_id, document_id, call_id](bool has_val, String const& res_json) {
                 if (auto c = weak_caller.strong_ref())
@@ -4173,9 +4191,8 @@ void ExtensionManager::handle_api_call(
             ev_args.must_append(msg);
             ev_args.must_append(move(sender));
 
-            auto& target_page = view->traversable().active_document().host()
-                ? *view->traversable().active_document().host()
-                : view->page();
+            auto& target_document = frame->active_document();
+            auto& target_page = target_document.host() ? *target_document.host() : view->page();
             bind_event_reply(rid, target_page);
             target_page.client().async_dispatch_extension_event(
                 target_page.id(),
@@ -4184,7 +4201,7 @@ void ExtensionManager::handle_api_call(
                 "onMessage"_string,
                 ev_args.serialized(),
                 rid,
-                view->traversable().active_document().id());
+                target_document.id());
             return;
         }
         if (method_name == "executeScript"sv) {
@@ -4476,6 +4493,11 @@ void ExtensionManager::handle_api_call(
         }
         if (parsed_args.is_error() || !parsed_args.value().is_array()) {
             reply_err("Expected menu arguments");
+            return;
+        }
+        // Menus are drawn when they open, so a menu that is already showing keeps the items it opened with.
+        if (method_name == "refresh"sv) {
+            reply_ok(JsonValue {});
             return;
         }
         auto result = change_page_menu(extension_id, method_name, parsed_args.value().as_array());
@@ -5165,9 +5187,80 @@ void ExtensionManager::activate_page_menu_item(ViewImplementation const& view, W
             args.must_append(move(info));
             args.must_append(serialize_tab(*tab));
             dispatch_event_to_extension(id, "menus"sv, "onClicked"sv, args.serialized());
+            notify_page_menu_hidden();
             return;
         }
     }
+}
+
+void ExtensionManager::notify_page_menu_shown(ViewImplementation const& view, Web::HTML::CrossProcessId document, ExtensionMenuTarget const& target)
+{
+    notify_page_menu_hidden();
+    auto* frame = extension_menu_frame(view, document);
+    if (!extensions_enabled() || !frame)
+        return;
+
+    JsonArray contexts;
+    if (target.link_url.has_value())
+        contexts.must_append("link"_string);
+    if (target.media_type.has_value())
+        contexts.must_append(*target.media_type);
+    if (target.has_selection)
+        contexts.must_append("selection"_string);
+    if (target.editable)
+        contexts.must_append("editable"_string);
+    if (frame->parent())
+        contexts.must_append("frame"_string);
+    if (!target.link_url.has_value() && !target.media_type.has_value() && !target.has_selection && !target.editable)
+        contexts.must_append("page"_string);
+
+    for (auto const& [id, extension] : m_extensions_by_id) {
+        if (!extension.enabled || (!extension.manifest.has_permission("menus"sv) && !extension.manifest.has_permission("contextMenus"sv)))
+            continue;
+        auto tab = tab_info_for_extension(id, view);
+        if (!tab.has_value())
+            continue;
+        JsonArray menu_ids;
+        if (auto items = m_page_menus.get(id); items.has_value()) {
+            for (auto const& item : *items) {
+                if (item.matches(*frame, target))
+                    menu_ids.must_append(item.id);
+            }
+        }
+        JsonObject info;
+        info.set("menuIds"sv, move(menu_ids));
+        info.set("contexts"sv, contexts);
+        info.set("editable"sv, target.editable);
+        info.set("frameId"sv, frame->extension_frame_id());
+        // As in Firefox, what the menu was opened on is included only for pages the extension may access.
+        if (has_host_permission(id, frame->active_document_url(), view.view_id())) {
+            info.set("pageUrl"sv, view.url().serialize());
+            if (frame->parent())
+                info.set("frameUrl"sv, frame->active_document_url().serialize());
+            if (target.link_url.has_value())
+                info.set("linkUrl"sv, target.link_url->serialize());
+            if (target.source_url.has_value())
+                info.set("srcUrl"sv, target.source_url->serialize());
+            if (target.selection_text.has_value())
+                info.set("selectionText"sv, *target.selection_text);
+        }
+        if (target.media_type.has_value())
+            info.set("mediaType"sv, *target.media_type);
+        JsonArray args;
+        args.must_append(move(info));
+        args.must_append(serialize_tab(*tab));
+        m_extensions_shown_page_menu.set(id);
+        dispatch_event_to_extension(id, "menus"sv, "onShown"sv, args.serialized());
+    }
+}
+
+void ExtensionManager::notify_page_menu_hidden()
+{
+    for (auto const& id : m_extensions_shown_page_menu) {
+        if (auto extension = m_extensions_by_id.get(id); extension.has_value() && extension->enabled)
+            dispatch_event_to_extension(id, "menus"sv, "onHidden"sv, "[]"_string);
+    }
+    m_extensions_shown_page_menu.clear();
 }
 
 JsonObject ExtensionManager::management_info(InstalledExtension const& extension) const

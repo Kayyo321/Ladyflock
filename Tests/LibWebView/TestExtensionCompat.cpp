@@ -8,6 +8,7 @@
 // against what the extension's own code sees. None of them reaches the network.
 
 #include "HeadlessTest.h"
+#include "PrivacyTestFixtures.h"
 #include <AK/JsonObject.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/Directory.h>
@@ -605,4 +606,78 @@ TEST_CASE(action_icons_firefox_accepts_but_ladyflock_cannot_draw_keep_the_curren
     EXPECT_EQ(results.get_string("missing"sv).value(), "setIcon requires a package path or size-to-path object"sv);
     // The SVG and imageData calls left the PNG the extension set first.
     EXPECT_EQ(manager.action_controller().resolved_state(installed.extension_id).icon_path, Optional<String> { "icons/lit.png"_string });
+}
+
+TEST_CASE(messages_ports_and_listeners_take_every_form_firefox_accepts)
+{
+    static Atomic<bool> saw_ignored_header { false };
+    PrivacyTest::IndependentHTTPServer server(PrivacyTest::IndependentHTTPServer::Protocol::HTTP, PrivacyTest::IndependentHTTPServer::Family::IPv4, [](ByteString const& request_head) {
+        if (request_head.contains("X-Ignored"sv, CaseSensitivity::CaseInsensitive))
+            saw_ignored_header = true;
+        constexpr auto body = "<!DOCTYPE html><title>Page</title>"sv;
+        return ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.length(), body);
+    });
+    Test::HeadlessTestEnvironment env { "TestExtCompatForms"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "forms"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Forms", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "forms@example.test"}},
+        "permissions": ["storage", "tabs", "webRequest", "webRequestBlocking", "webNavigation", "menus", "http://127.0.0.1/*"],
+        "background": {"scripts": ["background.js"]},
+        "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"]}]
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        browser.webRequest.onBeforeSendHeaders.addListener(details => ({ requestHeaders: [...details.requestHeaders, { name: 'X-Ignored', value: '1' }] }),
+            { urls: ['http://127.0.0.1/*'] }, ['blocking', 'requestHeaders']);
+        browser.runtime.onMessage.addListener((message, sender) => {
+            if (message === 'ping' || message.ping)
+                return Promise.resolve('pong');
+            if (message.forms)
+                check(sender.tab.id, message.forms).catch(error => browser.storage.local.set({ error: String(error), done: true }));
+        });
+        async function check(tabId, forms) {
+            const top = await browser.tabs.sendMessage(tabId, 'to-content', { frameId: 0 });
+            const plain = await browser.tabs.sendMessage(tabId, 'to-content');
+            const missingFrame = await browser.tabs.sendMessage(tabId, 'to-content', { frameId: 99 }).then(() => 'answered', error => error.message);
+            const other = await browser.runtime.sendMessage('other@example.test', 'ping', {}).then(() => 'answered', error => error.message);
+            const port = browser.runtime.connect(undefined, { name: 'sync' }).name;
+            const enums = [browser.tabs.TabStatus.LOADING, browser.webRequest.ResourceType.CSP_REPORT,
+                browser.webRequest.OnBeforeSendHeadersOptions.REQUESTHEADERS, typeof browser.webNavigation.onTabReplaced.addListener,
+                typeof browser.menus.onShown.addListener, typeof browser.menus.onHidden.addListener].join(',');
+            await browser.storage.local.set({ forms, top, plain, missingFrame, other, port, enums, done: true });
+        }
+    )"sv);
+    write_file(directory, "content.js"sv, R"(
+        browser.runtime.onMessage.addListener(message => message === 'to-content' ? Promise.resolve('from-content') : undefined);
+        (async () => {
+            const id = browser.runtime.id;
+            const forms = [
+                await browser.runtime.sendMessage('ping'),
+                await browser.runtime.sendMessage(id, 'ping'),
+                await browser.runtime.sendMessage({ ping: true }, {}),
+                await browser.runtime.sendMessage(id, 'ping', {}),
+                await new Promise(resolve => browser.runtime.sendMessage('ping', resolve)),
+            ].join(',');
+            browser.runtime.sendMessage({ forms });
+        })();
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+
+    app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/page", server.port())).release_value(), WebView::IsPrivate::No);
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("forms"sv).value_or({}), "pong,pong,pong,pong,pong"sv);
+    EXPECT_EQ(results.get_string("top"sv).value_or({}), "from-content"sv);
+    EXPECT_EQ(results.get_string("plain"sv).value_or({}), "from-content"sv);
+    EXPECT_EQ(results.get_string("missingFrame"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
+    EXPECT_EQ(results.get_string("other"sv).value_or({}), "Could not establish connection. Receiving end does not exist."sv);
+    EXPECT_EQ(results.get_string("port"sv).value_or({}), "sync"sv);
+    EXPECT_EQ(results.get_string("enums"sv).value_or({}), "loading,csp_report,requestHeaders,function,function,function"sv);
+    EXPECT(server.request_count() > 0);
+    EXPECT(!saw_ignored_header.load());
 }

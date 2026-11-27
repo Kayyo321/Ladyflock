@@ -834,6 +834,7 @@ void View::did_request_context_menu(WebView::ContextMenuRequest request)
             m_extension_menu_target.media_type = request.media->is_video ? "video"_string : "audio"_string;
         m_extension_menu_document = request.extension_menu_document;
         m_extension_menu_items = session().extension_manager->page_menu_items(*this, *m_extension_menu_document, m_extension_menu_target);
+        session().extension_manager->notify_page_menu_shown(*this, *m_extension_menu_document, m_extension_menu_target);
         request.extension_menu_serial = m_extension_menu_serial;
         request.extension_menu_items = m_extension_menu_items;
     }

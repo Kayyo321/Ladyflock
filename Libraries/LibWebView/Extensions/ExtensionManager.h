@@ -266,6 +266,9 @@ public:
 
     Vector<ExtensionMenuItem> page_menu_items(ViewImplementation const&, Web::HTML::CrossProcessId, ExtensionMenuTarget const& = {}) const;
     void activate_page_menu_item(ViewImplementation const&, Web::HTML::CrossProcessId, u64 token, ExtensionMenuTarget const& = {});
+    // menus.onShown when a page's context menu opens, and menus.onHidden once it has closed.
+    void notify_page_menu_shown(ViewImplementation const&, Web::HTML::CrossProcessId, ExtensionMenuTarget const&);
+    void notify_page_menu_hidden();
 
     JsonObject summary_json() const;
 
@@ -368,6 +371,7 @@ private:
     Vector<PendingWindowCreation> m_pending_window_creations;
     u64 m_next_window_creation_id { 1 };
     HashTable<u64> m_known_window_ids;
+    HashTable<String> m_extensions_shown_page_menu;
     HashMap<u64, String> m_extension_downloads;
     OwnPtr<DownloadEvents> m_download_events;
     HashMap<String, u32> m_idle_detection_intervals;

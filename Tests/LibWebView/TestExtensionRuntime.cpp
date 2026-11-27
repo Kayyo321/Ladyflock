@@ -753,6 +753,12 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
         let sent;
         let observed;
         let started;
+        let beforeSend;
+        // Ladyflock sends the headers as they were, so the extra header this listener returns changes nothing.
+        browser.webRequest.onBeforeSendHeaders.addListener(details => {
+            beforeSend = sent === undefined && details.requestHeaders.some(header => header.name.toLowerCase() === 'accept') && details.requestId;
+            return { requestHeaders: [...details.requestHeaders, { name: 'X-Ignored', value: '1' }] };
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['blocking', 'requestHeaders']);
         browser.webRequest.onSendHeaders.addListener(details => {
             sent = details.requestId;
         }, { urls: ["http://127.0.0.1/observe-headers"] }, ['requestHeaders']);
@@ -768,8 +774,9 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
             started = sent === details.requestId && !('responseHeaders' in details);
         }, { urls: ["http://127.0.0.1/observe-headers"] });
         browser.webRequest.onCompleted.addListener(details => {
-            browser.storage.local.set({ goodEvents: observed && started && sent === details.requestId });
-        }, { urls: ["http://127.0.0.1/observe-headers"] });
+            const completedHeaders = details.responseHeaders.some(header => header.name.toLowerCase() === 'cache-control' && header.value === 'no-cache');
+            browser.storage.local.set({ goodEvents: observed && started && sent === details.requestId && beforeSend === sent && completedHeaders });
+        }, { urls: ["http://127.0.0.1/observe-headers"] }, ['responseHeaders']);
     )"sv);
 
     auto const& wr_ext = TRY_OR_FAIL(mgr.load_unpacked(wr_dir, true));
@@ -777,7 +784,7 @@ TEST_CASE(web_request_blocking_nav_fetch_redirect_and_cache)
     bool bg_ready = false;
     mgr.ensure_background_started(wr_ext.extension_id, [&](bool ready) { bg_ready = ready; });
     Core::EventLoop::current().spin_until([&] {
-        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 8;
+        return bg_ready && mgr.web_request_coordinator().snapshot().entries.size() == 9;
     });
 
     // 1. Allowed page loads and hits server; fetch('/blocked-fetch') cancels without hitting server.

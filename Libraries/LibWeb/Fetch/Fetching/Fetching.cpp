@@ -1151,7 +1151,7 @@ static void notify_web_request_event(Infrastructure::FetchParams const& params, 
     auto details = web_request_details(params, event);
     if (!details.has_value())
         return;
-    if (event == Extensions::WebRequestEvent::SendHeaders) {
+    if (event == Extensions::WebRequestEvent::BeforeSendHeaders || event == Extensions::WebRequestEvent::SendHeaders) {
         details->headers = params.request()->header_list()->headers();
         details->headers.remove_all_matching([](auto const& header) {
             return header.name.equals_ignoring_ascii_case("Authorization"sv)
@@ -1164,6 +1164,9 @@ static void notify_web_request_event(Infrastructure::FetchParams const& params, 
             details->error = response->network_error_message().value_or("Network error"_string);
         else
             details->status_code = response->status();
+        // Sent only to listeners that ask for responseHeaders, as for onHeadersReceived.
+        if (!response->is_network_error() && event != Extensions::WebRequestEvent::ErrorOccurred)
+            details->headers = response->header_list()->headers();
         if (event == Extensions::WebRequestEvent::BeforeRedirect) {
             auto target = response->location_url(params.request()->current_url().fragment());
             if (!target.is_error())
@@ -3434,6 +3437,7 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
     auto transfer_lease = fetch_params.has_response_body_transfer_lease()
         ? Requests::RequestClient::TransferLease::Yes
         : Requests::RequestClient::TransferLease::No;
+    notify_web_request_event(fetch_params, Extensions::WebRequestEvent::BeforeSendHeaders);
     notify_web_request_event(fetch_params, Extensions::WebRequestEvent::SendHeaders);
     auto network_transport = ResourceLoader::the().load(load_request, on_headers_received, on_data_received, on_cached_body_available, on_complete, transfer_lease);
     if (network_transport) {

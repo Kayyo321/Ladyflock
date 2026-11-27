@@ -181,8 +181,7 @@ struct EvaluationState : public RefCounted<EvaluationState> {
 
     bool can_intercept(StringView extension_id) const
     {
-        return !*has_permission || ((*has_permission)(extension_id, request_url)
-            && (!initiating_url.has_value() || (*has_permission)(extension_id, *initiating_url)));
+        return !*has_permission || ((*has_permission)(extension_id, request_url) && (!initiating_url.has_value() || (*has_permission)(extension_id, *initiating_url)));
     }
 
     void step()
@@ -320,7 +319,7 @@ void WebRequestCoordinator::evaluate_before_request(WebRequestBeforeRequestDetai
     auto args_json = serialize_details(details_obj);
     String args_with_headers_json;
     if (!extensions_requesting_headers.is_empty()) {
-        details_obj.set(event == WebRequestEvent::SendHeaders ? "requestHeaders"sv : "responseHeaders"sv, headers_to_json(details.headers));
+        details_obj.set(event == WebRequestEvent::SendHeaders || event == WebRequestEvent::BeforeSendHeaders ? "requestHeaders"sv : "responseHeaders"sv, headers_to_json(details.headers));
         args_with_headers_json = serialize_details(move(details_obj));
     }
 

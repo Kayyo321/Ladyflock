@@ -14,8 +14,10 @@
 #include <AK/RefCounted.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
+#include <LibJS/Console.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
+#include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/JSONObject.h>
@@ -484,22 +486,38 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                 }
                 bool blocking = false;
                 bool include_headers = false;
+                bool observes_only = false;
                 if (vm.argument_count() > 2 && !vm.argument(2).is_undefined()) {
                     auto parsed = JsonValue::from_string(js_value_to_json_string(vm, vm.argument(2)));
                     if (parsed.is_error() || !parsed.value().is_array())
                         return vm.throw_completion<JS::TypeError>("webRequest extraInfoSpec must be an array"_utf16);
+                    using enum Extensions::WebRequestEvent;
+                    auto event = *web_request_event;
                     for (auto const& item : parsed.value().as_array().values()) {
+                        // The options Firefox accepts for each event.
                         auto option = item.is_string() ? item.as_string().bytes_as_string_view() : StringView {};
-                        if (option == "blocking"sv && (*web_request_event == Extensions::WebRequestEvent::BeforeRequest || *web_request_event == Extensions::WebRequestEvent::HeadersReceived)) {
+                        if (option == "blocking"sv && (event == BeforeRequest || event == HeadersReceived)) {
                             blocking = true;
-                        } else if (option == "requestHeaders"sv && *web_request_event == Extensions::WebRequestEvent::SendHeaders) {
+                        } else if (option == "blocking"sv && event == BeforeSendHeaders) {
+                            // Ladyflock can't change the headers a request sends, so this listener only observes them.
+                            if (!self->has_manifest_permission("webRequestBlocking"sv))
+                                return vm.throw_completion<JS::TypeError>("Blocking webRequest listener requires 'webRequestBlocking' permission"_utf16);
+                            observes_only = true;
+                        } else if (option == "requestHeaders"sv && (event == SendHeaders || event == BeforeSendHeaders)) {
                             include_headers = true;
-                        } else if (option == "responseHeaders"sv && *web_request_event == Extensions::WebRequestEvent::HeadersReceived) {
+                        } else if (option == "responseHeaders"sv && (event == HeadersReceived || event == ResponseStarted || event == BeforeRedirect || event == Completed)) {
                             include_headers = true;
-                        } else if (option != "extraHeaders"sv || *web_request_event != Extensions::WebRequestEvent::SendHeaders) {
+                        } else if (option == "requestBody"sv && event == BeforeRequest) {
+                            // Ladyflock doesn't report request bodies, so the details have no requestBody.
+                        } else if (option != "extraHeaders"sv || event != SendHeaders) {
                             return vm.throw_completion<JS::TypeError>("Unsupported webRequest extraInfoSpec option"_utf16);
                         }
                     }
+                }
+                if (observes_only) {
+                    auto& console = self->m_realm->intrinsics().console_object()->console();
+                    console.output_debug_message(JS::Console::LogLevel::Warn,
+                        u"Ladyflock can't change the headers a request sends. This onBeforeSendHeaders listener sees them, but what it returns has no effect."sv);
                 }
                 if (urls_arr.is_empty())
                     return vm.throw_completion<JS::TypeError>("webRequest filter requires at least one URL pattern"_utf16);
@@ -659,10 +677,13 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::connect_runtime_port(JS:
 {
     if (m_revoked || m_runtime_ports.size() >= 128)
         return vm.throw_completion<JS::TypeError>("Extension port is unavailable"_utf16);
+    // Firefox's forms: (), (extensionId), (options) and (extensionId, options), where the ID may be undefined or null.
     size_t options_index = 0;
     if (vm.argument(0).is_string()) {
         if (vm.argument(0).as_string().utf16_string().to_utf8() != m_extension_id)
             return vm.throw_completion<JS::TypeError>("Only connections within this extension are supported"_utf16);
+        options_index = 1;
+    } else if (vm.argument(0).is_nullish() && vm.argument_count() > 1) {
         options_index = 1;
     }
     if (vm.argument_count() > options_index + 1)
@@ -714,7 +735,8 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
     size_t arg_count = vm.argument_count();
     GC::Ptr<JS::FunctionObject> callback;
     bool creates_menu = ns_name == "menus"sv && method_name == "create"sv;
-    if ((is_chrome || creates_menu) && arg_count > 0 && vm.argument(arg_count - 1).is_function()) {
+    // As in Firefox, both namespaces take a callback in place of the promise.
+    if (arg_count > 0 && vm.argument(arg_count - 1).is_function()) {
         callback = &vm.argument(arg_count - 1).as_function();
         --arg_count;
     }
@@ -727,13 +749,38 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
             return vm.throw_completion<JS::TypeError>("Use menus.onClicked for page menu items"_utf16);
     }
 
+    Vector<JS::Value> arguments;
+    for (size_t i = 0; i < arg_count; ++i)
+        arguments.append(vm.argument(i));
+
     Optional<size_t> message_index;
-    if (ns_name == "runtime"sv && method_name == "sendMessage"sv)
+    if (ns_name == "runtime"sv && method_name == "sendMessage"sv) {
+        // Firefox's forms: (message), (extensionId, message), (message, options) and (extensionId, message, options).
+        JS::Value extension_id = JS::js_undefined();
+        if (arguments.size() == 2 && arguments[0].is_string() && !arguments[0].as_string().utf16_string().is_empty()) {
+            extension_id = arguments.take_first();
+        } else if (arguments.size() == 2) {
+            arguments.take_last();
+        } else if (arguments.size() == 3 || (arguments.size() == 4 && arguments[3].is_nullish())) {
+            extension_id = arguments[0];
+            arguments = { arguments[1] };
+        }
+        if (arguments.size() != 1)
+            return vm.throw_completion<JS::TypeError>("Expected a message for this extension"_utf16);
+        // Ladyflock delivers messages within an extension only, so another extension never answers.
+        if (!extension_id.is_nullish() && (!extension_id.is_string() || extension_id.as_string().utf16_string().to_utf8() != m_extension_id)) {
+            WebIDL::reject_promise(*m_realm, *promise, JS::Error::create(*m_realm, "Could not establish connection. Receiving end does not exist."_utf16));
+            return promise->promise();
+        }
         message_index = 0;
-    else if (ns_name == "tabs"sv && method_name == "sendMessage"sv)
+    } else if (ns_name == "tabs"sv && method_name == "sendMessage"sv) {
+        // (tabId, message) or (tabId, message, options), where the options can name a frame.
+        if (arguments.size() == 3 && arguments[2].is_nullish())
+            arguments.take_last();
+        if (arguments.size() != 2 && arguments.size() != 3)
+            return vm.throw_completion<JS::TypeError>("Expected a message for this extension"_utf16);
         message_index = 1;
-    if (message_index.has_value() && arg_count != *message_index + 1)
-        return vm.throw_completion<JS::TypeError>("Expected a message for this extension"_utf16);
+    }
 
     // Special local handling for scripting.executeScript({ target, files, func, args })
     String serialized_args;
@@ -756,15 +803,15 @@ JS::ThrowCompletionOr<JS::Value> ExtensionRealmContext::invoke_api_call(JS::VM& 
 
     if (serialized_args.is_empty()) {
         JsonArray arr;
-        for (size_t i = 0; i < arg_count; ++i) {
+        for (size_t i = 0; i < arguments.size(); ++i) {
             if (i == message_index) {
-                auto encoded = serialize_extension_message(vm, vm.argument(i));
+                auto encoded = serialize_extension_message(vm, arguments[i]);
                 if (encoded.is_error())
                     return vm.throw_completion<JS::TypeError>("Unable to clone the extension message"_utf16);
                 arr.must_append(encoded.release_value());
                 continue;
             }
-            auto json_item = js_value_to_json_string(vm, vm.argument(i));
+            auto json_item = js_value_to_json_string(vm, arguments[i]);
             auto parsed = JsonValue::from_string(json_item);
             if (!parsed.is_error())
                 arr.must_append(parsed.release_value());
@@ -1241,6 +1288,16 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         tabs_js_obj.define_direct_property("onRemoved"_utf16_fly_string, create_event_object("tabs"sv, "onRemoved"sv), JS::default_attributes);
         // Ladyflock never swaps one tab's page for another's, as prerendering does, so onReplaced has nothing to report.
         tabs_js_obj.define_direct_property("onReplaced"_utf16_fly_string, create_event_object("tabs"sv, "onReplaced"sv), JS::default_attributes);
+        static constexpr Array tab_statuses { "loading"sv, "complete"sv };
+        static constexpr Array muted_reasons { "capture"sv, "extension"sv, "user"sv };
+        static constexpr Array tab_window_types { "normal"sv, "popup"sv, "panel"sv, "app"sv, "devtools"sv };
+        static constexpr Array zoom_modes { "automatic"sv, "disabled"sv, "manual"sv };
+        static constexpr Array zoom_scopes { "per-origin"sv, "per-tab"sv };
+        define_string_enum(vm, *m_realm, tabs_js_obj, "TabStatus"sv, tab_statuses.span());
+        define_string_enum(vm, *m_realm, tabs_js_obj, "MutedInfoReason"sv, muted_reasons.span());
+        define_string_enum(vm, *m_realm, tabs_js_obj, "WindowType"sv, tab_window_types.span());
+        define_string_enum(vm, *m_realm, tabs_js_obj, "ZoomSettingsMode"sv, zoom_modes.span());
+        define_string_enum(vm, *m_realm, tabs_js_obj, "ZoomSettingsScope"sv, zoom_scopes.span());
         root->define_direct_property("tabs"_utf16_fly_string, tabs_obj, JS::default_attributes);
 
         if (manifest_has_permission(manifest, "webNavigation"sv)) {
@@ -1248,6 +1305,8 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
             auto navigation = create_namespace_object("webNavigation"sv, navigation_methods.span(), is_chrome);
             for (auto name : Array { "onBeforeNavigate"sv, "onCommitted"sv, "onCompleted"sv, "onDOMContentLoaded"sv, "onHistoryStateUpdated"sv, "onReferenceFragmentUpdated"sv, "onErrorOccurred"sv, "onCreatedNavigationTarget"sv })
                 navigation.as_object().define_direct_property(Utf16FlyString::from_utf8(name), create_event_object("webNavigation"sv, name), JS::default_attributes);
+            // Like tabs.onReplaced, this never fires, because Ladyflock never swaps one tab's page for another's.
+            navigation.as_object().define_direct_property("onTabReplaced"_utf16_fly_string, create_event_object("webNavigation"sv, "onTabReplaced"sv), JS::default_attributes);
             root->define_direct_property("webNavigation"_utf16_fly_string, navigation, JS::default_attributes);
         }
 
@@ -1294,9 +1353,11 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         root->define_direct_property("browserAction"_utf16_fly_string, browser_action_obj, JS::default_attributes);
 
         if (manifest_has_permission(manifest, "menus"sv) || manifest_has_permission(manifest, "contextMenus"sv)) {
-            static constexpr Array methods { "create"sv, "update"sv, "remove"sv, "removeAll"sv };
+            static constexpr Array methods { "create"sv, "update"sv, "remove"sv, "removeAll"sv, "refresh"sv };
             auto menus = create_namespace_object("menus"sv, methods.span(), is_chrome);
             menus.as_object().define_direct_property("onClicked"_utf16_fly_string, create_event_object("menus"sv, "onClicked"sv), JS::default_attributes);
+            menus.as_object().define_direct_property("onShown"_utf16_fly_string, create_event_object("menus"sv, "onShown"sv), JS::default_attributes);
+            menus.as_object().define_direct_property("onHidden"_utf16_fly_string, create_event_object("menus"sv, "onHidden"sv), JS::default_attributes);
             root->define_direct_property("menus"_utf16_fly_string, menus, JS::default_attributes);
             root->define_direct_property("contextMenus"_utf16_fly_string, menus, JS::default_attributes);
         }
@@ -1315,16 +1376,30 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         if (manifest_has_permission(manifest, "webRequest"sv)) {
             static constexpr Array methods { "handlerBehaviorChanged"sv };
             auto web_request = create_namespace_object("webRequest"sv, methods.span(), is_chrome);
-            for (auto event : Array { "onBeforeRequest"sv, "onSendHeaders"sv, "onHeadersReceived"sv, "onBeforeRedirect"sv, "onResponseStarted"sv, "onCompleted"sv, "onErrorOccurred"sv })
+            for (auto event : Array { "onBeforeRequest"sv, "onBeforeSendHeaders"sv, "onSendHeaders"sv, "onHeadersReceived"sv, "onBeforeRedirect"sv, "onResponseStarted"sv, "onCompleted"sv, "onErrorOccurred"sv })
                 web_request.as_object().define_direct_property(Utf16FlyString::from_utf8(event), create_event_object("webRequest"sv, event), JS::default_attributes);
             // Ladyflock answers no HTTP authentication challenge, so no request asks an extension for credentials.
             if (manifest_has_permission(manifest, "webRequestBlocking"sv) || manifest_has_permission(manifest, "webRequestAuthProvider"sv))
                 web_request.as_object().define_direct_property("onAuthRequired"_utf16_fly_string, create_event_object("webRequest"sv, "onAuthRequired"sv), JS::default_attributes);
 
-            auto resource_types = JS::Object::create(*m_realm, m_realm->intrinsics().object_prototype());
-            for (auto type : Array { "main_frame"sv, "sub_frame"sv, "stylesheet"sv, "script"sv, "image"sv, "font"sv, "object"sv, "xmlhttprequest"sv, "media"sv, "other"sv })
-                resource_types->define_direct_property(Utf16FlyString::from_utf8(type.to_byte_string().to_uppercase()), JS::PrimitiveString::create(vm, Utf16String::from_utf8(type)), JS::default_attributes);
-            web_request.as_object().define_direct_property("ResourceType"_utf16_fly_string, resource_types, JS::default_attributes);
+            static constexpr Array resource_types { "main_frame"sv, "sub_frame"sv, "stylesheet"sv, "script"sv, "image"sv, "object"sv,
+                "object_subrequest"sv, "xmlhttprequest"sv, "xslt"sv, "ping"sv, "beacon"sv, "xml_dtd"sv, "font"sv, "media"sv, "websocket"sv,
+                "csp_report"sv, "imageset"sv, "web_manifest"sv, "speculative"sv, "json"sv, "other"sv };
+            define_string_enum(vm, *m_realm, web_request.as_object(), "ResourceType"sv, resource_types.span());
+            // Firefox's names for each event's extraInfoSpec options.
+            static constexpr Array before_request_options { "blocking"sv, "requestBody"sv };
+            static constexpr Array before_send_headers_options { "requestHeaders"sv, "blocking"sv };
+            static constexpr Array send_headers_options { "requestHeaders"sv };
+            static constexpr Array headers_received_options { "blocking"sv, "responseHeaders"sv };
+            static constexpr Array auth_required_options { "responseHeaders"sv, "blocking"sv, "asyncBlocking"sv };
+            static constexpr Array response_headers_options { "responseHeaders"sv };
+            define_string_enum(vm, *m_realm, web_request.as_object(), "OnBeforeRequestOptions"sv, before_request_options.span());
+            define_string_enum(vm, *m_realm, web_request.as_object(), "OnBeforeSendHeadersOptions"sv, before_send_headers_options.span());
+            define_string_enum(vm, *m_realm, web_request.as_object(), "OnSendHeadersOptions"sv, send_headers_options.span());
+            define_string_enum(vm, *m_realm, web_request.as_object(), "OnHeadersReceivedOptions"sv, headers_received_options.span());
+            define_string_enum(vm, *m_realm, web_request.as_object(), "OnAuthRequiredOptions"sv, auth_required_options.span());
+            for (auto name : Array { "OnResponseStartedOptions"sv, "OnBeforeRedirectOptions"sv, "OnCompletedOptions"sv })
+                define_string_enum(vm, *m_realm, web_request.as_object(), name, response_headers_options.span());
             root->define_direct_property("webRequest"_utf16_fly_string, web_request, JS::default_attributes);
         }
 
