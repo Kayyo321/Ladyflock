@@ -22,6 +22,7 @@
 #include <LibURL/URL.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/Export.h>
+#include <LibWebView/IdentityPurge.h>
 
 namespace WebView {
 
@@ -49,6 +50,20 @@ public:
     // Permanently destroys a non-default identity, terminating its workers and retiring its RequestServers.
     bool destroy_identity(StringView identity_id);
 
+    // Stops a named identity and deletes everything it stored: its cookies, web storage, history, permissions and
+    // caches. The purge is journaled before anything is deleted. An identity whose purge has not completed cannot be
+    // created again, and its purge runs again at the next start. Without encryption at rest this is deletion, not
+    // cryptographic erasure: copies outside the browser's stores, such as backups or swap, are not reached.
+    ErrorOr<IdentityPurgeReport> purge_identity(StringView identity_id);
+
+    // Runs every purge that an earlier run journaled and did not complete.
+    Vector<IdentityPurgeReport> resume_pending_purges();
+
+    bool has_pending_purge(StringView identity_id) const;
+    bool purge_journal_is_readable() const;
+
+    void set_purge_failure_for_testing(Optional<IdentityPurgeStep> step) { m_purge_failure_for_testing = step; }
+
     void add_domain_rule(Privacy::DomainAssignmentRule);
     void remove_domain_rules_for_identity(StringView identity_id);
     void clear_domain_rules();
@@ -69,7 +84,12 @@ public:
         bool user_confirmed = false) const;
 
 private:
+    IdentityPurgeReport run_purge(String const& identity_id);
+    IdentityPurgeLocations purge_locations() const;
+
     RefPtr<Database::Database> m_browsing_database;
+    OwnPtr<IdentityPurgeJournal> m_purge_journal;
+    Optional<IdentityPurgeStep> m_purge_failure_for_testing;
     HashMap<String, NonnullRefPtr<BrowsingSession>> m_sessions;
     Vector<Privacy::DomainAssignmentRule> m_domain_rules;
 };

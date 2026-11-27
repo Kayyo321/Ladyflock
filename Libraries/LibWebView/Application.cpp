@@ -2141,6 +2141,9 @@ ErrorOr<void> Application::launch_services()
     m_default_session->blob_url_store = make<BlobURLStore>();
     m_identity_manager->register_default_session(*m_default_session, move(browsing_database));
 
+    // A purge that an earlier run started and did not finish completes before any identity can be created again.
+    (void)m_identity_manager->resume_pending_purges();
+
     m_file_downloader.adopt_download_store({}, *m_download_store);
 
 #if !defined(AK_OS_WINDOWS)

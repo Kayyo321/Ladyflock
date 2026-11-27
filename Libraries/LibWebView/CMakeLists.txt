@@ -54,6 +54,7 @@ set(SOURCES
     HistoryStore.cpp
     HSTSStore.cpp
     IdentityManager.cpp
+    IdentityPurge.cpp
     ImageDecoderControlClient.cpp
     ImageDecoderManager.cpp
     LingeringIndicator.cpp

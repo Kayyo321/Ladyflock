@@ -16,6 +16,7 @@
 #include <LibWebView/PrivacyPolicyCoordinator.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/StorageJar.h>
+#include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WorkerAgentManager.h>
 
 namespace WebView {
@@ -29,6 +30,9 @@ void IdentityManager::register_default_session(NonnullRefPtr<BrowsingSession> de
 {
     m_browsing_database = move(browsing_database);
     m_sessions.set(default_session->identity_id(), move(default_session));
+
+    m_purge_journal = make<IdentityPurgeJournal>(LexicalPath::join(Application::the().profile().paths().data, "IdentityPurges.json"sv).string());
+    m_purge_journal->load();
 }
 
 ErrorOr<NonnullRefPtr<BrowsingSession>> IdentityManager::create_identity(Privacy::IdentityDescriptor descriptor)
@@ -41,6 +45,12 @@ ErrorOr<NonnullRefPtr<BrowsingSession>> IdentityManager::create_identity(Privacy
 
     if (m_sessions.contains(descriptor.id))
         return Error::from_string_literal("Identity ID already exists");
+
+    // An identity whose purge did not complete may still have data on disk, which it must not reattach to.
+    if (!purge_journal_is_readable())
+        return Error::from_string_literal("The identity purge journal cannot be read");
+    if (has_pending_purge(descriptor.id))
+        return Error::from_string_literal("Identity is being purged");
 
     auto session = BrowsingSession::create_for_identity(descriptor);
 
@@ -120,6 +130,93 @@ bool IdentityManager::destroy_identity(StringView identity_id)
     Application::privacy_activity().remove_session(session->id());
     remove_domain_rules_for_identity(identity_id);
     return true;
+}
+
+bool IdentityManager::has_pending_purge(StringView identity_id) const
+{
+    return m_purge_journal && m_purge_journal->contains(identity_id);
+}
+
+bool IdentityManager::purge_journal_is_readable() const
+{
+    return !m_purge_journal || m_purge_journal->is_readable();
+}
+
+IdentityPurgeLocations IdentityManager::purge_locations() const
+{
+    auto const& paths = Application::the().profile().paths();
+    return {
+        .browsing_database_directory = paths.data,
+        .configuration_root = paths.config,
+        .cache_root = Application::request_server_options().cache_path,
+        .history_database_directory = paths.data,
+    };
+}
+
+ErrorOr<IdentityPurgeReport> IdentityManager::purge_identity(StringView identity_id)
+{
+    if (!Privacy::is_valid_identity_id(identity_id))
+        return Error::from_string_literal("Invalid identity ID");
+    if (identity_id == Privacy::DEFAULT_IDENTITY_ID || identity_id == Privacy::PRIVATE_IDENTITY_ID)
+        return Error::from_string_literal("Identity ID is reserved");
+    if (!m_purge_journal)
+        return Error::from_string_literal("Identities are not set up");
+
+    // The purge is on disk before anything is deleted, so a crash part way through finishes at the next start.
+    auto id = TRY(String::from_utf8(identity_id));
+    TRY(m_purge_journal->add(id));
+    return run_purge(id);
+}
+
+Vector<IdentityPurgeReport> IdentityManager::resume_pending_purges()
+{
+    Vector<IdentityPurgeReport> reports;
+    if (!m_purge_journal)
+        return reports;
+    for (auto const& identity_id : Vector { m_purge_journal->pending() })
+        reports.append(run_purge(identity_id));
+    return reports;
+}
+
+IdentityPurgeReport IdentityManager::run_purge(String const& identity_id)
+{
+    IdentityPurgeReport report { .identity_id = identity_id, .completed_steps = {}, .failures = {} };
+
+    // Stop the identity's traffic first. Its views close, its workers and RequestServers go, and its stores are
+    // detached from disk, so nothing it still does writes back what is about to be deleted. Replacing the stores lets
+    // the old ones flush first, which the deletion below then removes.
+    if (auto session = find_session(identity_id)) {
+        ViewImplementation::for_each_view([&](ViewImplementation& view) {
+            if (&view.session() == session.ptr())
+                view.force_close();
+            return IterationDecision::Continue;
+        });
+        destroy_identity(identity_id);
+        Application::the().file_downloader().cancel_downloads_for_identity(identity_id);
+
+        session->cookie_jar = CookieJar::create();
+        session->storage_jar = StorageJar::create();
+        if (session->permission_manager)
+            session->permission_manager->stop_persisting();
+    } else {
+        remove_domain_rules_for_identity(identity_id);
+    }
+    report.completed_steps.append(IdentityPurgeStep::StopIdentity);
+
+    purge_identity_data(identity_id, m_browsing_database, purge_locations(), report, m_purge_failure_for_testing);
+
+    if (report.is_complete()) {
+        if (m_purge_failure_for_testing == IdentityPurgeStep::ClearJournal)
+            report.failures.append({ IdentityPurgeStep::ClearJournal, "Failure injected for testing"_string });
+        else if (auto result = m_purge_journal->remove(identity_id); result.is_error())
+            report.failures.append({ IdentityPurgeStep::ClearJournal, MUST(String::formatted("{}", result.error())) });
+        else
+            report.completed_steps.append(IdentityPurgeStep::ClearJournal);
+    }
+
+    for (auto const& failure : report.failures)
+        warnln("Purging identity {}: {} failed: {}", identity_id, identity_purge_step_name(failure.step), failure.reason);
+    return report;
 }
 
 void IdentityManager::add_domain_rule(Privacy::DomainAssignmentRule rule)
