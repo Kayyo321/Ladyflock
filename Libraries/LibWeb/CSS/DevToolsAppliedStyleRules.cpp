@@ -627,18 +627,30 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
 
     // A compiled stylesheet can be shared by the document and any connected shadow root.
     // The matched rule identifies its compiled source without naming the occurrence.
-    HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
-    auto add_occurrences = [&](StyleScope const& scope) {
+    // Within one scope, the engine applies a sheet included several times at its last place whose conditions hold,
+    // so that copy is the one whose rules style the page.
+    auto for_each_applied_copy = [](StyleScope const& scope, auto&& callback) {
+        HashMap<StyleSheetState const*, StyleSheetState const*> applied_copy_by_snapshot;
+        Vector<StyleSheetState const*> snapshots;
         scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
             auto* compiled = sheet.shared_compiled_style_sheet();
-            if (!compiled)
+            if (!compiled || sheet.disabled() || !sheet.native_media_list().matches())
                 return;
-            auto* snapshot = &compiled->contents();
-            auto existing = live_sheet_by_snapshot.get(snapshot);
+            if (applied_copy_by_snapshot.set(&compiled->contents(), &sheet) == HashSetResult::InsertedNewEntry)
+                snapshots.append(&compiled->contents());
+        });
+        for (auto const* snapshot : snapshots)
+            callback(*snapshot, *applied_copy_by_snapshot.get(snapshot).value());
+    };
+
+    HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
+    auto add_occurrences = [&](StyleScope const& scope) {
+        for_each_applied_copy(scope, [&](StyleSheetState const& snapshot, StyleSheetState const& sheet) {
+            auto existing = live_sheet_by_snapshot.get(&snapshot);
             if (!existing.has_value())
-                live_sheet_by_snapshot.set(snapshot, &sheet);
+                live_sheet_by_snapshot.set(&snapshot, &sheet);
             else if (*existing != &sheet)
-                live_sheet_by_snapshot.set(snapshot, nullptr);
+                live_sheet_by_snapshot.set(&snapshot, nullptr);
         });
     };
     add_occurrences(m_document->style_scope());
@@ -684,9 +696,8 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
         }
         Optional<StyleSheetState const*> found;
         for (auto const* scope : scopes) {
-            scope->for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
-                auto* compiled = sheet.shared_compiled_style_sheet();
-                if (!compiled || &compiled->contents() != &snapshot)
+            for_each_applied_copy(*scope, [&](StyleSheetState const& candidate_snapshot, StyleSheetState const& sheet) {
+                if (&candidate_snapshot != &snapshot)
                     return;
                 found = found.has_value() && *found != &sheet ? nullptr : &sheet;
             });

@@ -1010,6 +1010,42 @@ TEST_CASE(inspector_edits_the_slotted_rule_of_the_tree_a_span_is_slotted_into)
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(5, 5, 5)/rgb(6, 6, 6)"sv);
 }
 
+constexpr auto repeated_sheet_html = R"HTML(<!doctype html><title>Repeated</title>
+<style>.repeated { color: rgb(3, 3, 3); }</style>
+<style>.repeated { color: rgb(3, 3, 3); }</style>
+<style media="print">.repeated { color: rgb(3, 3, 3); }</style>
+<p class="repeated" id="repeated">Repeated</p>
+<script>document.title = "Repeated ready";</script>
+)HTML"sv;
+
+// A sheet included three times in the document applies at its last place whose media holds, the second one here, so
+// that copy is the one an edit goes to.
+TEST_CASE(inspector_edits_the_applied_copy_of_a_sheet_included_twice)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorRepeatedSheet"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { repeated_sheet_html, "Repeated ready"sv, 6 });
+
+    expect_holds(*fixture.frontend, "The repeated rule can be edited"sv, R"JS(
+        const repeatedRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes(".repeated"));
+        await select(n => n.attributes?.id === "repeated", () => repeatedRule());
+        const rule = repeatedRule();
+        if (!rule.sheetId)
+            return rule;
+        const declaration = rule.declarations.find(d => d.name === "color");
+        await app.stylesPane.commitDeclarationEdit(rule, declaration, rule.declarations.indexOf(declaration), "color", "rgb(4, 4, 4)");
+        app.refreshSelectedNodeProperties();
+        await until(() => app.state.lastComputedStyle?.color === "rgb(4, 4, 4)");
+        return null;
+    )JS"sv);
+    run_in_target(*fixture.target, R"JS(
+        const rules = [...document.styleSheets].map(sheet => sheet.cssRules[0].style.color);
+        document.title = "Sheets:" + rules.join("/") + " " + getComputedStyle(document.getElementById("repeated")).color;
+    )JS"sv,
+        "Sheets:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "Sheets:rgb(3, 3, 3)/rgb(4, 4, 4)/rgb(3, 3, 3) rgb(4, 4, 4)"sv);
+}
+
 // The CSS overview reads the page as it is now, shadow trees included, even while the page is not rendering.
 TEST_CASE(inspector_css_overview_reads_current_styles)
 {
