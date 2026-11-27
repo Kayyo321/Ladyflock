@@ -1419,7 +1419,9 @@ void WebContentPage::did_execute_js_console_input(DebuggerValue result, bool thr
     if (displays_tab()) {
         if (auto* session = view().inspector_session())
             session->did_receive_js_console_result(result, thrown);
-        if (view().on_received_js_console_result)
+        // Remote DevTools has no way yet to show a thrown evaluation as an exception rather than as its result, so
+        // it gets only results, as before; the exception still reaches it as a console error.
+        if (!thrown && view().on_received_js_console_result)
             view().on_received_js_console_result(move(result));
     }
 }
