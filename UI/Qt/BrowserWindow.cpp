@@ -24,6 +24,7 @@
 #include <UI/Qt/DevToolsBanner.h>
 #include <UI/Qt/HubConnection.h>
 #include <UI/Qt/Icon.h>
+#include <UI/Qt/InspectorHost.h>
 #include <UI/Qt/LadybirdButton.h>
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
@@ -502,6 +503,9 @@ void BrowserWindow::initialize_application_actions()
     addAction(application.open_file_action());
     addAction(application.open_settings_action());
     addAction(application.open_downloads_action());
+    addAction(application.toggle_inspector_action());
+    addAction(application.toggle_inspector_picker_action());
+    addAction(application.open_inspector_console_action());
     addAction(application.toggle_bookmark_bar_action());
     addAction(application.toggle_sidebar_action());
     addAction(application.open_location_action());
@@ -1214,7 +1218,7 @@ void BrowserWindow::discard_tab(Tab& tab)
     //     reviews a report would lose the report, which only its page holds, and one with an unfinished edit of its
     //     address would lose the edit.
     auto index = tab_index(&tab);
-    if (index < 0 || &tab == m_current_tab || tab.is_pinned() || tab.is_in_report_review() || tab.location_edit_with_parked_editing()) {
+    if (index < 0 || &tab == m_current_tab || tab.is_pinned() || tab.is_in_report_review() || tab.has_open_inspector() || tab.location_edit_with_parked_editing()) {
         tab.view().decline_discard();
         return;
     }
@@ -1652,6 +1656,19 @@ void BrowserWindow::move_focus_between_chrome_and_page()
 {
     if (!m_current_tab)
         return;
+    // F6 cycles Browser Chrome -> Page -> Inspector -> Browser Chrome.
+    if (m_current_tab->has_open_inspector()) {
+        if (m_current_tab->inspector_host()->inspector_has_focus()) {
+            m_current_tab->focus_location_editor();
+            return;
+        }
+        if (m_current_tab->view().hasFocus()) {
+            m_current_tab->inspector_host()->focus_inspector();
+            return;
+        }
+        m_current_tab->view().setFocus(Qt::ShortcutFocusReason);
+        return;
+    }
     if (m_current_tab->view().hasFocus())
         m_current_tab->focus_location_editor();
     else

@@ -61,6 +61,9 @@ public:
     Action& force_dark_action() { return *m_force_dark_action; }
     Action& toggle_vertical_tabs_expanded_action() { return *m_toggle_vertical_tabs_expanded_action; }
     Action& toggle_menu_bar_action() { return *m_toggle_menu_bar_action; }
+    Action& toggle_inspector_action() { return *m_toggle_inspector_action; }
+    Action& toggle_inspector_picker_action() { return *m_toggle_inspector_picker_action; }
+    Action& open_inspector_console_action() { return *m_open_inspector_console_action; }
     Action& view_source_action() { return *m_view_source_action; }
     Action& report_website_issue_action() { return *m_report_website_issue_action; }
 
@@ -105,6 +108,9 @@ private:
     RefPtr<Action> m_force_dark_action;
     RefPtr<Action> m_toggle_vertical_tabs_expanded_action;
     RefPtr<Action> m_toggle_menu_bar_action;
+    RefPtr<Action> m_toggle_inspector_action;
+    RefPtr<Action> m_toggle_inspector_picker_action;
+    RefPtr<Action> m_open_inspector_console_action;
     RefPtr<Action> m_view_source_action;
     RefPtr<Action> m_toggle_devtools_action;
     RefPtr<Action> m_report_website_issue_action;

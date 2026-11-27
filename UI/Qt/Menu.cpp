@@ -308,12 +308,35 @@ static void set_action_shortcuts(QAction& qaction, ActionID id)
         qaction.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
 #endif
         break;
-    case ActionID::ToggleDevTools:
+    case ActionID::ToggleInspector:
+#if defined(AK_OS_MACOS)
         qaction.setShortcuts({
-            QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I),
-            QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C),
+            QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_I),
             QKeySequence(Qt::Key_F12),
         });
+#else
+        qaction.setShortcuts({
+            QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I),
+            QKeySequence(Qt::Key_F12),
+        });
+#endif
+        break;
+    case ActionID::ToggleInspectorPicker:
+#if defined(AK_OS_MACOS)
+        qaction.setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_C));
+#else
+        qaction.setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
+#endif
+        break;
+    case ActionID::OpenInspectorConsole:
+#if defined(AK_OS_MACOS)
+        qaction.setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_J));
+#else
+        qaction.setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_J));
+#endif
+        break;
+    case ActionID::ToggleDevTools:
+        // Remote DevTools server toggle no longer claims the local Inspector shortcuts.
         break;
     case ActionID::ViewSource:
 #if defined(AK_OS_MACOS)

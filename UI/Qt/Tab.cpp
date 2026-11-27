@@ -26,6 +26,7 @@
 #include <UI/Qt/ChromeStyle.h>
 #include <UI/Qt/HubConnection.h>
 #include <UI/Qt/Icon.h>
+#include <UI/Qt/InspectorHost.h>
 #include <UI/Qt/JavaScriptDialog.h>
 #include <UI/Qt/LadybirdButton.h>
 #if defined(AK_OS_MACOS)
@@ -257,7 +258,20 @@ void Tab::initialize(Optional<u64> hub_view_id)
     m_hover_label->setContentsMargins(4, 2, 4, 2);
     m_hover_label->setAutoFillBackground(true);
 
-    tab_layout->addWidget(m_view);
+    m_inspector_host = new InspectorHost(this, *m_window, *m_view);
+    tab_layout->addWidget(m_inspector_host);
+
+    view().on_inspector_open_requested = [this](String const& panel, Optional<i64>, u64) {
+        open_inspector(panel);
+    };
+    view().on_inspector_close_requested = [this] {
+        close_inspector();
+    };
+    view().on_inspector_dock_mode_changed = [this](String const& dock_mode) {
+        if (m_inspector_host)
+            m_inspector_host->set_dock_mode(InspectorHost::dock_mode_from_string(dock_mode), true);
+    };
+    view().on_inspector_picker_state_changed = [](bool) { };
 
     // NB: A page can block many requests in a burst while it loads, so the open popover catches up with them at most
     //     ten times a second rather than for each one.
@@ -1112,6 +1126,49 @@ void Tab::set_window(BrowserWindow& window)
     // The tab's pages hold the geometry of the window that hosted them until now.
     m_view->set_window_position({ window.x(), window.y() });
     m_view->set_window_size({ window.width(), window.height() });
+    if (m_inspector_host)
+        m_inspector_host->set_browser_window(window);
+}
+
+void Tab::open_inspector(String const& panel)
+{
+    ensure_loaded();
+    if (!m_inspector_host)
+        return;
+    m_inspector_host->update_target_title(title());
+    m_inspector_host->open(panel);
+}
+
+void Tab::toggle_inspector()
+{
+    ensure_loaded();
+    if (!m_inspector_host)
+        return;
+    m_inspector_host->update_target_title(title());
+    m_inspector_host->toggle();
+}
+
+void Tab::close_inspector()
+{
+    if (m_inspector_host)
+        m_inspector_host->close_inspector();
+}
+
+void Tab::toggle_inspector_picker()
+{
+    ensure_loaded();
+    if (!m_inspector_host)
+        return;
+    if (!m_inspector_host->is_open()) {
+        m_inspector_host->update_target_title(title());
+        m_inspector_host->open("elements"_string);
+    }
+    HubConnection::the().async_view_inspector_toggle_picker(view().view_id());
+}
+
+bool Tab::has_open_inspector() const
+{
+    return m_inspector_host && m_inspector_host->is_open();
 }
 
 void Tab::set_pinned(bool pinned)

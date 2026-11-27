@@ -211,6 +211,9 @@ public:
     QAction* open_file_action();
     QAction* open_settings_action();
     QAction* open_downloads_action();
+    QAction* toggle_inspector_action();
+    QAction* toggle_inspector_picker_action();
+    QAction* open_inspector_console_action();
     QAction* toggle_bookmark_bar_action();
     QAction* toggle_sidebar_action();
     QAction* open_location_action();

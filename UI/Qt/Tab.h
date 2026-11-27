@@ -48,6 +48,7 @@ namespace Ladybird {
 class BookmarkPopover;
 class BrowserWindow;
 enum class ChromeIcon;
+class InspectorHost;
 class JavaScriptDialog;
 class MessagePopover;
 
@@ -121,6 +122,13 @@ public:
     void show_find_in_page();
     void find_previous();
     void find_next();
+
+    void open_inspector(String const& panel = "elements"_string);
+    void toggle_inspector();
+    void close_inspector();
+    void toggle_inspector_picker();
+    bool has_open_inspector() const;
+    InspectorHost* inspector_host() const { return m_inspector_host; }
 
     void request_close();
     void request_window_close_preflight(Function<void(bool)> on_complete);
@@ -236,6 +244,7 @@ private:
     QPointer<Tab> m_tab_to_activate_on_close;
     QPointer<LocationEdit> m_location_edit;
     WebContentView* m_view { nullptr };
+    InspectorHost* m_inspector_host { nullptr };
     FindInPageWidget* m_find_in_page { nullptr };
     Optional<WakeLock::DisplaySleepInhibitor> m_screen_display_sleep_inhibitor;
     BrowserWindow* m_window { nullptr };

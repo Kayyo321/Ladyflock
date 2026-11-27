@@ -43,6 +43,7 @@ add_library(ladybird_impl STATIC
     HubConnection.cpp
     Icon.cpp
     InputMethodUtils.cpp
+    InspectorHost.cpp
     JavaScriptDialog.cpp
     LadybirdButton.cpp
     LocationEdit.cpp
