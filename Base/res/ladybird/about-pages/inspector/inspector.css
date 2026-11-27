@@ -219,18 +219,44 @@ body.inspector-shell {
     display: flex;
     align-items: center;
     gap: 2px;
+    min-width: 0;
+}
+
+/* A tab strip scrolls sideways only. With overflow-x alone, overflow-y computes to auto too, and anything a pixel
+   taller than the strip made it scroll vertically under a trackpad. The wheel handler in bridge.js turns vertical
+   wheel movement into sideways scrolling, and the fade classes show that more tabs are hidden past an edge. */
+.panel-tabs,
+.sidebar-tabs,
+.drawer-tabs {
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior: contain;
     scrollbar-width: none;
 }
 
-.panel-tabs::-webkit-scrollbar {
+.panel-tabs::-webkit-scrollbar,
+.sidebar-tabs::-webkit-scrollbar,
+.drawer-tabs::-webkit-scrollbar {
     display: none;
+}
+
+.tabs-fade-end {
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+
+.tabs-fade-start {
+    mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+}
+
+.tabs-fade-start.tabs-fade-end {
+    mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
 }
 
 .panel-tabs button,
 .sidebar-tabs button,
 .drawer-tabs button {
     position: relative;
+    flex-shrink: 0;
     height: 28px;
     padding: 0 9px;
     border: none;
@@ -239,9 +265,13 @@ body.inspector-shell {
     color: var(--muted);
     font: inherit;
     font-size: 12px;
-    font-weight: 400;
+    font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
+}
+
+.drawer-tabs button {
+    height: 24px;
 }
 
 .panel-tabs button:hover,
@@ -251,21 +281,22 @@ body.inspector-shell {
     color: var(--text);
 }
 
+/* The weight stays the same when selected, so the tabs after it do not shift sideways. */
 .panel-tabs button[aria-selected="true"],
 .sidebar-tabs button[aria-selected="true"],
 .drawer-tabs button[aria-selected="true"] {
     color: var(--text);
-    font-weight: 500;
 }
 
+/* Inside the tab, not below it: a scroll container clips anything that hangs past its edge. */
 .panel-tabs button[aria-selected="true"]::after,
 .sidebar-tabs button[aria-selected="true"]::after,
 .drawer-tabs button[aria-selected="true"]::after {
     content: "";
     position: absolute;
-    left: 6px;
-    right: 6px;
-    bottom: -2px;
+    left: 8px;
+    right: 8px;
+    bottom: 0;
     height: 2px;
     border-radius: 2px;
     background: var(--accent);
@@ -374,6 +405,18 @@ body.inspector-shell {
 .chip-btn.primary {
     background: var(--primary);
     color: #fff;
+}
+
+.chip-btn.primary:hover {
+    background: var(--primary-hover);
+}
+
+.chip-btn:disabled,
+.chip-btn.primary:disabled {
+    background: var(--control);
+    color: var(--muted);
+    box-shadow: none;
+    cursor: default;
 }
 
 .chip-btn.active {
@@ -570,9 +613,13 @@ body.inspector-shell {
     outline: none;
 }
 
+/* As wide as the longest row, so hover and selection fill the row when the tree scrolls sideways. */
 .dom-row {
     display: flex;
     align-items: center;
+    box-sizing: border-box;
+    width: max-content;
+    min-width: 100%;
     min-height: var(--inspector-row-h);
     padding: 1px 8px;
     white-space: nowrap;
@@ -591,6 +638,15 @@ body.inspector-shell {
 
 .dom-row.selected * {
     color: inherit !important;
+}
+
+/* Badges keep their own tile, so they keep their own ink. */
+.dom-row.selected .node-badge {
+    color: var(--body) !important;
+}
+
+.dom-row.selected .node-badge.active {
+    color: var(--primary) !important;
 }
 
 .dom-row.search-match {
@@ -706,8 +762,14 @@ body.inspector-shell {
     background: var(--surface);
     border-top: 1px solid var(--separator);
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior: contain;
     scrollbar-width: none;
     font-size: 11px;
+}
+
+.dom-breadcrumbs > * {
+    flex-shrink: 0;
 }
 
 .crumb-btn {
@@ -741,8 +803,6 @@ body.inspector-shell {
     padding: 0 6px;
     background: var(--surface);
     border-bottom: 1px solid var(--separator);
-    overflow-x: auto;
-    scrollbar-width: none;
 }
 
 .sidebar-content {
@@ -914,21 +974,33 @@ span.source-link {
 
 .decl-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 5px;
     font-family: var(--font-mono);
     font-size: 12px;
+    line-height: 18px;
     min-height: 20px;
+    padding: 1px 0;
 }
 
-.decl-row.overridden .decl-prop,
-.decl-row.overridden .decl-val {
+/* Everything that is not the text sits on the first line of it. */
+.decl-row > :not(.decl-text) {
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.decl-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.decl-row.overridden .decl-text {
     text-decoration: line-through;
     opacity: 0.55;
 }
 
-.decl-row.invalid .decl-prop,
-.decl-row.invalid .decl-val {
+.decl-row.invalid .decl-text {
     text-decoration: line-through wavy var(--error);
     opacity: 0.7;
 }
@@ -937,9 +1009,10 @@ span.source-link {
     opacity: 0.72;
 }
 
-.decl-toggle {
+.decl-row > .decl-toggle {
     width: 13px !important;
     height: 13px !important;
+    margin-top: 2.5px;
 }
 
 .decl-prop {
@@ -954,24 +1027,28 @@ span.source-link {
 
 .color-swatch-inline {
     display: inline-block;
+    box-sizing: border-box;
     width: 11px;
     height: 11px;
+    margin: 0 4px 0 0;
+    padding: 0;
     border-radius: 3px;
     border: 1px solid var(--edge);
-    vertical-align: middle;
+    vertical-align: -1px;
     cursor: pointer;
-    flex-shrink: 0;
 }
 
 .why-won-btn {
     border: none;
     background: transparent;
     color: var(--muted);
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     font-size: 10px;
-    padding: 1px 5px;
+    line-height: 14px;
+    padding: 0 5px;
     border-radius: 4px;
     cursor: pointer;
-    margin-left: auto;
+    white-space: nowrap;
 }
 
 .add-decl-btn {
@@ -996,6 +1073,7 @@ span.source-link {
 .inactive-chip {
     display: inline-flex;
     align-items: center;
+    line-height: 14px;
     padding: 0 5px;
     border-radius: 4px;
     font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -1417,10 +1495,11 @@ span.source-link {
 }
 
 .drawer-tabs {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 2px;
-    overflow-x: auto;
 }
 
 .drawer-body {
@@ -1514,6 +1593,9 @@ span.source-link {
     position: fixed;
     z-index: 100;
     min-width: 210px;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 6px;
     border-radius: 10px;
     background: var(--surface);
@@ -1604,7 +1686,12 @@ span.source-link {
     cursor: pointer;
 }
 
-.command-item:hover,
+.command-empty {
+    padding: 7px 10px;
+}
+
+/* In the command menu the pointer moves the active item, so only one item is ever highlighted. */
+.sources-sidebar .command-item:hover,
 .command-item.active {
     background: var(--selected-row-bg);
     color: var(--selected-row-fg);
@@ -1670,13 +1757,25 @@ span.source-link {
 }
 
 .code-gutter {
-    width: 42px;
+    appearance: none;
+    box-sizing: border-box;
+    width: 52px;
+    margin: 0;
+    padding: 0 10px 0 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    font: inherit;
+    line-height: inherit;
     text-align: right;
-    padding-right: 10px;
     color: var(--muted);
     user-select: none;
     cursor: pointer;
     flex-shrink: 0;
+}
+
+.code-gutter:hover {
+    color: var(--text);
 }
 
 .code-gutter.bp::before {

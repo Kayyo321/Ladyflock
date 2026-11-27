@@ -21,6 +21,20 @@ const FORCED_PSEUDO_STATES = [
     { key: "stalled", label: ":stalled" },
 ];
 
+// An inline span that edits like a button. A <button> is an atomic inline box, so a long value could not wrap under
+// the property name; this flows as text and still takes focus, Enter and Space.
+function inlineEditTrigger(className, text, id, label, activate) {
+    const trigger = el("span", { class: `inline-editor-trigger ${className}`, role: "button", tabindex: 0, id, "aria-label": label, text });
+    trigger.addEventListener("click", () => activate(trigger));
+    trigger.addEventListener("keydown", e => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            activate(trigger);
+        }
+    });
+    return trigger;
+}
+
 export class StylesPaneController {
     constructor(app) {
         this.app = app;
@@ -495,9 +509,10 @@ export class StylesPaneController {
                 });
                 declRow.appendChild(toggle);
 
-                const propSpan = el("span", { class: "decl-prop", text: propName });
-                declRow.appendChild(propSpan);
-                declRow.appendChild(document.createTextNode(": "));
+                // Name, colon, swatch, value and semicolon are one run of text, so they share a baseline and a long
+                // value wraps under the name instead of becoming a separate column.
+                const declText = el("span", { class: "decl-text" });
+                declText.append(el("span", { class: "decl-prop", text: propName }), el("span", { class: "decl-colon", text: ": " }));
 
                 // Inline color swatch + WCAG/APCA contrast picker
                 const parsedColor = parseCssColor(propVal.replace(/!important/i, "").trim());
@@ -506,26 +521,24 @@ export class StylesPaneController {
                         type: "button",
                         class: "color-swatch-inline",
                         title: "Open color & contrast editor",
+                        "aria-label": `Open color editor for ${propName}`,
+                        "aria-expanded": this.openColorKey === storyKey ? "true" : "false",
                         onClick: () => {
                             this.openColorKey = this.openColorKey === storyKey ? null : storyKey;
                             this.render();
                         },
                     });
                     swatch.style.backgroundColor = propVal.replace(/!important/i, "").trim();
-                    declRow.appendChild(swatch);
-                    declRow.appendChild(document.createTextNode(" "));
+                    declText.appendChild(swatch);
                 }
 
                 const valText = `${propVal}${decl.priority === "important" && !propVal.includes("!important") ? " !important" : ""}`;
                 const valSpan = editable
-                    ? el("button", {
-                        class: "inline-editor-trigger decl-val", type: "button", text: valText,
-                        id: `${editId}-value-${declIdx}`, "aria-label": `Edit ${propName}, ${valText}`,
-                        onClick: e => this.beginInlineValueEdit(e.currentTarget, rule, decl, declIdx),
-                    })
+                    ? inlineEditTrigger("decl-val", valText, `${editId}-value-${declIdx}`, `Edit ${propName}, ${valText}`,
+                        trigger => this.beginInlineValueEdit(trigger, rule, decl, declIdx))
                     : el("span", { class: "decl-val", text: valText });
-                declRow.appendChild(valSpan);
-                declRow.appendChild(document.createTextNode(";"));
+                declText.append(valSpan, el("span", { class: "decl-semicolon", text: ";" }));
+                declRow.appendChild(declText);
 
                 if (inactiveReason) {
                     declRow.appendChild(el("span", {

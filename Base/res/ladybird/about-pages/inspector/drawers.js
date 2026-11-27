@@ -6,7 +6,7 @@
  * Quick Source, Animations, Rendering, and Sensors.
  */
 
-import { el, sendCommand, sendEngineCommand } from "./bridge.js";
+import { el, enableTabListKeyboard, revealInStrip, sendCommand, sendEngineCommand } from "./bridge.js";
 
 export class DrawersController {
     constructor(app) {
@@ -32,6 +32,7 @@ export class DrawersController {
         document.querySelectorAll("#drawer-tabs button").forEach(btn => {
             btn.addEventListener("click", () => this.open(btn.dataset.drawer));
         });
+        enableTabListKeyboard(document.getElementById("drawer-tabs"), tab => this.open(tab.dataset.drawer));
         document.getElementById("btn-drawer-close").addEventListener("click", () => this.close());
     }
 
@@ -51,6 +52,7 @@ export class DrawersController {
         document.querySelectorAll("#drawer-tabs button").forEach(b => {
             b.setAttribute("aria-selected", b.dataset.drawer === drawerName ? "true" : "false");
         });
+        revealInStrip(document.getElementById("drawer-tabs"), document.querySelector(`#drawer-tabs button[data-drawer="${drawerName}"]`));
         this.renderActive();
     }
 

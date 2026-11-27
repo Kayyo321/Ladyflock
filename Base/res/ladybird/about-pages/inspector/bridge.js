@@ -123,6 +123,70 @@ export function el(tag, attrs = {}, ...children) {
     return node;
 }
 
+// A strip that only scrolls sideways (tabs, breadcrumbs): a vertical wheel or two-finger swipe moves it sideways
+// instead of doing nothing, and a fade at either edge shows that more is hidden past it.
+export function enhanceScrollStrip(strip) {
+    const updateFades = () => {
+        const overflowing = strip.scrollWidth > strip.clientWidth + 1;
+        strip.classList.toggle("tabs-fade-start", overflowing && strip.scrollLeft > 1);
+        strip.classList.toggle("tabs-fade-end", overflowing && strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+    };
+    strip.addEventListener("wheel", e => {
+        if (strip.scrollWidth <= strip.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX))
+            return;
+        e.preventDefault();
+        strip.scrollLeft += e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 16 : e.deltaY;
+    }, { passive: false });
+    strip.addEventListener("scroll", updateFades, { passive: true });
+    new ResizeObserver(updateFades).observe(strip);
+    new MutationObserver(updateFades).observe(strip, { childList: true });
+    updateFades();
+    return updateFades;
+}
+
+// Scrolls a strip just enough to show the given child, without moving any other scroller.
+export function revealInStrip(strip, child) {
+    if (!strip || !child)
+        return;
+    const visible = strip.getBoundingClientRect();
+    const target = child.getBoundingClientRect();
+    if (target.left < visible.left)
+        strip.scrollLeft -= visible.left - target.left + 16;
+    else if (target.right > visible.right)
+        strip.scrollLeft += target.right - visible.right + 16;
+}
+
+// ARIA tabs: one Tab stop for the list; arrows, Home and End move between tabs and activate them.
+export function enableTabListKeyboard(tablist, activate) {
+    const tabs = () => [...tablist.querySelectorAll('[role="tab"]')];
+    const syncTabStops = () => {
+        for (const tab of tabs())
+            tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
+    };
+    new MutationObserver(syncTabStops).observe(tablist, { subtree: true, attributeFilter: ["aria-selected"] });
+    syncTabStops();
+    tablist.addEventListener("keydown", e => {
+        const list = tabs();
+        const index = list.indexOf(document.activeElement);
+        if (index < 0)
+            return;
+        let next = null;
+        if (e.key === "ArrowRight")
+            next = list[(index + 1) % list.length];
+        else if (e.key === "ArrowLeft")
+            next = list[(index - 1 + list.length) % list.length];
+        else if (e.key === "Home")
+            next = list[0];
+        else if (e.key === "End")
+            next = list[list.length - 1];
+        if (!next)
+            return;
+        e.preventDefault();
+        activate(next);
+        next.focus();
+    });
+}
+
 export function announce(message) {
     const region = document.getElementById("live-announcer");
     if (!region)

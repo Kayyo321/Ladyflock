@@ -6,7 +6,7 @@
  * keyboard shortcuts, splitters, settings, and cross-panel reveals.
  */
 
-import { announce, el, initBridge, onEvent, sendCommand, sendEngineCommand } from "./bridge.js";
+import { announce, el, enableTabListKeyboard, enhanceScrollStrip, initBridge, onEvent, revealInStrip, sendCommand, sendEngineCommand } from "./bridge.js";
 import { DrawersController } from "./drawers.js";
 import { ElementsTreeController } from "./elements-tree.js";
 import { SidebarsController } from "./sidebars.js";
@@ -90,6 +90,10 @@ class InspectorApp {
         document.querySelectorAll("#sidebar-tabs button").forEach(btn => {
             btn.addEventListener("click", () => this.selectSidebar(btn.dataset.sidebar));
         });
+        for (const id of ["panel-tabs", "sidebar-tabs", "drawer-tabs", "dom-breadcrumbs"])
+            enhanceScrollStrip(document.getElementById(id));
+        enableTabListKeyboard(document.getElementById("panel-tabs"), tab => this.selectPanel(tab.dataset.panel));
+        enableTabListKeyboard(document.getElementById("sidebar-tabs"), tab => this.selectSidebar(tab.dataset.sidebar));
 
         // Top toolbar actions
         document.getElementById("btn-pick").addEventListener("click", () => {
@@ -148,7 +152,28 @@ class InspectorApp {
         });
 
         // Command menu & settings dialogs
-        document.getElementById("command-menu-input").addEventListener("input", e => this.renderCommandMenu(e.target.value));
+        const commandInput = document.getElementById("command-menu-input");
+        commandInput.addEventListener("input", e => this.renderCommandMenu(e.target.value));
+        commandInput.addEventListener("keydown", e => {
+            const items = [...document.querySelectorAll("#command-menu-list .command-item")];
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                if (items.length)
+                    this.setActiveCommand((this.commandMenuIndex + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
+            } else if (e.key === "Enter") {
+                e.preventDefault();
+                items[this.commandMenuIndex]?.click();
+            }
+        });
+        for (const menuId of ["dock-menu", "more-menu", "context-menu"])
+            this.enableMenuKeyboard(document.getElementById(menuId));
+        window.addEventListener("resize", () => this.hideContextMenu());
+        window.addEventListener("blur", () => this.hideContextMenu());
+        document.addEventListener("scroll", e => {
+            // Strips scroll themselves to reveal the selection; only a scroll the person makes dismisses the menu.
+            if (!e.target.closest?.("#context-menu, .dom-breadcrumbs, .panel-tabs, .sidebar-tabs, .drawer-tabs"))
+                this.hideContextMenu();
+        }, true);
         document.getElementById("btn-settings-close").addEventListener("click", () => document.getElementById("settings-dialog").close());
     }
 
@@ -435,6 +460,7 @@ class InspectorApp {
         document.querySelectorAll("#panel-tabs button").forEach(b => {
             b.setAttribute("aria-selected", b.dataset.panel === panelName ? "true" : "false");
         });
+        revealInStrip(document.getElementById("panel-tabs"), document.querySelector(`#panel-tabs button[data-panel="${panelName}"]`));
         document.querySelectorAll(".panel-view").forEach(p => {
             p.classList.toggle("active", p.id === `panel-${panelName}`);
         });
@@ -463,6 +489,7 @@ class InspectorApp {
         document.querySelectorAll("#sidebar-tabs button").forEach(b => {
             b.setAttribute("aria-selected", b.dataset.sidebar === sidebarName ? "true" : "false");
         });
+        revealInStrip(document.getElementById("sidebar-tabs"), document.querySelector(`#sidebar-tabs button[data-sidebar="${sidebarName}"]`));
         document.querySelectorAll(".sidebar-view").forEach(v => {
             v.classList.toggle("active", v.id === `sidebar-${sidebarName}`);
         });
@@ -584,7 +611,11 @@ class InspectorApp {
                 settingsDialog.close();
             } else if (!document.getElementById("context-menu").classList.contains("hidden")) {
                 this.hideContextMenu();
-                this.elementsTree.treeEl.focus();
+                (this.contextMenuReturnFocus?.isConnected ? this.contextMenuReturnFocus : this.elementsTree.treeEl).focus();
+            } else if (document.querySelector(".menu-dropdown:not(.hidden)")) {
+                const open = document.querySelector(".menu-dropdown:not(.hidden)");
+                this.closeAllDropdowns();
+                open.parentElement.querySelector("[aria-haspopup]")?.focus();
             } else if (this.state.pickerActive) {
                 sendCommand("setPickerActive", { active: false }).catch(() => {});
             } else {
@@ -635,16 +666,61 @@ class InspectorApp {
         for (const cmd of commands) {
             if (q && !cmd.title.toLowerCase().includes(q))
                 continue;
+            const index = list.children.length;
             list.appendChild(el("button", {
                 class: "command-item",
                 type: "button",
+                role: "option",
+                tabindex: -1,
+                id: `command-item-${index}`,
                 text: cmd.title,
                 onClick: () => {
                     document.getElementById("command-menu-dialog").close();
                     cmd.run();
                 },
+                onMousemove: () => this.setActiveCommand(index),
             }));
         }
+        if (!list.children.length)
+            list.appendChild(el("div", { class: "command-empty muted", text: "No matching commands" }));
+        this.setActiveCommand(0);
+    }
+
+    setActiveCommand(index) {
+        this.commandMenuIndex = index;
+        const input = document.getElementById("command-menu-input");
+        const items = [...document.querySelectorAll("#command-menu-list .command-item")];
+        items.forEach((item, i) => {
+            item.classList.toggle("active", i === index);
+            item.setAttribute("aria-selected", i === index ? "true" : "false");
+        });
+        if (items[index]) {
+            input.setAttribute("aria-activedescendant", items[index].id);
+            items[index].scrollIntoView({ block: "nearest" });
+        } else {
+            input.removeAttribute("aria-activedescendant");
+        }
+    }
+
+    // Menus are one keyboard stop: arrows, Home and End move between the enabled items.
+    enableMenuKeyboard(menu) {
+        menu.addEventListener("keydown", e => {
+            const items = [...menu.querySelectorAll("button:not(:disabled)")];
+            const index = items.indexOf(document.activeElement);
+            let next = null;
+            if (e.key === "ArrowDown")
+                next = items[(index + 1) % items.length];
+            else if (e.key === "ArrowUp")
+                next = items[(index - 1 + items.length) % items.length];
+            else if (e.key === "Home")
+                next = items[0];
+            else if (e.key === "End")
+                next = items[items.length - 1];
+            if (!next)
+                return;
+            e.preventDefault();
+            next.focus();
+        });
     }
 
     openSettingsDialog() {
@@ -694,6 +770,9 @@ class InspectorApp {
             if (wasHidden) {
                 menu.classList.remove("hidden");
                 btn.setAttribute("aria-expanded", "true");
+                // A pointer click leaves focus on the button; a keyboard activation (detail 0) moves into the menu.
+                if (e.detail === 0)
+                    (menu.querySelector('[aria-checked="true"]') || menu.querySelector("button"))?.focus();
             }
         });
     }
@@ -724,11 +803,16 @@ class InspectorApp {
                 },
             }));
         }
+        this.contextMenuReturnFocus = document.activeElement;
+        menu.style.left = "0px";
+        menu.style.top = "0px";
+        menu.scrollTop = 0;
         menu.classList.remove("hidden");
+        // The menu scrolls when it is taller than the frontend (a short bottom dock), and always stays inside it.
         const rect = menu.getBoundingClientRect();
-        menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-        menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
-        menu.querySelector("button:not(:disabled)")?.focus();
+        menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+        menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+        menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
     }
 
     hideContextMenu() {

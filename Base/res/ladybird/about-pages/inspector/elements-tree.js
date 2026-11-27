@@ -506,9 +506,12 @@ export class ElementsTreeController {
                 class: `crumb-btn ${n.id === this.selectedId ? "active" : ""}`,
                 type: "button",
                 text: label,
+                "aria-current": n.id === this.selectedId ? "location" : undefined,
                 onClick: () => this.selectNode(n.id, null, { reveal: true, focusRow: true }),
             }));
         });
+        // The selected element is the last crumb; keep it in view when the path is wider than the bar.
+        this.breadcrumbsEl.scrollLeft = this.breadcrumbsEl.scrollWidth;
     }
 
     describeNodeShort(node) {
