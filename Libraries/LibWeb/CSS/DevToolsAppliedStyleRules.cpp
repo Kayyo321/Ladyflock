@@ -570,8 +570,11 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
                 attribution.set("label"sv, *sheet->attribution_label());
             serialized_rule.set("attribution"sv, move(attribution));
         }
-        if (auto identifier = style_sheet_identifier_for(*sheet); identifier.has_value())
-            serialized_rule.set("ruleId"sv, serialize_devtools_style_sheet_identifier(*identifier));
+        // NB: Only a sheet with an owner has an identifier; asking for the user-agent's or a constructed one's logs.
+        if (sheet->owner_node() || sheet->owner_import()) {
+            if (auto identifier = style_sheet_identifier_for(*sheet); identifier.has_value())
+                serialized_rule.set("ruleId"sv, serialize_devtools_style_sheet_identifier(*identifier));
+        }
     }
     return serialized_rule;
 }
@@ -644,6 +647,7 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             add_occurrences(root.style_scope());
     });
 
+    HashTable<size_t> hidden_entry_indexes;
     auto append_rules_for_abstract_element = [&](DOM::AbstractElement current_element, Optional<UniqueNodeID> inherited_node_id) {
         if (auto inline_style = current_element.inline_style()) {
             if (!inherited_node_id.has_value() || has_inherited_declaration(m_document, inline_style->properties(), inline_style->custom_properties()))
@@ -668,8 +672,8 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             auto target = style_engine_rule_target(read, StyleEngineRuleID { match.rule });
             if (!target.has_value() || !target->source_style_sheet)
                 continue;
-            if (target->cascade_origin == CascadeOrigin::UserAgent && !include_user_agent_styles)
-                continue;
+            // NB: User-agent rules that the panel hides still compete in the cascade annotation below.
+            auto is_hidden = target->cascade_origin == CascadeOrigin::UserAgent && !include_user_agent_styles;
             if (inherited_node_id.has_value()) {
                 struct Context {
                     GC::Ref<DOM::Document const> document;
@@ -702,6 +706,8 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             }
             if (!rule)
                 continue;
+            if (is_hidden)
+                hidden_entry_indexes.set(entries.size());
             append_devtools_applied_style_entry(entries, serialize_devtools_applied_rule(m_document, *rule, current_element, *target), inherited_node_id);
         }
     };
@@ -715,6 +721,8 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
 
     // Annotate Cascade Story ("Why this value won") and layout-aware Inactive CSS diagnostics
     // directly on each declaration in the serialized rules.
+    // A shorthand competes through each longhand it sets, and is overridden only when all of them lose, so the
+    // candidates are keyed by longhand. A custom property is its own longhand.
     struct CascadeCandidate {
         size_t entry_index { 0 };
         size_t decl_index { 0 };
@@ -756,23 +764,43 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             auto name = decl.get_string("name"sv).value_or(String {});
             if (name.is_empty())
                 continue;
-            if (is_inherited && !decl.get_bool("inherits"sv).value_or(false))
+            Vector<String, 4> longhands;
+            if (decl.get_bool("isCustomProperty"sv).value_or(false)) {
+                if (!is_inherited || decl.get_bool("inherits"sv).value_or(false))
+                    longhands.append(name);
+            } else if (auto property_id = property_id_from_string(name); property_id.has_value()) {
+                auto append_longhand = [&](PropertyID longhand) {
+                    // Only what a longhand inherits comes from an ancestor; `font` passes on its family but no
+                    // other element's `font-variant-position` is ever overridden by it.
+                    if (!is_inherited || is_inherited_property(longhand))
+                        longhands.append(MUST(String::formatted("{}", string_from_property_id(longhand))));
+                };
+                if (property_is_shorthand(*property_id)) {
+                    for (auto longhand : expanded_longhands_for_shorthand(*property_id))
+                        append_longhand(longhand);
+                } else {
+                    append_longhand(*property_id);
+                }
+            }
+            if (longhands.is_empty())
                 continue;
             auto value = decl.get_string("value"sv).value_or(String {});
             bool is_important = decl.get_string("priority"sv).value_or(String {}) == "important"sv;
-            candidates_by_property.ensure(name).append(CascadeCandidate {
-                .entry_index = entry_idx,
-                .decl_index = decl_idx,
-                .selector_label = selector_label,
-                .value = value,
-                .origin = origin,
-                .layer_name = layer_name,
-                .is_inline = is_inline,
-                .is_important = is_important,
-                .is_inherited = is_inherited,
-                .ancestor_id = entry.get_u64("inheritedNodeId"sv),
-                .specificity = specificity,
-            });
+            for (auto& longhand : longhands) {
+                candidates_by_property.ensure(longhand).append(CascadeCandidate {
+                    .entry_index = entry_idx,
+                    .decl_index = decl_idx,
+                    .selector_label = selector_label,
+                    .value = value,
+                    .origin = origin,
+                    .layer_name = layer_name,
+                    .is_inline = is_inline,
+                    .is_important = is_important,
+                    .is_inherited = is_inherited,
+                    .ancestor_id = entry.get_u64("inheritedNodeId"sv),
+                    .specificity = specificity,
+                });
+            }
         }
     }
 
@@ -791,6 +819,15 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             return 4;
         return 3;
     };
+
+    struct DeclarationOutcome {
+        size_t longhands_won { 0 };
+        String reason;
+        bool is_inherited { false };
+        Optional<JsonObject> story;
+    };
+    // Keyed by entry index in the high half and declaration index in the low one.
+    HashMap<u64, DeclarationOutcome> outcomes;
 
     for (auto& [prop_name, candidates] : candidates_by_property) {
         if (candidates.is_empty())
@@ -877,33 +914,55 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
             competitors.must_append(move(comp));
         }
 
-        Optional<InactiveCssDiagnostic> inactive_diag;
-        if (!winner.is_inherited)
-            inactive_diag = check_inactive_css_property(read, prop_name, abstract_element);
-
         for (size_t i = 0; i < candidates.size(); ++i) {
             auto const& c = candidates[i];
-            auto& entry = entries.values().at(c.entry_index).as_object();
-            auto& decl = entry.get_object("rule"sv)->get_array("declarations"sv)->values().at(c.decl_index).as_object();
-            bool won = (i == winner_idx);
-            decl.set("overridden"sv, !won);
-            decl.set("cascadeWinner"sv, won);
-            decl.set("cascadeReason"sv, reason);
-            if (won) {
-                JsonObject story;
-                story.set("winner"sv, winner.selector_label);
-                story.set("reason"sv, reason);
-                story.set("competitors"sv, competitors);
-                decl.set("cascadeStory"sv, move(story));
-                if (inactive_diag.has_value()) {
-                    decl.set("inactiveReason"sv, inactive_diag->reason);
-                    decl.set("inactiveHint"sv, inactive_diag->hint);
+            auto& outcome = outcomes.ensure((static_cast<u64>(c.entry_index) << 32) | c.decl_index);
+            bool won = i == winner_idx;
+            if (won)
+                ++outcome.longhands_won;
+            // The first longhand the declaration wins tells its story, or the first it loses if it wins none.
+            if (outcome.reason.is_empty() || (won && outcome.longhands_won == 1)) {
+                outcome.reason = reason;
+                outcome.is_inherited = winner.is_inherited;
+                if (won) {
+                    JsonObject story;
+                    story.set("winner"sv, winner.selector_label);
+                    story.set("reason"sv, reason);
+                    story.set("competitors"sv, competitors);
+                    outcome.story = move(story);
                 }
             }
         }
     }
 
-    return entries;
+    for (auto& [key, outcome] : outcomes) {
+        auto& entry = entries.values().at(key >> 32).as_object();
+        auto& decl = entry.get_object("rule"sv)->get_array("declarations"sv)->values().at(key & 0xffffffff).as_object();
+        bool won = outcome.longhands_won > 0;
+        decl.set("overridden"sv, !won);
+        decl.set("cascadeWinner"sv, won);
+        decl.set("cascadeReason"sv, outcome.reason);
+        if (!won)
+            continue;
+        if (outcome.story.has_value())
+            decl.set("cascadeStory"sv, outcome.story.release_value());
+        if (outcome.is_inherited)
+            continue;
+        auto name = decl.get_string("name"sv).value_or(String {});
+        if (auto inactive_diag = check_inactive_css_property(read, name, abstract_element); inactive_diag.has_value()) {
+            decl.set("inactiveReason"sv, inactive_diag->reason);
+            decl.set("inactiveHint"sv, inactive_diag->hint);
+        }
+    }
+
+    if (hidden_entry_indexes.is_empty())
+        return entries;
+    JsonArray visible_entries;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!hidden_entry_indexes.contains(i))
+            visible_entries.must_append(entries.at(i));
+    }
+    return visible_entries;
 }
 
 }

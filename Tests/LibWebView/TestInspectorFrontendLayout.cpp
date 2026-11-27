@@ -748,3 +748,47 @@ TEST_CASE(inspector_dom_breakpoints_pause_after_the_change)
     EXPECT_EQ(target.title().to_byte_string(), "unrelated:yes"sv);
     expect_holds(frontend, "No later script stops for an earlier change"sv, "return window.pauses.length === 1 ? null : window.pauses.map(p => p.frames?.[0]?.displayName);"sv);
 }
+
+constexpr auto cascade_html = R"HTML(<!doctype html><title>Cascade</title>
+<style>
+  body { font: 15px/1.5 serif; font-size: 16px; color: rgb(1, 2, 3); }
+  .low { margin-left: 5px; }
+  #high { margin: 0; }
+  #shorthand { padding: 6px; }
+  .longhand { padding-left: 1px; }
+</style>
+<h1 id="heading">Heading</h1>
+<div id="high" class="low">Margins</div>
+<div id="shorthand" class="longhand">Padding</div>
+<script>document.title = "Cascade ready";</script>
+)HTML"sv;
+
+// A declaration is struck through when it loses every longhand it sets, to a shorthand or longhand, and to user-agent
+// rules the panel hides as much as to rules it shows.
+TEST_CASE(inspector_styles_strike_what_the_cascade_overrides)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorCascade"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { cascade_html, "Cascade ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+
+    auto expect_overridden = [&](StringView description, StringView element_id, StringView expectations) {
+        expect_holds(frontend, description, MUST(String::formatted(R"JS(
+            const expected = {};
+            const declarationIn = (selector, name) => app.stylesPane.rules.find(r => (r.selectors || []).includes(selector))?.declarations?.find(d => d.name === name);
+            await select(n => n.attributes?.id === "{}", () => app.stylesPane.rules.length > 0 && expected.every(([selector, name]) => declarationIn(selector, name)));
+            const wrong = expected.filter(([selector, name, overridden]) => declarationIn(selector, name).overridden !== overridden);
+            const userAgentRules = app.stylesPane.rules.filter(r => r.origin === "user-agent").length;
+            return wrong.length || userAgentRules ? {{ wrong, userAgentRules }} : null;
+        )JS", expectations, element_id)));
+    };
+
+    // NB: The h1's user-agent font-size wins over the inherited font-size, while the inherited font shorthand still
+    //     gives the heading its family and line height.
+    expect_overridden("The inherited font-size loses to the hidden user-agent rule"sv, "heading"sv,
+        R"([["body", "font-size", true], ["body", "font", false], ["body", "color", false]])"sv);
+    expect_overridden("A longhand loses to a more specific shorthand"sv, "high"sv,
+        R"([[".low", "margin-left", true], ["#high", "margin", false]])"sv);
+    expect_overridden("A shorthand that wins its longhands is not struck"sv, "shorthand"sv,
+        R"([[".longhand", "padding-left", true], ["#shorthand", "padding", false]])"sv);
+}
