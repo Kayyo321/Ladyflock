@@ -9,16 +9,22 @@
 // also save a screenshot of each state the test visits.
 
 #include "HeadlessTest.h"
+#include <AK/Atomic.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibTest/TestCase.h>
+#include <LibThreading/Thread.h>
 #include <LibURL/InternalURLs.h>
+#include <LibURL/Parser.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/InspectorSession.h>
 #include <LibWebView/Utilities.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
 
 namespace {
 
@@ -753,6 +759,7 @@ TEST_CASE(inspector_dom_breakpoints_pause_after_the_change)
         "unrelated:"sv);
     EXPECT_EQ(target.title().to_byte_string(), "unrelated:yes"sv);
     expect_holds(frontend, "No later script stops for an earlier change"sv, "return window.pauses.length === 1 ? null : window.pauses.map(p => p.frames?.[0]?.displayName);"sv);
+
 }
 
 constexpr auto cascade_html = R"HTML(<!doctype html><title>Cascade</title>
@@ -843,4 +850,110 @@ TEST_CASE(inspector_frames_and_shadow_trees)
         )JS",
                                                                                                                     id, id, id)));
     }
+}
+
+// Answers every request on the loopback interface with the same small page.
+class TestPageServer {
+public:
+    TestPageServer()
+    {
+        m_socket = MUST(Core::System::socket(AF_INET, SOCK_STREAM, 0));
+        int reuse_address = 1;
+        MUST(Core::System::setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, &reuse_address, sizeof(reuse_address)));
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        MUST(Core::System::bind(m_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)));
+        MUST(Core::System::listen(m_socket, 16));
+        MUST(Core::System::fcntl(m_socket, F_SETFL, O_NONBLOCK));
+        socklen_t address_size = sizeof(address);
+        VERIFY(::getsockname(m_socket, reinterpret_cast<sockaddr*>(&address), &address_size) == 0);
+        m_port = ntohs(address.sin_port);
+        m_thread = Threading::Thread::construct("TestPageServer"sv, [this] -> intptr_t {
+            run();
+            return 0;
+        });
+        m_thread->start();
+    }
+
+    ~TestPageServer()
+    {
+        m_shutting_down.store(true);
+        (void)m_thread->join();
+        (void)Core::System::close(m_socket);
+    }
+
+    URL::URL url(StringView path) const
+    {
+        return URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/{}", m_port, path)).release_value();
+    }
+
+private:
+    void run()
+    {
+        while (!m_shutting_down.load()) {
+            pollfd poll_fd { .fd = m_socket, .events = POLLIN, .revents = 0 };
+            auto ready = Core::System::poll({ &poll_fd, 1 }, 100);
+            if (ready.is_error() || ready.value() == 0)
+                continue;
+            auto client = ::accept(m_socket, nullptr, nullptr);
+            if (client < 0)
+                continue;
+            MUST(Core::System::fcntl(client, F_SETFL, 0));
+            StringBuilder request;
+            Array<u8, 4096> buffer;
+            while (!request.string_view().contains("\r\n\r\n"sv)) {
+                auto read = Core::System::read(client, buffer);
+                if (read.is_error() || read.value() == 0)
+                    break;
+                request.append(StringView { buffer.span().trim(read.value()) });
+            }
+            auto page = "<!doctype html><title>Served</title><p id=served>Served page</p>"sv;
+            auto response = ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", page.length(), page);
+            auto bytes = response.bytes();
+            while (!bytes.is_empty()) {
+                auto written = Core::System::write(client, bytes);
+                if (written.is_error() || written.value() == 0)
+                    break;
+                bytes = bytes.slice(written.value());
+            }
+            (void)Core::System::close(client);
+        }
+    }
+
+    int m_socket { -1 };
+    u16 m_port { 0 };
+    RefPtr<Threading::Thread> m_thread;
+    Atomic<bool> m_shutting_down { false };
+};
+
+// The Network panel of a new page lists the request for its document, which starts before the document replaces the
+// old one, but not the old page's requests.
+TEST_CASE(inspector_network_log_keeps_the_new_documents_request)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorNetworkLog"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    TestPageServer server;
+    auto fixture = open_inspector({ 1000, 620 }, { navigation_html, "First ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+
+    auto first_url = server.url("first"sv);
+    fixture.target->load_from_browser_ui(first_url);
+    evaluate(frontend, MUST(String::formatted(R"JS(
+        await until(() => findElement(n => n.attributes?.id === "served") && app.toolboxPanels.networkEntries.some(e => e.url === "{}"));
+    )JS",
+                           first_url.serialize())));
+
+    auto second_url = server.url("second"sv);
+    fixture.target->load_from_browser_ui(second_url);
+    expect_holds(frontend, "The new page's document request is listed, and the old one's is not"sv, MUST(String::formatted(R"JS(
+        const {{ sendCommand }} = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await until(() => app.state.targetUrl === "{}" && findElement(n => n.attributes?.id === "served"));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const shown = app.toolboxPanels.networkEntries.map(e => e.url);
+        const logged = ((await sendCommand("getNetworkLog"))?.entries || []).map(e => e.url);
+        const ok = [shown, logged].every(urls => urls.includes("{}") && !urls.includes("{}"));
+        return ok ? null : {{ shown, logged }};
+    )JS",
+                                                                                                        second_url.serialize(), second_url.serialize(), first_url.serialize())));
 }

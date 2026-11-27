@@ -326,6 +326,9 @@ class InspectorApp {
         onEvent("targetDocumentChanged", data => {
             this.resetDocument(data);
             this.refreshDomTree();
+            // The new document's own request started before it replaced the old one, and the log kept it.
+            if (!this.state.preserveNetworkLog)
+                sendCommand("getNetworkLog").then(res => this.toolboxPanels.setNetworkEntries(res?.entries)).catch(() => {});
         });
 
         onEvent("targetLoadFinished", () => {

@@ -157,7 +157,12 @@ private:
     JsonObject serialize_console_log() const;
     JsonObject serialize_dom_breakpoints() const;
     void record_edit_entry(EditJournalEntry entry);
-    void reset_for_new_document();
+    // A load's own requests, its document's first of all, start before its document replaces the old one.
+    enum class KeepRequestsOfCurrentLoad : bool {
+        No,
+        Yes,
+    };
+    void reset_for_new_document(KeepRequestsOfCurrentLoad = KeepRequestsOfCurrentLoad::No);
     void restore_emulation_overrides();
     void restore_dom_breakpoints(URL::URL const&);
 
@@ -220,9 +225,12 @@ private:
         JsonArray response_headers;
         String response_body_preview;
         bool finished { false };
+        u64 sequence_number { 0 };
     };
     static constexpr size_t max_network_entries = 500;
     Vector<NetworkEntry> m_network_entries;
+    u64 m_next_network_entry_sequence_number { 1 };
+    u64 m_first_network_entry_of_current_load { 1 };
 
     // Bounded console buffer.
     static constexpr size_t max_console_entries = 1000;

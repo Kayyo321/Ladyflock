@@ -313,7 +313,9 @@ InspectorSession::InspectorSession(ViewImplementation& target_view)
     , m_is_private(target_view.is_private())
 {
     m_navigation_listener_id = target_view.add_navigation_listener({
-        .on_load_start = {},
+        .on_load_start = [weak_this = make_weak_ptr()](URL::URL const&) {
+            if (auto self = weak_this.strong_ref())
+                self->m_first_network_entry_of_current_load = self->m_next_network_entry_sequence_number; },
         .on_load_finish = [weak_this = make_weak_ptr()](URL::URL const& url) {
             if (auto self = weak_this.strong_ref()) {
                 JsonObject payload;
@@ -456,7 +458,7 @@ void InspectorSession::target_did_close()
 
 void InspectorSession::target_did_navigate(URL::URL const& url)
 {
-    reset_for_new_document();
+    reset_for_new_document(KeepRequestsOfCurrentLoad::Yes);
     JsonObject payload;
     payload.set("url"sv, url.serialize());
     payload.set("documentGeneration"sv, m_document_generation);
@@ -487,7 +489,7 @@ void InspectorSession::target_did_recover()
     send_event("targetRecovered"sv, move(payload));
 }
 
-void InspectorSession::reset_for_new_document()
+void InspectorSession::reset_for_new_document(KeepRequestsOfCurrentLoad keep_requests_of_current_load)
 {
     ++m_document_generation;
     if (auto* view = target_view())
@@ -511,8 +513,15 @@ void InspectorSession::reset_for_new_document()
     m_edit_journal_truncated = false;
     if (!m_preserve_console_log)
         m_console_entries.clear();
-    if (!m_preserve_network_log)
-        m_network_entries.clear();
+    if (!m_preserve_network_log) {
+        if (keep_requests_of_current_load == KeepRequestsOfCurrentLoad::Yes) {
+            m_network_entries.remove_all_matching([&](auto const& entry) {
+                return entry.sequence_number < m_first_network_entry_of_current_load;
+            });
+        } else {
+            m_network_entries.clear();
+        }
+    }
     for (auto& bp : m_dom_breakpoints) {
         bp.node_id = 0;
         bp.resolved = false;
@@ -2204,6 +2213,7 @@ void InspectorSession::did_start_network_request(u64 request_id, URL::URL const&
         entry.request_headers.must_append(move(ho));
     }
 
+    entry.sequence_number = m_next_network_entry_sequence_number++;
     if (m_network_entries.size() >= max_network_entries)
         m_network_entries.remove(0);
     m_network_entries.append(move(entry));
