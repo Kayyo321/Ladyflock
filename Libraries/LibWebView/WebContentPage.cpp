@@ -1414,11 +1414,11 @@ void WebContentPage::did_cut_selected_text(u64 request_id, ByteString selection)
     view().did_cut_selected_text({}, request_id, move(selection));
 }
 
-void WebContentPage::did_execute_js_console_input(DebuggerValue result)
+void WebContentPage::did_execute_js_console_input(DebuggerValue result, bool thrown)
 {
     if (displays_tab()) {
         if (auto* session = view().inspector_session())
-            session->did_receive_js_console_result(result);
+            session->did_receive_js_console_result(result, thrown);
         if (view().on_received_js_console_result)
             view().on_received_js_console_result(move(result));
     }

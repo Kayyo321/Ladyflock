@@ -2951,9 +2951,9 @@ void PageClient::initialize_js_console(Web::DOM::Document& document)
     document.set_console_client(console_client);
 }
 
-void PageClient::did_execute_js_console_input(WebView::DebuggerValue const& result)
+void PageClient::did_execute_js_console_input(WebView::DebuggerValue const& result, bool thrown)
 {
-    client().async_did_execute_js_console_input(m_id, result);
+    client().async_did_execute_js_console_input(m_id, result, thrown);
 }
 
 // An object of a console result is in the top-level document's console, but a logged one is in the console of whichever

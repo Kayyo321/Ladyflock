@@ -489,7 +489,7 @@ export class SidebarsController {
             const evalRes = await sendCommand("consoleEvaluate", { expression: "$0" });
             if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
                 return;
-            if (evalRes?.objectId) {
+            if (evalRes?.objectId && !evalRes.thrown) {
                 const propsRes = await sendCommand("getObjectProperties", { objectId: evalRes.objectId, scope: "console" });
                 if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
                     return;

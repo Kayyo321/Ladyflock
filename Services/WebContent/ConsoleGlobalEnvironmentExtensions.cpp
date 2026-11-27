@@ -20,12 +20,14 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/NodeList.h>
 #include <LibWeb/DOM/ParentNode.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/WebIDL/ExceptionOrUtils.h>
 #include <LibWeb/XPath/XPath.h>
 #include <LibWeb/XPath/XPathResult.h>
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
+#include <WebContent/WebContentConsoleClient.h>
 
 namespace WebContent {
 
@@ -77,6 +79,15 @@ static JS::ThrowCompletionOr<ConsoleGlobalEnvironmentExtensions*> get_console(JS
     if (auto this_value = vm.this_value(); this_value.is_object()) {
         if (auto* extensions = JS::host_data_if<ConsoleGlobalEnvironmentExtensions>(this_value.as_object()))
             return extensions;
+    }
+    // Console input reads a helper's bare name as a global (as in `$('p')`), so it calls the helper with no this
+    // value. The helpers are those of the console of the realm that the input runs in.
+    if (auto* realm = vm.current_realm()) {
+        auto& window = Web::HTML::relevant_window(realm->global_object());
+        if (auto console_client = window.associated_document().console_client()) {
+            if (auto* web_content_console_client = as_if<WebContentConsoleClient>(*console_client))
+                return &web_content_console_client->console_global_environment_extensions();
+        }
     }
     return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "ConsoleGlobalEnvironmentExtensions");
 }

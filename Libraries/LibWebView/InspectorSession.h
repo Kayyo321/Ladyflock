@@ -110,7 +110,7 @@ public:
     void did_add_devtools_source(Web::HTML::ScriptRegistryDescription const& source);
     void did_pause_debugger(DebuggerPause const& pause);
     void did_resume_debugger();
-    void did_receive_js_console_result(DebuggerValue const& result);
+    void did_receive_js_console_result(DebuggerValue const& result, bool thrown);
     void did_receive_console_message(ConsoleOutput const& output);
     void did_start_network_request(u64 request_id, URL::URL const& url, ByteString const& method, Vector<HTTP::Header> const& request_headers, ByteBuffer const& request_body, Optional<String> const& initiator_type, String const& referrer_policy, bool is_navigation_request, Web::Fetch::Infrastructure::RequestPriority priority);
     void did_receive_network_response_headers(u64 request_id, u32 status_code, Optional<String> const& reason_phrase, Vector<HTTP::Header> const& response_headers, Requests::CacheState cache_state);

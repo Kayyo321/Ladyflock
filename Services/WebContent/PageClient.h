@@ -156,7 +156,7 @@ public:
     void for_each_devtools_console_client(Function<void(DevToolsConsoleClient&)> const&);
     void js_console_input(StringView js_source);
     Optional<Web::HTML::ConsoleInputCompletion> complete_js_console_input(StringView input);
-    void did_execute_js_console_input(WebView::DebuggerValue const&);
+    void did_execute_js_console_input(WebView::DebuggerValue const&, bool thrown);
     ErrorOr<WebView::DebuggerObjectProperties> console_object_properties(u64 object_id);
     void run_javascript(StringView js_source);
     void did_output_js_console_message(WebView::ConsoleOutput);

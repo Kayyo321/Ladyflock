@@ -25,9 +25,14 @@ public:
     virtual ~WebContentConsoleClient() override;
 
     void handle_input(StringView js_source);
+    ConsoleGlobalEnvironmentExtensions& console_global_environment_extensions() { return m_console_global_environment_extensions; }
     Optional<Web::HTML::ConsoleInputCompletion> complete_input(StringView input);
 
-    virtual void handle_result(JS::Value) = 0;
+    enum class Thrown : bool {
+        No,
+        Yes,
+    };
+    virtual void handle_result(JS::Value, Thrown) = 0;
 
 protected:
     WebContentConsoleClient(JS::Console&, PageClient&, ConsoleGlobalEnvironmentExtensions&);

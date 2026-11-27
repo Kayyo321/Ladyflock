@@ -207,7 +207,9 @@ export class DrawersController {
                 this.addConsoleEntry({ kind: "input", level: "log", text: `› ${expr}` });
                 try {
                     const res = await sendCommand("consoleEvaluate", { expression: expr });
-                    this.addConsoleEntry({ kind: "result", level: "log", result: res });
+                    // A thrown exception arrives as its own console error message.
+                    if (!res?.thrown)
+                        this.addConsoleEntry({ kind: "result", level: "log", result: res });
                 } catch (err) {
                     this.addConsoleEntry({ kind: "error", level: "error", message: err.message });
                 }

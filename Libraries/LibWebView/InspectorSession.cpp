@@ -2106,9 +2106,12 @@ void InspectorSession::did_resume_debugger()
     send_event("debuggerResumed"sv, JsonObject {});
 }
 
-void InspectorSession::did_receive_js_console_result(DebuggerValue const& result)
+void InspectorSession::did_receive_js_console_result(DebuggerValue const& result, bool thrown)
 {
     auto serialized = serialize_debugger_value(result);
+    // The exception itself reaches the console as an error message; this only tells the frontend the input finished.
+    if (thrown)
+        serialized.set("thrown"sv, true);
     if (auto req = exchange(m_pending_console_eval_request_id, {}); req.has_value())
         send_reply(*req, true, serialized);
     send_event("consoleResult"sv, move(serialized));
