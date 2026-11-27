@@ -1015,11 +1015,16 @@ constexpr auto repeated_sheet_html = R"HTML(<!doctype html><title>Repeated</titl
 <style>.repeated { color: rgb(3, 3, 3); }</style>
 <style media="print">.repeated { color: rgb(3, 3, 3); }</style>
 <p class="repeated" id="repeated">Repeated</p>
-<script>document.title = "Repeated ready";</script>
+<div id="host"></div>
+<script>
+  const inner = "<style>.inner { color: rgb(3, 3, 3); }</style>";
+  document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = inner + inner + `<span class="inner" id="inner">Inner</span>`;
+  document.title = "Repeated ready";
+</script>
 )HTML"sv;
 
 // A sheet included three times in the document applies at its last place whose media holds, the second one here, so
-// that copy is the one an edit goes to.
+// that copy is the one an edit goes to. The same holds for a sheet included twice in one shadow root.
 TEST_CASE(inspector_edits_the_applied_copy_of_a_sheet_included_twice)
 {
     Test::HeadlessTestEnvironment environment { "TestInspectorRepeatedSheet"sv };
@@ -1044,18 +1049,43 @@ TEST_CASE(inspector_edits_the_applied_copy_of_a_sheet_included_twice)
     )JS"sv,
         "Sheets:"sv);
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Sheets:rgb(3, 3, 3)/rgb(4, 4, 4)/rgb(3, 3, 3) rgb(4, 4, 4)"sv);
+
+    expect_holds(*fixture.frontend, "The rule repeated in a shadow root can be edited"sv, R"JS(
+        const innerRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes(".inner"));
+        await until(() => findElement(n => n.attributes?.id === "inner"));
+        await select(n => n.attributes?.id === "inner", () => innerRule());
+        const rule = innerRule();
+        if (!rule.sheetId)
+            return rule;
+        const declaration = rule.declarations.find(d => d.name === "color");
+        await app.stylesPane.commitDeclarationEdit(rule, declaration, rule.declarations.indexOf(declaration), "color", "rgb(5, 5, 5)");
+        app.refreshSelectedNodeProperties();
+        await until(() => app.state.lastComputedStyle?.color === "rgb(5, 5, 5)");
+        return null;
+    )JS"sv);
+    run_in_target(*fixture.target, R"JS(
+        const root = document.getElementById("host").shadowRoot;
+        const innerColors = [...root.styleSheets].map(sheet => sheet.cssRules[0].style.color);
+        document.title = "Inner:" + innerColors.join("/") + " " + getComputedStyle(root.getElementById("inner")).color;
+    )JS"sv,
+        "Inner:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "Inner:rgb(3, 3, 3)/rgb(5, 5, 5) rgb(5, 5, 5)"sv);
 }
 
 constexpr auto shadow_link_html = R"HTML(<!doctype html><title>Shadow link</title>
 <div id="host"></div>
 <script>
   const root = document.getElementById("host").attachShadow({ mode: "open" });
-  root.innerHTML = `<link rel="stylesheet" href="data:text/css,.linked%20%7B%20color%3A%20rgb(7%2C%207%2C%207)%3B%20%7D"><span class="linked" id="linked">Linked</span>`;
-  root.querySelector("link").onload = () => document.title = "Shadow link ready";
+  root.innerHTML = `<link rel="stylesheet" href="data:text/css,.linked%20%7B%20color%3A%20rgb(7%2C%207%2C%207)%3B%20%7D">`
+    + `<style>@import url("data:text/css,.imported%20%7B%20color%3A%20rgb(8%2C%208%2C%208)%3B%20%7D");</style>`
+    + `<span class="linked" id="linked">Linked</span><span class="imported" id="imported">Imported</span>`;
+  const loaded = element => new Promise(resolve => element.sheet?.cssRules.length && element.tagName === "LINK" ? resolve() : element.addEventListener("load", resolve));
+  Promise.all([...root.querySelectorAll("link, style")].map(loaded)).then(() => document.title = "Shadow link ready");
 </script>
 )HTML"sv;
 
-// A stylesheet linked from a shadow tree is in that tree's sheets, not the document's, and its source is still found.
+// A stylesheet linked or imported in a shadow tree is in that tree's sheets, not the document's, and is still listed
+// and its source found.
 TEST_CASE(inspector_reads_the_source_of_a_sheet_linked_in_a_shadow_tree)
 {
     Test::HeadlessTestEnvironment environment { "TestInspectorShadowLink"sv };
@@ -1072,6 +1102,16 @@ TEST_CASE(inspector_reads_the_source_of_a_sheet_linked_in_a_shadow_tree)
             return rule;
         const outcome = await sendCommand("getStyleSheetSource", rule.ruleId).then(result => result?.source, error => error.message);
         return outcome === ".linked { color: rgb(7, 7, 7); }" ? null : { outcome, ruleId: rule.ruleId };
+    )JS"sv);
+    expect_holds(*fixture.frontend, "The imported sheet's source is found"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const importedRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes(".imported"));
+        await select(n => n.attributes?.id === "imported", () => importedRule());
+        const rule = importedRule();
+        if (rule.ruleId?.type !== "ImportRule")
+            return rule;
+        const outcome = await sendCommand("getStyleSheetSource", rule.ruleId).then(result => result?.source, error => error.message);
+        return outcome === ".imported { color: rgb(8, 8, 8); }" ? null : { outcome, ruleId: rule.ruleId };
     )JS"sv);
     expect_holds(*fixture.frontend, "The shadow tree's sheets are listed"sv, R"JS(
         const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
