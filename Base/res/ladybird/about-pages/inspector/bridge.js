@@ -64,7 +64,7 @@ export function sendEngineCommand(action, params = {}) {
 export function initBridge() {
     document.addEventListener("WebUIMessage", event => {
         const { name, data } = event.detail || {};
-        if (name === "inspectorState" || name === "targetDocumentChanged" || name === "targetRecovered")
+        if (name === "inspectorState" || name === "targetDocumentChanged" || name === "targetCrashed" || name === "targetRecovered")
             documentGeneration = data?.documentGeneration;
         if (["targetDocumentChanged", "targetCrashed", "targetRecovered", "targetClosed"].includes(name)
             || (name === "inspectorState" && !data?.bound)) {

@@ -76,6 +76,7 @@ public:
     String const& dock_mode() const { return m_dock_mode; }
     bool is_bound_to(InspectorUI const& ui) const { return m_web_ui.ptr() == &ui; }
     bool is_attached() const { return !m_web_ui.is_null(); }
+    bool has_current_frontend() const;
     bool is_picker_active() const { return m_picker_active; }
 
     void set_dock_mode(String dock_mode);

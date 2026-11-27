@@ -144,6 +144,12 @@ class InspectorApp {
 
         // Global keyboard shortcuts scoped to Inspector focus
         document.addEventListener("keydown", e => this.handleGlobalKeyDown(e));
+        // The Inspector has its own menus. The page menu would offer Reload, Back and View Source for the Inspector
+        // itself; text fields keep theirs for cut, copy and paste.
+        document.addEventListener("contextmenu", e => {
+            if (!e.target.closest("input, textarea, [contenteditable]"))
+                e.preventDefault();
+        });
         document.addEventListener("click", e => {
             if (!e.target.closest("#context-menu"))
                 this.hideContextMenu();
@@ -324,7 +330,7 @@ class InspectorApp {
         onEvent("targetCrashed", () => {
             this.showBanner("Target tab crashed.", {
                 actionLabel: "Reload & Reconnect",
-                onAction: () => sendCommand("reconnectTarget"),
+                onAction: () => sendCommand("reconnectTarget").catch(err => this.showToast(err.message)),
             });
         });
 

@@ -23,12 +23,12 @@ public:
 
     void send_to_frontend(StringView name, JsonValue data);
     bool is_bound() const;
+    bool is_current_frontend_document() const;
 
 private:
     virtual void register_interfaces() override;
 
     void handle_inspector_command(JsonValue const& data);
-    bool is_current_frontend_document() const;
     RefPtr<InspectorSession> bound_session() const;
 
     Optional<Web::HTML::CrossProcessId> m_frontend_document_id;

@@ -389,6 +389,11 @@ void InspectorSession::detach_from_target_client()
     }
 }
 
+bool InspectorSession::has_current_frontend() const
+{
+    return m_web_ui && m_web_ui->is_current_frontend_document();
+}
+
 void InspectorSession::unbind_web_ui(InspectorUI& web_ui)
 {
     if (m_web_ui.ptr() != &web_ui)
@@ -1090,15 +1095,16 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         return;
     }
 
-    // Validate document generation when caller supplies one for mutations.
-    if (auto expected_gen = params.get_u64("documentGeneration"sv); expected_gen.has_value() && *expected_gen != m_document_generation) {
-        send_reply(request_id, false, JsonValue {}, "Document changed before command could apply."_string);
-        return;
-    }
-
+    // Reloading is how a crashed target comes back, and it acts on no document, so it needs no current generation.
     if (command == "reconnectTarget"sv) {
         view->reload();
         send_reply(request_id, true, JsonObject {});
+        return;
+    }
+
+    // Validate document generation when caller supplies one for mutations.
+    if (auto expected_gen = params.get_u64("documentGeneration"sv); expected_gen.has_value() && *expected_gen != m_document_generation) {
+        send_reply(request_id, false, JsonValue {}, "Document changed before command could apply."_string);
         return;
     }
 

@@ -66,7 +66,9 @@ void InspectorUI::register_interfaces()
         return;
     m_frontend_document_id = page->traversable().active_document().id();
     auto frontend_view_id = frontend->view_id();
-    if (auto authorized = InspectorSession::find_for_frontend_view(frontend_view_id); authorized && !authorized->is_attached()) {
+    // A reload of the frontend makes this UI before the one it replaces goes away. That one no longer shows the frontend's
+    // document, so this UI takes its place rather than coming up unbound.
+    if (auto authorized = InspectorSession::find_for_frontend_view(frontend_view_id); authorized && !authorized->has_current_frontend()) {
         if (auto session = InspectorSession::bind_web_ui(frontend_view_id, *this)) {
             m_session = session->make_weak_ptr();
             return;
