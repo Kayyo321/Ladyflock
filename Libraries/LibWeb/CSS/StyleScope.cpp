@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/JsonObject.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf16StringBuilder.h>
 #include <LibCore/EventLoop.h>
@@ -25,6 +26,7 @@
 #include <LibWeb/ComputedValuesRustFFI.h>
 #include <LibWeb/DOM/AdoptedStyleSheets.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/Extensions/ExtensionContentScriptHost.h>
 #include <LibWeb/Layout/NodeArena.h>
 #include <LibWeb/Loader/ContentBlocker.h>
 #include <LibWeb/Namespace.h>
@@ -129,14 +131,16 @@ void StyleScope::add_sheet(StyleSheetState& sheet, StyleEngineUpdate style_engin
 
 void StyleScope::insert_sheet_in_tree_order(StyleSheetState& sheet)
 {
-    if (m_style_sheets.is_empty()) {
-        // This is the first sheet, append it to the list.
+    if (m_style_sheets.is_empty() || !sheet.owner_node()) {
+        // Inspector sheets have no DOM owner and follow sheets with an owner.
         m_style_sheets.append(sheet);
     } else {
         // We have sheets from before. Insert the new sheet in the correct position (DOM tree order).
         bool did_insert = false;
         for (ssize_t i = m_style_sheets.size() - 1; i >= 0; --i) {
             auto& existing_sheet = *m_style_sheets[i];
+            if (!existing_sheet.owner_node())
+                continue;
             auto position = existing_sheet.owner_node()->compare_document_position(sheet.owner_node());
             if (position & DOM::Node::DocumentPosition::DOCUMENT_POSITION_FOLLOWING) {
                 m_style_sheets.insert(i + 1, sheet);
@@ -216,7 +220,7 @@ void StyleScope::attach_sheet_to_style_engine(StyleSheetState& sheet)
 void StyleScope::visit_edges(GC::Cell::Visitor& visitor)
 {
     visitor.visit(m_node);
-    visitor.visit(m_user_style_sheet);
+    visitor.visit(m_user_style_sheets);
     visitor.visit(m_style_sheets);
 }
 
@@ -277,40 +281,48 @@ void StyleScope::invalidate_style_cache()
 
 void StyleScope::invalidate_user_style_sheet()
 {
-    m_user_style_sheet = nullptr;
+    m_user_style_sheets.clear();
     invalidate_style_cache();
     invalidate_counter_style_cache();
 }
 
 void StyleScope::build_user_style_sheet_if_needed()
 {
-    if (m_user_style_sheet)
+    if (!m_user_style_sheets.is_empty())
         return;
 
     if (!is<DOM::Document>(*m_node))
         return;
 
-    auto user_style_source = document().page().user_style();
-    auto const& content_blocker_style_source = document().content_blocker_style_sheet();
-    auto extension_style_source = document().extension_style_sheet_source();
-    if (!user_style_source.has_value() && content_blocker_style_source.is_empty() && !extension_style_source.has_value())
-        return;
+    auto& doc = document();
+    auto user_style_source = doc.page().user_style();
+    if (user_style_source.has_value() && !user_style_source->is_empty()) {
+        auto sheet = parse_css_stylesheet(CSS::Parser::ParsingParams(doc), user_style_source->utf16_view());
+        sheet->set_attribution(StyleSheetState::AttributionKind::UserStyle, "user-style"_string, "User style"_string);
+        m_user_style_sheets.append(move(sheet));
+    }
 
-    Utf16StringBuilder source;
-    if (user_style_source.has_value())
-        source.append(user_style_source->utf16_view());
+    auto const& content_blocker_style_source = doc.content_blocker_style_sheet();
     if (!content_blocker_style_source.is_empty()) {
-        if (!source.is_empty())
-            source.append_ascii('\n');
-        source.append(content_blocker_style_source.utf16_view());
-    }
-    if (extension_style_source.has_value() && !extension_style_source->is_empty()) {
-        if (!source.is_empty())
-            source.append_ascii('\n');
-        source.append(extension_style_source->utf16_view());
+        auto sheet = parse_css_stylesheet(CSS::Parser::ParsingParams(doc), content_blocker_style_source.utf16_view());
+        sheet->set_attribution(StyleSheetState::AttributionKind::ContentBlocker, "content-blocker"_string, "Content Blocker"_string);
+        m_user_style_sheets.append(move(sheet));
     }
 
-    m_user_style_sheet = parse_css_stylesheet(CSS::Parser::ParsingParams(document()), source.view());
+    for (auto const& entry : doc.extension_style_sheets()) {
+        if (entry.css.is_empty())
+            continue;
+        auto sheet = parse_css_stylesheet(CSS::Parser::ParsingParams(doc), entry.css.bytes_as_string_view());
+        String label = entry.extension_id;
+        if (auto metadata = Extensions::ExtensionContentScriptHost::extension_metadata(entry.extension_id); metadata.has_value()) {
+            if (auto parsed = JsonValue::from_string(metadata->manifest_json); !parsed.is_error() && parsed.value().is_object()) {
+                if (auto name = parsed.value().as_object().get_string("name"sv); name.has_value() && !name->is_empty() && !name->starts_with_bytes("__MSG_"sv))
+                    label = *name;
+            }
+        }
+        sheet->set_attribution(StyleSheetState::AttributionKind::Extension, entry.extension_id, move(label));
+        m_user_style_sheets.append(move(sheet));
+    }
 }
 
 void StyleScope::build_rule_cache_if_needed() const
@@ -418,7 +430,7 @@ void StyleScope::for_each_user_agent_stylesheet(bool include_quirks_mode_stylesh
     }
 }
 
-void StyleScope::for_each_stylesheet(CascadeOrigin cascade_origin, Function<void(CSS::StyleSheetState&)> const& callback) const
+WEB_API void StyleScope::for_each_stylesheet(CascadeOrigin cascade_origin, Function<void(CSS::StyleSheetState&)> const& callback) const
 {
     if (cascade_origin == CascadeOrigin::UserAgent) {
         for_each_user_agent_stylesheet(document().in_quirks_mode(), document().needs_mathml_and_svg_user_agent_style_sheets(), [&](auto& sheet, auto const&) {
@@ -428,8 +440,8 @@ void StyleScope::for_each_stylesheet(CascadeOrigin cascade_origin, Function<void
     if (cascade_origin == CascadeOrigin::User) {
         auto& style_scope = const_cast<StyleScope&>(*this);
         style_scope.build_user_style_sheet_if_needed();
-        if (style_scope.m_user_style_sheet)
-            callback(*style_scope.m_user_style_sheet);
+        for (auto& sheet : style_scope.m_user_style_sheets)
+            callback(*sheet);
     }
     if (cascade_origin == CascadeOrigin::Author) {
         for_each_active_css_style_sheet(move(callback));

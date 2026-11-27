@@ -580,7 +580,24 @@ Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRe
     if (overlay_inputs.highlighted_layout_node) {
         auto const& layout_node = *overlay_inputs.highlighted_layout_node;
         auto border_rect = absolute_border_box_rect(layout_node);
-        inspector_highlight_label_text = ByteString::formatted("{} {}x{} @ {},{}", layout_node.debug_description(), border_rect.width(), border_rect.height(), border_rect.x(), border_rect.y());
+        ByteString node_label;
+        if (auto const* dom_node = layout_node.dom_node(); dom_node && dom_node->is_element()) {
+            auto const& el = static_cast<DOM::Element const&>(*dom_node);
+            StringBuilder label_builder;
+            label_builder.append(el.local_name().to_utf16_string().to_utf8());
+            if (auto id = el.id(); id.has_value() && !id->is_empty())
+                label_builder.appendff("#{}", *id);
+            size_t cls_count = 0;
+            for (auto const& cls : el.class_names()) {
+                if (cls_count++ >= 2)
+                    break;
+                label_builder.appendff(".{}", cls);
+            }
+            node_label = label_builder.to_byte_string();
+        } else {
+            node_label = layout_node.debug_description().to_byte_string();
+        }
+        inspector_highlight_label_text = ByteString::formatted("{}  {} × {}", node_label, border_rect.width(), border_rect.height());
         inspector_label_fonts = overlay_label_fonts(12.0f, device_pixels_per_css_pixel);
         inputs.inspector_highlight_label = {
             .fonts = inspector_label_fonts.ffi(),

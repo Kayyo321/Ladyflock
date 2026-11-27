@@ -1523,10 +1523,10 @@ void ConnectionFromUI::view_activate_extension_menu_item(u64 view_id, u64 serial
         view->activate_extension_menu_item(serial, token);
 }
 
-void ConnectionFromUI::view_inspect_context_menu_element(u64 view_id)
+void ConnectionFromUI::view_inspect_context_menu_element(u64 view_id, u64 menu_generation)
 {
-    if (auto* view = find_view(view_id))
-        view->inspect_context_menu_element();
+    if (auto* view = find_view(view_id); view && view->is_current_tab_of_window())
+        view->inspect_context_menu_element(menu_generation);
 }
 
 void ConnectionFromUI::view_replace_context_menu_misspelling(u64 view_id, Utf16String replacement)
@@ -1849,7 +1849,8 @@ void ConnectionFromUI::view_attach_inspector(u64 target_view_id, u64 frontend_vi
 {
     auto* target_view = find_view(target_view_id);
     auto* frontend_view = find_view(frontend_view_id);
-    if (!target_view || !frontend_view)
+    if (!target_view || !frontend_view || !target_view->is_tab() || frontend_view->is_tab()
+        || frontend_view->owner_view_id() != target_view_id || &frontend_view->session() != &target_view->session())
         return;
 
     auto session = WebView::InspectorSession::authorize_frontend_view(*target_view, frontend_view_id);

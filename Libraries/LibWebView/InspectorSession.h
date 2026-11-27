@@ -74,6 +74,7 @@ public:
     IsPrivate is_private() const { return m_is_private; }
     u64 document_generation() const { return m_document_generation; }
     String const& dock_mode() const { return m_dock_mode; }
+    bool is_bound_to(InspectorUI const& ui) const { return m_web_ui.ptr() == &ui; }
     bool is_attached() const { return !m_web_ui.is_null(); }
     bool is_picker_active() const { return m_picker_active; }
 
@@ -96,8 +97,7 @@ public:
     void handle_command(u64 request_id, StringView command, JsonObject const& params);
 
     // Observation hooks called by ViewImplementation / WebContentPage alongside Firefox RDP.
-    void did_receive_dom_tree(JsonObject const& tree);
-    void did_receive_dom_node_properties(DOMNodeProperties const& properties);
+    void did_receive_dom_node_properties(u64 request_id, DOMNodeProperties const& properties);
     void did_receive_dom_mutation(Mutation const& mutation);
     void did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id);
     void did_receive_dom_node_html(String const& html);
@@ -157,6 +157,7 @@ private:
     void record_edit_entry(EditJournalEntry entry);
     void reset_for_new_document();
     void restore_emulation_overrides();
+    void restore_dom_breakpoints(URL::URL const&);
 
     ViewImplementation* target_view() const { return m_target_view.ptr(); }
 
@@ -245,9 +246,14 @@ private:
     Optional<u64> m_navigation_listener_id;
     HashMap<u64, u64> m_pending_storage_requests;
     u64 m_next_internal_storage_request_id { 900000 };
+    struct NodePropertiesRequest {
+        Web::UniqueNodeID node_id;
+        Optional<String> pseudo_element;
+    };
+    HashMap<u64, NodePropertiesRequest> m_node_properties_requests;
     Optional<u64> m_pending_html_request_id;
     Optional<u64> m_pending_edit_request_id;
-    Optional<u64> m_pending_dom_tree_request_id;
+    Optional<EditJournalEntry> m_pending_edit_journal_entry;
     Optional<u64> m_pending_a11y_request_id;
     Optional<u64> m_pending_stylesheets_request_id;
     Optional<u64> m_pending_stylesheet_source_request_id;

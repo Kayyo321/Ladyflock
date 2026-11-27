@@ -196,8 +196,8 @@ static void add_inspect_element_action(Menu& menu, u64 view_id, ContextMenuReque
     if (!request.can_inspect_element)
         return;
     menu.add_separator();
-    menu.add_action(Action::create("Inspect Element"sv, ActionID::InspectElement, [view_id]() {
-        HubConnection::the().async_view_inspect_context_menu_element(view_id);
+    menu.add_action(Action::create("Inspect Element"sv, ActionID::InspectElement, [view_id, generation = request.inspect_menu_generation]() {
+        HubConnection::the().async_view_inspect_context_menu_element(view_id, generation);
     }));
 }
 

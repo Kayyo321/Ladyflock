@@ -32,6 +32,7 @@ public:
     void configure(PageClient&, WebView::DebuggerConfiguration);
     void detach(PageClient&);
     void interrupt(PageClient&);
+    void pause_for_dom_breakpoint(PageClient&, String const& reason_message);
     void resume(PageClient&, WebView::DebuggerResumeMode);
     void update_blackboxing(PageClient&, Utf16String, Vector<WebView::DebuggerBlackboxRange>, WebView::DebuggerBlackboxingOperation);
     ErrorOr<void> set_breakpoint(PageClient&, WebView::DebuggerBreakpointLocation, WebView::DebuggerBreakpointOptions);

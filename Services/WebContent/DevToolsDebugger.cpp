@@ -87,6 +87,90 @@ void DevToolsDebugger::interrupt(PageClient& page)
         debugger->request_pause_on_next_bytecode_execution();
 }
 
+void DevToolsDebugger::pause_for_dom_breakpoint(PageClient& page, String const& reason_message)
+{
+    if (!m_attached_page_ids.contains(page.id()) || m_is_handling_pause)
+        return;
+
+    auto configuration = m_configurations.get(page.id()).value_or(WebView::DebuggerConfiguration {});
+    if (configuration.skip_breakpoints)
+        return;
+
+    auto& vm = Web::Bindings::main_thread_vm();
+    auto stack = vm.stack_trace();
+    if (stack.is_empty())
+        return;
+
+    m_paused_frames.clear();
+    m_paused_object_table.clear();
+
+    WebView::DebuggerPause debugger_pause {
+        .reason = WebView::DebuggerPauseReason::Breakpoint,
+        .reason_message = Utf16String::from_utf8(reason_message),
+        .exception = {},
+        .frames = {},
+    };
+
+    for (auto const& frame : stack) {
+        auto* execution_context = frame.execution_context;
+        auto const* source_code = execution_context->source_code();
+        if (!source_code)
+            continue;
+        auto source = page.devtools_source_description(*source_code);
+        if (!source.has_value())
+            continue;
+
+        auto line = source->source_start_line;
+        auto column = source->source_start_column;
+        if (frame.source_range.has_value()) {
+            line = frame.source_range->start.line;
+            column = frame.source_range->start.column > 0 ? frame.source_range->start.column - 1 : 0;
+        }
+        auto frame_id = m_next_frame_id++;
+        m_paused_frames.set(frame_id, execution_context);
+        Vector<WebView::DebuggerValue> arguments;
+        for (auto argument : execution_context->arguments_span().slice(0, execution_context->passed_argument_count))
+            arguments.append(serialize_value(argument));
+        debugger_pause.frames.append(WebView::DebuggerFrame {
+            .id = frame_id,
+            .display_name = execution_context->function_name().to_utf16_string(),
+            .location = {
+                .source = source.release_value(),
+                .line = line,
+                .column = column,
+            },
+            .this_value = serialize_value(execution_context->this_value.value_or(JS::js_undefined())),
+            .arguments = move(arguments),
+        });
+    }
+
+    if (debugger_pause.frames.is_empty()) {
+        m_paused_frames.clear();
+        m_paused_object_table.clear();
+        return;
+    }
+
+    auto paused_page_id = page.id();
+    m_paused_page_id = paused_page_id;
+    m_resume_mode = WebView::DebuggerResumeMode::Continue;
+    m_resume_requested = false;
+    m_is_handling_pause = true;
+
+    auto event_loop_pause = Web::HTML::main_thread_event_loop().pause();
+    m_client.async_did_pause_debugger(page.id(), move(debugger_pause));
+    Core::EventLoop::current().spin_until([this] {
+        return m_resume_requested;
+    });
+
+    m_is_handling_pause = false;
+    m_paused_page_id.clear();
+    m_paused_frames.clear();
+    m_paused_object_table.clear();
+    if (m_attached_page_ids.contains(paused_page_id))
+        m_client.async_did_resume_debugger(paused_page_id);
+    schedule_disable_if_unused();
+}
+
 void DevToolsDebugger::update_blackboxing(PageClient& page, Utf16String url, Vector<WebView::DebuggerBlackboxRange> ranges, WebView::DebuggerBlackboxingOperation operation)
 {
     auto page_sources = m_blackboxed_sources.find(page.id());

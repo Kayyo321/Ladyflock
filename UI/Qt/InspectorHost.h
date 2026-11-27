@@ -22,6 +22,14 @@ namespace Ladybird {
 class BrowserWindow;
 class WebContentView;
 
+class InspectorSplitter final : public QSplitter {
+public:
+    explicit InspectorSplitter(QWidget* parent = nullptr);
+
+private:
+    virtual QSplitterHandle* createHandle() override;
+};
+
 // Hosts a tab's page WebContentView alongside its optional local Inspector view (docked in a
 // QSplitter on the right/bottom/left, or floated in its own native top-level window).
 class InspectorHost final : public QWidget {
@@ -46,6 +54,7 @@ public:
     void open(String const& initial_panel = "elements"_string);
     void toggle();
     void close_inspector();
+    static void restore_focus_after_close(QWidget& page, QWidget* opener);
 
     bool is_open() const { return m_inspector_view != nullptr; }
     DockMode dock_mode() const { return m_dock_mode; }
@@ -53,7 +62,7 @@ public:
     void set_fifty_fifty_split();
     double split_ratio() const { return m_split_ratio; }
 
-    WebContentView* inspector_view() const { return m_inspector_view; }
+    WebContentView* inspector_view() const;
     QWidget* undocked_window() const { return m_undocked_window; }
     QSplitter& splitter() { return *m_splitter; }
 
@@ -62,10 +71,15 @@ public:
     void set_browser_window(BrowserWindow&);
     void update_target_title(QString const& title);
 
+signals:
+    void focus_target_chrome_requested();
+
 private:
     virtual bool eventFilter(QObject*, QEvent*) override;
+    virtual void changeEvent(QEvent*) override;
     virtual void resizeEvent(QResizeEvent*) override;
 
+    void close_inspector(bool restore_focus);
     DockMode choose_initial_dock_mode() const;
     void apply_dock_layout();
     void apply_splitter_sizes();
@@ -82,6 +96,7 @@ private:
     DockMode m_dock_mode { DockMode::Right };
     bool m_has_explicit_dock_choice { false };
     double m_split_ratio { 0.38 };
+    QPointer<QWidget> m_focus_before_open;
     QString m_target_title;
 };
 

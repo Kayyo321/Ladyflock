@@ -68,6 +68,7 @@ public:
     void request_file_for_webdriver(Web::PageId page_id, u64 command_id, Web::FileRequest);
 
     PageHost& page_host() { return *m_page_host; }
+    DevToolsDebugger* devtools_debugger() { return m_devtools_debugger.ptr(); }
     PageHost const& page_host() const { return *m_page_host; }
     Web::Compositor::CompositorConnection* compositor_process_connection() const;
     void did_destroy_compositor_context(Web::CompositorContextId);
@@ -193,7 +194,8 @@ private:
     virtual void storage_area_write_acknowledged(Web::StorageAPI::StorageAreaId area_id) override;
     virtual void storage_area_write_refused(Web::StorageAPI::StorageAreaId area_id, Vector<Utf16String> keys, Vector<Utf16String> values) override;
     virtual void storage_area_reset(Web::StorageAPI::StorageAreaId area_id, Vector<Utf16String> keys, Vector<Utf16String> values) override;
-    virtual void inspect_dom_node(Web::PageId page_id, WebView::DOMNodeProperties::Type, Web::UniqueNodeID node_id, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options) override;
+    Web::DOM::Node* active_inspector_node(Web::PageId, Web::UniqueNodeID);
+    virtual void inspect_dom_node(Web::PageId page_id, WebView::DOMNodeProperties::Type, Web::UniqueNodeID node_id, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options, u64 request_id) override;
     virtual void inspect_grid_layouts(Web::PageId page_id, Web::UniqueNodeID root_node_id) override;
     virtual void inspect_current_grid(Web::PageId page_id, Web::UniqueNodeID node_id) override;
     virtual void inspect_current_flexbox(Web::PageId page_id, Web::UniqueNodeID node_id, bool only_look_at_parents) override;
@@ -332,6 +334,7 @@ private:
     virtual void take_dom_node_screenshot(Web::PageId page_id, Web::UniqueNodeID node_id) override;
 
     virtual void request_internal_page_info(Web::PageId page_id, WebView::PageInfoType) override;
+    virtual void inspector_engine_command(Web::PageId page_id, u64 request_id, String action, JsonValue params) override;
     virtual void describe_owners_of_visual_context_nodes(Web::PageId page_id, Vector<u32> spatial_node_indices, Vector<u32> effect_node_indices) override;
 
     virtual void get_selected_text(Web::PageId page_id, u64 request_id) override;

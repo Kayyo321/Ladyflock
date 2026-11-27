@@ -189,6 +189,7 @@ struct WebView::ContextMenuRequest {
     Vector<Utf16String> spelling_guesses;
     bool makes_link_to_highlight;
     bool can_inspect_element;
+    u64 inspect_menu_generation;
     Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation;
     Optional<Web::HTML::PreparedNavigationDescriptor> navigation;
     Optional<Gfx::ShareableBitmap> image_bitmap;

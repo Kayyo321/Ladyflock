@@ -823,6 +823,16 @@ static bool is_browser_reserved_shortcut(QKeyEvent const& event)
     if (modifiers == Qt::ControlModifier && key == Qt::Key_PageUp)
         return true;
 
+    if (modifiers == Qt::NoModifier && key == Qt::Key_F12)
+        return true;
+#if defined(AK_OS_MACOS)
+    constexpr auto inspector_modifiers = Qt::ControlModifier | Qt::AltModifier;
+#else
+    constexpr auto inspector_modifiers = Qt::ControlModifier | Qt::ShiftModifier;
+#endif
+    if (modifiers == inspector_modifiers && (key == Qt::Key_I || key == Qt::Key_C || key == Qt::Key_J))
+        return true;
+
     // F6 moves focus between the chrome and the page, and the sidebar shows or hides with its own shortcut.
     if (modifiers == Qt::NoModifier && key == Qt::Key_F6)
         return true;

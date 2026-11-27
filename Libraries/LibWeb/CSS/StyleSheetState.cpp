@@ -481,6 +481,7 @@ StyleRuleCache const& StyleSheetState::rule_cache()
 
 void StyleSheetState::invalidate_owners()
 {
+    bump_edit_revision();
     auto previously_matched = m_native_sheet.media_state();
     m_native_sheet.reset_media_state();
     m_rule_cache = nullptr;

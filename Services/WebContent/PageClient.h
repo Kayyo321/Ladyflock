@@ -129,6 +129,22 @@ public:
     void set_has_devtools_client(bool);
     static void update_keeps_long_stack_traces();
     bool has_devtools_client() const { return m_has_devtools_client; }
+    void clear_inspected_listeners() { m_inspected_listeners.clear(); }
+    u64 remember_inspected_listener(Web::DOM::DOMEventListener&);
+    GC::Ptr<Web::DOM::DOMEventListener> inspected_listener(u64 id) const;
+
+    enum class DOMBreakpointFlag : u8 {
+        None = 0,
+        SubtreeModified = 1u << 0,
+        AttributeModified = 1u << 1,
+        NodeRemoved = 1u << 2,
+    };
+    void set_dom_breakpoint(Web::UniqueNodeID node_id, u8 flag_bit);
+    void remove_dom_breakpoint(Web::UniqueNodeID node_id, u8 flag_bit);
+    void clear_dom_breakpoints();
+    bool set_inspector_node_hidden(Web::DOM::Element&, bool);
+    void restore_inspector_hidden_nodes();
+    HashMap<Web::UniqueNodeID, u8> const& dom_breakpoints() const { return m_dom_breakpoints; }
     virtual bool has_active_devtools_client() const override { return has_devtools_client(); }
     void start_sending_console_output(bool messages, bool errors);
     void buffer_console_output(WebView::ConsoleOutput);
@@ -548,6 +564,14 @@ private:
     Optional<i64> m_pending_accessibility_focus;
 
     bool m_has_devtools_client { false };
+    u64 m_next_inspected_listener_id { 1 };
+    HashMap<u64, GC::Weak<Web::DOM::DOMEventListener>> m_inspected_listeners;
+    struct InspectorHiddenNodeStyle {
+        Utf16String visibility;
+        Utf16String priority;
+    };
+    HashMap<Web::UniqueNodeID, InspectorHiddenNodeStyle> m_inspector_hidden_nodes;
+    HashMap<Web::UniqueNodeID, u8> m_dom_breakpoints;
     NonnullRefPtr<Web::Fetch::Engine::NetworkActivityObservers> m_network_activity_observers;
     bool m_devtools_takes_console_messages { false };
     bool m_devtools_takes_console_errors { false };

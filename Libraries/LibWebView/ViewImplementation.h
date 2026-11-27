@@ -510,7 +510,7 @@ public:
     InteractiveOwner debugger_owner() const { return m_debugger_owner; }
     void start_node_picker_for_owner(InteractiveOwner, DevTools::DevToolsDelegate::OnNodePickerEvent);
     void stop_node_picker_for_owner(InteractiveOwner);
-    void attach_debugger_for_owner(InteractiveOwner);
+    bool attach_debugger_for_owner(InteractiveOwner);
     void detach_debugger_for_owner(InteractiveOwner);
     void add_dom_mutation_listener_ref();
     void remove_dom_mutation_listener_ref();
@@ -519,10 +519,12 @@ public:
     void set_inspector_session(Badge<InspectorSession>, WeakPtr<InspectorSession>);
 
     using InspectorEngineReplyCallback = Function<void(bool ok, JsonValue result, Optional<String> error)>;
+    u64 allocate_inspector_request_id() { return m_next_inspector_request_id++; }
     void dispatch_inspector_engine_command(u64 request_id, String const& action, JsonObject const& params, InspectorEngineReplyCallback);
-    void did_complete_inspector_engine_command(u64 request_id, bool ok, JsonValue result, Optional<String> error);
+    void did_complete_inspector_engine_command(WebContentPage const& sender, u64 request_id, bool ok, JsonValue result, Optional<String> error);
+    void cancel_pending_inspector_engine_commands();
 
-    void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {});
+    void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {}, u64 request_id = 0);
     void inspect_grid_layouts(Web::UniqueNodeID root_node_id);
     void inspect_current_grid(Web::UniqueNodeID node_id);
     void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents);
@@ -851,7 +853,8 @@ public:
     bool can_navigate_forward() const { return m_can_navigate_forward; }
 
     // What the application offers in a context menu, it asks the view to do.
-    void inspect_context_menu_element();
+    bool is_current_context_menu(u64 generation) const { return generation && generation == m_context_menu_request_id; }
+    void inspect_context_menu_element(u64 menu_generation);
     void replace_context_menu_misspelling(Utf16String const&);
     void ignore_misspelling(Utf16String const&);
     void learn_misspelling(Utf16String const&);
@@ -1086,13 +1089,10 @@ protected:
     HashMap<u64, NonnullRefPtr<Core::Promise<bool>>> m_pending_select_word_for_dictionary_lookup_requests;
     HashMap<u64, NonnullRefPtr<Core::Promise<ByteString>>> m_pending_cut_selected_text_requests;
 
-    void prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position);
-    Optional<u64> m_inspect_element_hit_test_request_id;
-    Optional<Web::UniqueNodeID> m_inspect_element_node_id;
+    void prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id);
+    Web::UniqueNodeID m_inspect_element_node_id { 0 };
     RefPtr<WebContentPage> m_inspect_element_page;
     Optional<Web::HTML::CrossProcessId> m_inspect_element_document_id;
-    u64 m_inspect_element_menu_generation { 0 };
-    bool m_inspect_element_activated_before_hit_test { false };
 
     struct PendingInputEvent {
         Web::InputEvent event;
@@ -1402,13 +1402,13 @@ protected:
         Previewed,
     };
     void request_node_picker_hit_test(NodePickerRequestType, Web::DevicePixelPoint);
-    void did_receive_node_hit_test(u64 request_id, Web::UniqueNodeID);
     void did_receive_node_picker_hit_test(u64 request_id, Web::UniqueNodeID);
     void did_receive_indexed_database_inspection(u64 request_id, JsonObject);
 
     bool m_node_picker_active { false };
     InteractiveOwner m_node_picker_owner { InteractiveOwner::None };
     InteractiveOwner m_debugger_owner { InteractiveOwner::None };
+    bool m_local_debugger_attached { false };
     Optional<Web::UniqueNodeID> m_node_picker_hovered_node_id;
     u64 m_next_node_hit_test_request_id { 1 };
     HashMap<u64, NodePickerRequestType> m_pending_node_picker_requests;
@@ -1421,8 +1421,12 @@ protected:
     bool m_devtools_takes_console_messages { false };
     bool m_devtools_takes_console_errors { false };
     WeakPtr<InspectorSession> m_inspector_session;
-    HashMap<u64, InspectorEngineReplyCallback> m_pending_inspector_engine_commands;
-    u64 m_next_inspector_engine_command_id { 1 };
+    struct PendingInspectorEngineCommand {
+        Web::HTML::CrossProcessId document_id;
+        InspectorEngineReplyCallback callback;
+    };
+    HashMap<u64, PendingInspectorEngineCommand> m_pending_inspector_engine_commands;
+    u64 m_next_inspector_request_id { 1 };
 
     // NB: A view starts out hidden, until the UI shows it.
     Optional<MonotonicTime> m_hidden_since { MonotonicTime::now() };

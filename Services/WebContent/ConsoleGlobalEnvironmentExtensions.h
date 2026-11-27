@@ -36,14 +36,30 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    // $0, the DOM node currently selected in the inspector
+    static JS::ThrowCompletionOr<JS::Value> get_inspected_node_at(JS::VM&, size_t);
+
+    // $0..$4, the last 5 DOM nodes selected in the inspector
     JS_DECLARE_NATIVE_FUNCTION($0_getter);
+    JS_DECLARE_NATIVE_FUNCTION($1_getter);
+    JS_DECLARE_NATIVE_FUNCTION($2_getter);
+    JS_DECLARE_NATIVE_FUNCTION($3_getter);
+    JS_DECLARE_NATIVE_FUNCTION($4_getter);
     // $_, the value of the most recent expression entered into the console
     JS_DECLARE_NATIVE_FUNCTION($__getter);
     // $(selector, element), equivalent to `(element || document).querySelector(selector)`
     JS_DECLARE_NATIVE_FUNCTION($_function);
     // $$(selector, element), equivalent to `(element || document).querySelectorAll(selector)`
     JS_DECLARE_NATIVE_FUNCTION($$_function);
+    // $x(xpath, contextNode), evaluates an XPath expression returning matching nodes
+    JS_DECLARE_NATIVE_FUNCTION($x_function);
+    // keys(obj), values(obj), dir(obj), table(data), clear(), copy(val), inspect(node)
+    JS_DECLARE_NATIVE_FUNCTION(keys_function);
+    JS_DECLARE_NATIVE_FUNCTION(values_function);
+    JS_DECLARE_NATIVE_FUNCTION(dir_function);
+    JS_DECLARE_NATIVE_FUNCTION(table_function);
+    JS_DECLARE_NATIVE_FUNCTION(clear_function);
+    JS_DECLARE_NATIVE_FUNCTION(copy_function);
+    JS_DECLARE_NATIVE_FUNCTION(inspect_function);
 
     GC::Ref<Web::HTML::Window> m_window_object;
     GC::Ptr<JS::Object> m_binding_object;

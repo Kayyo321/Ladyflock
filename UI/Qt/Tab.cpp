@@ -260,6 +260,11 @@ void Tab::initialize(Optional<u64> hub_view_id)
 
     m_inspector_host = new InspectorHost(this, *m_window, *m_view);
     tab_layout->addWidget(m_inspector_host);
+    connect(m_inspector_host, &InspectorHost::focus_target_chrome_requested, this, [this] {
+        m_window->activate_tab(tab_index());
+        m_window->activateWindow();
+        focus_location_editor();
+    });
 
     view().on_inspector_open_requested = [this](String const& panel, Optional<i64>, u64) {
         open_inspector(panel);
@@ -1277,6 +1282,8 @@ void Tab::leave_report_review()
 
 void Tab::update_tab_title()
 {
+    if (m_inspector_host)
+        m_inspector_host->update_target_title(title());
     emit title_changed(tab_index(), title());
 }
 

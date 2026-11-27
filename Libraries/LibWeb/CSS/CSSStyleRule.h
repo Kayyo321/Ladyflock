@@ -20,12 +20,12 @@ class CSSStyleRule final : public CSSGroupingRule {
 public:
     SelectorList selectors() const;
     SelectorList absolutized_selectors() const;
-    RustDeclarationBlock declaration() const;
+    WEB_API RustDeclarationBlock declaration() const;
 
-    Utf16String selector_text() const;
-    void set_selector_text(Utf16View);
+    WEB_API Utf16String selector_text() const;
+    WEB_API void set_selector_text(Utf16View);
 
-    GC::Ref<CSSStyleProperties> style() const;
+    WEB_API GC::Ref<CSSStyleProperties> style() const;
 };
 
 template<>

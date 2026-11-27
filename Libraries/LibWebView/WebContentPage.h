@@ -127,6 +127,7 @@ public:
     // Whether a document this page hosts may use the feature. The process hosting the page can act for any of them.
     bool hosts_a_document_allowed_to_use(Web::PermissionsPolicy::PolicyControlledFeature) const;
     void for_each_navigable_with_a_hosted_active_document(Function<IterationDecision(CanonicalNavigable const&)> const&) const;
+    bool hosts_active_document(Web::HTML::CrossProcessId document_id) const;
     RefPtr<CanonicalDocument> hosted_document_with_id(Web::HTML::CrossProcessId) const;
     bool hosts_a_document_with_top_level_origin(URL::Origin const&) const;
     bool document_may_use(Web::HTML::CrossProcessId, Web::Permissions::PermissionName) const;
@@ -255,6 +256,7 @@ private:
     virtual void did_complete_debugger_breakpoint_operation(u64 request_id, Optional<String> error) override;
     virtual void did_take_screenshot(Gfx::ShareableBitmap screenshot) override;
     virtual void did_get_internal_page_info(WebView::PageInfoType type, Optional<Core::AnonymousBuffer> info) override;
+    virtual void did_complete_inspector_engine_command(u64 request_id, bool ok, JsonValue result, Optional<String> error) override;
     virtual void did_describe_owners_of_visual_context_nodes(u64 structural_epoch, Vector<u32> spatial_node_indices, Vector<u32> effect_node_indices, Vector<String> owners) override;
     virtual void did_get_selected_text(u64 request_id, ByteString selection) override;
     virtual void did_get_selected_text_for_lookup(u64 request_id, Optional<DictionaryLookup> lookup) override;
@@ -350,7 +352,7 @@ private:
     virtual void nonchanging_navigable_history_state_updated(Web::HTML::CrossProcessId operation_id, Web::HTML::CrossProcessId navigable_id) override;
     virtual void did_request_close_of_traversable(Web::HTML::CrossProcessId navigable_id, Web::HTML::CrossProcessId source_navigable_id, Web::HTML::NavigationSourceSnapshot source_snapshot) override;
     virtual void did_inspect_dom_tree(String dom_tree) override;
-    virtual void did_inspect_dom_node(DOMNodeProperties properties) override;
+    virtual void did_inspect_dom_node(u64 request_id, DOMNodeProperties properties) override;
     virtual void did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id) override;
     virtual void did_mutate_dom(Mutation mutation) override;
     virtual void did_get_dom_node_html(String html) override;

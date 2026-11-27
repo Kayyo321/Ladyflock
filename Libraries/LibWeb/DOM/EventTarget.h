@@ -81,6 +81,11 @@ public:
     bool has_blocking_keyboard_event_listener() const;
     bool has_event_listeners() const;
 
+    ReadonlySpan<GC::Ref<DOMEventListener>> event_listener_list() const
+    {
+        return m_data ? m_data->event_listener_list.span() : ReadonlySpan<GC::Ref<DOMEventListener>> {};
+    }
+
 protected:
     EventTarget();
 

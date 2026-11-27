@@ -511,6 +511,14 @@ public:
 
     void set_inspected_node(GC::Ptr<Node>);
     GC::Ptr<Node const> inspected_node() const { return m_inspected_node; }
+    void set_inspector_selected_node(GC::Ptr<Node>);
+    GC::Ptr<Node const> console_inspected_node(size_t index) const;
+
+    void note_element_forced_pseudo_state(Element&, bool has_any);
+    void clear_all_forced_pseudo_states();
+
+    CSS::StyleSheetState& ensure_inspector_style_sheet();
+    CSS::StyleSheetState* inspector_style_sheet() const { return m_inspector_style_sheet.ptr(); }
 
     void set_highlighted_node(GC::Ptr<Node>, Optional<CSS::PseudoElement>);
     Layout::Node* highlighted_layout_node(Layout::BegunRead const& read);
@@ -1874,7 +1882,14 @@ public:
     void invalidate_content_blocker_style_sheet();
     bool content_blocker_style_sheet_may_need_refresh_for_class_or_id(Utf16FlyString const* id, ReadonlySpan<Utf16FlyString> class_names);
 
+    struct ExtensionStyleSheetEntry {
+        String extension_id;
+        String key;
+        String css;
+    };
+
     Optional<Utf16String> extension_style_sheet_source() const;
+    Vector<ExtensionStyleSheetEntry> const& extension_style_sheets() const { return m_extension_style_sheets; }
     void add_extension_style_sheet(String extension_id, String key, String css);
     void remove_extension_style_sheet(StringView extension_id, StringView key);
     void remove_all_extension_style_sheets_for_extension(StringView extension_id);
@@ -2044,6 +2059,9 @@ private:
 
     GC::Ptr<Node> m_hovered_node;
     GC::Ptr<Node> m_inspected_node;
+    Vector<GC::Ptr<Node>> m_inspected_node_history;
+    GC::WeakHashSet<Element> m_forced_pseudo_state_elements;
+    RefPtr<CSS::StyleSheetState> m_inspector_style_sheet;
     GC::Ptr<Node> m_highlighted_node;
     Optional<CSS::PseudoElement> m_highlighted_pseudo_element;
 
@@ -2702,11 +2720,6 @@ private:
     // https://html.spec.whatwg.org/multipage/dom.html#concept-document-ancestor-origins-list
     GC::Ptr<HTML::DOMStringList> m_ancestor_origins_list;
 
-    struct ExtensionStyleSheetEntry {
-        String extension_id;
-        String key;
-        String css;
-    };
     Vector<ExtensionStyleSheetEntry> m_extension_style_sheets;
     GC::Ptr<Extensions::ExtensionContentScriptHost> m_extension_content_script_host;
 };

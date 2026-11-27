@@ -12,6 +12,8 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QKeyEvent>
+#include <QShortcut>
 #include <QVBoxLayout>
 
 namespace Ladybird {
@@ -20,6 +22,57 @@ static Optional<InspectorHost::DockMode> s_remembered_regular_dock_mode;
 static double s_remembered_regular_split_ratio { 0.38 };
 
 static constexpr int MINIMUM_SIDE_BY_SIDE_WIDTH = 920;
+
+class InspectorSplitterHandle final : public QSplitterHandle {
+public:
+    explicit InspectorSplitterHandle(InspectorSplitter& parent)
+        : QSplitterHandle(parent.orientation(), &parent)
+    {
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName("Resize Inspector");
+        setToolTip("Use the arrow keys to resize. Press Home for a 50/50 split.");
+        setAccessibleDescription(toolTip());
+    }
+
+private:
+    virtual void keyPressEvent(QKeyEvent* event) override
+    {
+        auto sizes = splitter()->sizes();
+        if (sizes.size() != 2 || event->modifiers() != Qt::NoModifier)
+            return QSplitterHandle::keyPressEvent(event);
+
+        bool horizontal = orientation() == Qt::Horizontal;
+        int step = horizontal && layoutDirection() == Qt::RightToLeft ? -16 : 16;
+        int position = sizes.first();
+        if (event->key() == Qt::Key_Home)
+            position = (sizes.first() + sizes.last()) / 2;
+        else if (event->key() == (horizontal ? Qt::Key_Right : Qt::Key_Down))
+            position += step;
+        else if (event->key() == (horizontal ? Qt::Key_Left : Qt::Key_Up))
+            position -= step;
+        else
+            return QSplitterHandle::keyPressEvent(event);
+        // QSplitterHandle takes physical left-to-right coordinates even for a right-to-left splitter.
+        if (horizontal && layoutDirection() == Qt::RightToLeft)
+            position = splitter()->width() - position;
+        moveSplitter(position);
+        event->accept();
+    }
+};
+
+InspectorSplitter::InspectorSplitter(QWidget* parent)
+    : QSplitter(Qt::Horizontal, parent)
+{
+    setChildrenCollapsible(false);
+    setOpaqueResize(false);
+    setHandleWidth(1);
+    setAccessibleName("Inspector splitter");
+}
+
+QSplitterHandle* InspectorSplitter::createHandle()
+{
+    return new InspectorSplitterHandle(*this);
+}
 
 InspectorHost::DockMode InspectorHost::dock_mode_from_string(StringView value)
 {
@@ -56,11 +109,7 @@ InspectorHost::InspectorHost(QWidget* parent, BrowserWindow& browser_window, Web
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_splitter = new QSplitter(Qt::Horizontal, this);
-    m_splitter->setChildrenCollapsible(false);
-    m_splitter->setOpaqueResize(false);
-    m_splitter->setHandleWidth(1);
-    m_splitter->setAccessibleName("Inspector splitter");
+    m_splitter = new InspectorSplitter(this);
     m_splitter->addWidget(&m_content_view);
     layout->addWidget(m_splitter);
 
@@ -73,7 +122,7 @@ InspectorHost::InspectorHost(QWidget* parent, BrowserWindow& browser_window, Web
 
 InspectorHost::~InspectorHost()
 {
-    close_inspector();
+    close_inspector(false);
 }
 
 InspectorHost::DockMode InspectorHost::choose_initial_dock_mode() const
@@ -98,6 +147,7 @@ void InspectorHost::open(String const& initial_panel)
         return;
     }
 
+    m_focus_before_open = QApplication::focusWidget();
     m_dock_mode = choose_initial_dock_mode();
     if (m_browser_window && m_browser_window->is_private() == WebView::IsPrivate::No)
         m_split_ratio = s_remembered_regular_split_ratio;
@@ -125,6 +175,11 @@ void InspectorHost::open(String const& initial_panel)
     focus_inspector();
 }
 
+WebContentView* InspectorHost::inspector_view() const
+{
+    return m_inspector_view;
+}
+
 void InspectorHost::toggle()
 {
     if (is_open())
@@ -134,6 +189,21 @@ void InspectorHost::toggle()
 }
 
 void InspectorHost::close_inspector()
+{
+    close_inspector(true);
+}
+
+void InspectorHost::restore_focus_after_close(QWidget& page, QWidget* opener)
+{
+    if (!page.isVisible())
+        return;
+    if (!opener || !opener->isVisible() || !opener->isEnabled() || opener->window() != page.window())
+        opener = &page;
+    page.window()->activateWindow();
+    opener->setFocus(Qt::OtherFocusReason);
+}
+
+void InspectorHost::close_inspector(bool restore_focus)
 {
     if (!m_inspector_view && !m_undocked_window)
         return;
@@ -151,16 +221,18 @@ void InspectorHost::close_inspector()
     if (m_undocked_window) {
         m_undocked_window->removeEventFilter(this);
         m_undocked_window->hide();
-        delete m_undocked_window;
+        m_undocked_window->deleteLater();
         m_undocked_window = nullptr;
     }
 
-    if (had_focus && m_content_view.isVisible())
-        m_content_view.setFocus(Qt::OtherFocusReason);
+    if (restore_focus && had_focus)
+        restore_focus_after_close(m_content_view, m_focus_before_open);
+    m_focus_before_open.clear();
 }
 
 void InspectorHost::set_dock_mode(DockMode mode, bool explicit_user_choice)
 {
+    bool restore_focus = inspector_has_focus();
     m_dock_mode = mode;
     if (explicit_user_choice) {
         m_has_explicit_dock_choice = true;
@@ -170,6 +242,8 @@ void InspectorHost::set_dock_mode(DockMode mode, bool explicit_user_choice)
 
     if (m_inspector_view) {
         apply_dock_layout();
+        if (restore_focus)
+            focus_inspector();
         if (auto* hub = HubConnection::the_if_connected())
             hub->async_view_inspector_set_dock_mode(m_content_view.view_id(), dock_mode_to_string(m_dock_mode));
     }
@@ -191,6 +265,10 @@ void InspectorHost::apply_dock_layout()
     if (m_dock_mode == DockMode::Window) {
         if (!m_undocked_window) {
             m_undocked_window = new QWidget(nullptr, Qt::Window);
+            auto* focus_chrome = new QShortcut(QKeySequence(Qt::Key_F6), m_undocked_window);
+            connect(focus_chrome, &QShortcut::activated, this, &InspectorHost::focus_target_chrome_requested);
+            auto* toggle = new QShortcut(QKeySequence(Qt::Key_F12), m_undocked_window);
+            connect(toggle, &QShortcut::activated, this, [this] { close_inspector(); });
             m_undocked_window->resize(960, 640);
             auto* win_layout = new QVBoxLayout(m_undocked_window);
             win_layout->setContentsMargins(0, 0, 0, 0);
@@ -213,7 +291,7 @@ void InspectorHost::apply_dock_layout()
         m_inspector_view->setParent(m_splitter);
         m_undocked_window->removeEventFilter(this);
         m_undocked_window->hide();
-        delete m_undocked_window;
+        m_undocked_window->deleteLater();
         m_undocked_window = nullptr;
     }
 
@@ -233,12 +311,14 @@ void InspectorHost::apply_splitter_sizes()
     if (!m_inspector_view || m_dock_mode == DockMode::Window)
         return;
 
-    int total = m_dock_mode == DockMode::Bottom ? height() : width();
+    auto bounds = m_splitter->contentsRect();
+    int total = (m_dock_mode == DockMode::Bottom ? bounds.height() : bounds.width()) - m_splitter->handleWidth();
     if (total <= 0)
-        total = m_dock_mode == DockMode::Bottom ? 600 : 1000;
+        return;
 
-    int inspector_size = clamp(static_cast<int>(total * m_split_ratio), 220, max(220, total - 220));
-    int page_size = max(220, total - inspector_size);
+    // QSplitter enforces each pane's own minimum size in the current orientation.
+    int inspector_size = static_cast<int>(total * m_split_ratio);
+    int page_size = total - inspector_size;
     if (m_dock_mode == DockMode::Left)
         m_splitter->setSizes({ inspector_size, page_size });
     else
@@ -265,8 +345,9 @@ void InspectorHost::record_split_ratio_from_splitter()
 
 void InspectorHost::update_splitter_theme()
 {
-    auto divider = Theme::chrome(this->palette()).divider;
-    m_splitter->setStyleSheet(QString("QSplitter::handle { background-color: %1; }").arg(divider.name(QColor::HexArgb)));
+    auto divider = Theme::chrome(*this).divider;
+    m_splitter->setStyleSheet(QString("QSplitter::handle { background-color: %1; } QSplitter::handle:focus { background-color: %2; }")
+            .arg(divider.name(QColor::HexArgb), Theme::focus_edge().name(QColor::HexArgb)));
 }
 
 void InspectorHost::update_undocked_window_title()
@@ -291,6 +372,7 @@ void InspectorHost::focus_inspector()
 {
     if (!m_inspector_view)
         return;
+    m_inspector_view->window()->activateWindow();
     m_inspector_view->setFocus(Qt::ShortcutFocusReason);
 }
 
@@ -315,6 +397,13 @@ bool InspectorHost::eventFilter(QObject* object, QEvent* event)
         return true;
     }
     return QWidget::eventFilter(object, event);
+}
+
+void InspectorHost::changeEvent(QEvent* event)
+{
+    QWidget::changeEvent(event);
+    if (m_splitter && (event->type() == QEvent::PaletteChange || event->type() == QEvent::ThemeChange))
+        update_splitter_theme();
 }
 
 void InspectorHost::resizeEvent(QResizeEvent* event)

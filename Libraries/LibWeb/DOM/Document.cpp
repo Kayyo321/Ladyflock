@@ -1042,6 +1042,9 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_style_sheets);
     visitor.visit(m_hovered_node);
     visitor.visit(m_inspected_node);
+    visitor.visit(m_inspected_node_history);
+    if (m_inspector_style_sheet)
+        m_inspector_style_sheet->visit_edges(visitor);
     visitor.visit(m_highlighted_node);
     for (auto const& flexbox_highlight : m_flexbox_highlights)
         visitor.visit(flexbox_highlight.node);
@@ -3287,6 +3290,56 @@ bool Document::has_committed_viewport_box() const
 void Document::set_inspected_node(GC::Ptr<Node> node)
 {
     m_inspected_node = node;
+}
+
+void Document::set_inspector_selected_node(GC::Ptr<Node> node)
+{
+    if (!node) {
+        m_inspected_node_history.clear();
+        return;
+    }
+
+    m_inspected_node_history.remove_all_matching([&](GC::Ptr<Node> const& existing) {
+        return existing == node;
+    });
+    m_inspected_node_history.prepend(node);
+    if (m_inspected_node_history.size() > 5)
+        m_inspected_node_history.resize(5);
+}
+
+GC::Ptr<Node const> Document::console_inspected_node(size_t index) const
+{
+    if (index == 0 && m_inspected_node_history.is_empty())
+        return m_inspected_node;
+    if (index < m_inspected_node_history.size())
+        return m_inspected_node_history[index];
+    return nullptr;
+}
+
+void Document::note_element_forced_pseudo_state(Element& element, bool has_any)
+{
+    if (has_any)
+        m_forced_pseudo_state_elements.set(element);
+    else
+        m_forced_pseudo_state_elements.remove(element);
+}
+
+void Document::clear_all_forced_pseudo_states()
+{
+    auto elements = move(m_forced_pseudo_state_elements);
+    for (auto& element : elements)
+        element.clear_forced_pseudo_states();
+}
+
+CSS::StyleSheetState& Document::ensure_inspector_style_sheet()
+{
+    if (!m_inspector_style_sheet) {
+        auto sheet = MUST(CSS::StyleSheetState::create_constructed(*this));
+        sheet->set_attribution(CSS::StyleSheetState::AttributionKind::Inspector, "inspector-stylesheet"_string, "inspector-stylesheet"_string);
+        style_scope().add_a_css_style_sheet(*sheet);
+        m_inspector_style_sheet = move(sheet);
+    }
+    return *m_inspector_style_sheet;
 }
 
 void Document::set_highlighted_node(GC::Ptr<Node> node, Optional<CSS::PseudoElement> pseudo_element)

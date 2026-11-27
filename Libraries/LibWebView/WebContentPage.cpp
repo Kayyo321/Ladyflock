@@ -1291,7 +1291,7 @@ void WebContentPage::did_get_hovered_node_id(Web::UniqueNodeID node_id)
 void WebContentPage::did_get_node_id_at_position(u64 request_id, Web::UniqueNodeID node_id)
 {
     if (displays_tab()) {
-        view().did_receive_node_hit_test(request_id, node_id);
+        view().did_receive_node_picker_hit_test(request_id, node_id);
     }
 }
 
@@ -1376,6 +1376,12 @@ void WebContentPage::did_get_internal_page_info(WebView::PageInfoType type, Opti
 {
     if (displays_tab())
         view().did_receive_internal_page_info({}, type, info);
+}
+
+void WebContentPage::did_complete_inspector_engine_command(u64 request_id, bool ok, JsonValue result, Optional<String> error)
+{
+    if (has_traversable() && traversable().view().has_value())
+        view().did_complete_inspector_engine_command(*this, request_id, ok, move(result), move(error));
 }
 
 void WebContentPage::did_describe_owners_of_visual_context_nodes(u64 structural_epoch, Vector<u32> spatial_node_indices, Vector<u32> effect_node_indices, Vector<String> owners)
@@ -1940,6 +1946,17 @@ bool WebContentPage::hosts_a_document_with_top_level_origin(URL::Origin const& o
         return hosts ? IterationDecision::Break : IterationDecision::Continue;
     });
     return hosts;
+}
+
+bool WebContentPage::hosts_active_document(Web::HTML::CrossProcessId document_id) const
+{
+    bool found = false;
+    traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& navigable) {
+        auto const& document = navigable.active_document();
+        found = document.id() == document_id && document.host() == this;
+        return found ? IterationDecision::Break : IterationDecision::Continue;
+    });
+    return found;
 }
 
 RefPtr<CanonicalDocument> WebContentPage::hosted_document_with_id(Web::HTML::CrossProcessId document_id) const
@@ -2645,20 +2662,20 @@ void WebContentPage::did_inspect_dom_tree(String dom_tree)
 {
     if (displays_tab()) {
         auto parsed = parse_json(dom_tree, "DOM tree"sv);
-        if (auto* session = view().inspector_session())
-            session->did_receive_dom_tree(parsed);
         if (view().on_received_dom_tree)
             view().on_received_dom_tree(move(parsed));
     }
 }
 
-void WebContentPage::did_inspect_dom_node(DOMNodeProperties properties)
+void WebContentPage::did_inspect_dom_node(u64 request_id, DOMNodeProperties properties)
 {
-    if (displays_tab()) {
+    if (!displays_tab())
+        return;
+    if (request_id != 0) {
         if (auto* session = view().inspector_session())
-            session->did_receive_dom_node_properties(properties);
-        if (view().on_received_dom_node_properties)
-            view().on_received_dom_node_properties(move(properties));
+            session->did_receive_dom_node_properties(request_id, properties);
+    } else if (view().on_received_dom_node_properties) {
+        view().on_received_dom_node_properties(move(properties));
     }
 }
 

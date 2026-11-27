@@ -171,7 +171,7 @@ public:
     Vector<Utf16FlyString> m_published_position_try_names;
     Vector<void const*> m_published_position_try_declarations;
 
-    RefPtr<StyleSheetState> m_user_style_sheet;
+    Vector<NonnullRefPtr<StyleSheetState>> m_user_style_sheets;
 
     bool m_needs_counter_style_cache_update : 1 { true };
     bool m_is_doing_counter_style_cache_update : 1 { false };
