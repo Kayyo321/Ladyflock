@@ -3176,6 +3176,10 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
                 return;
             }
             auto new_name = params.get_string("newName"sv).value_or(*name);
+            // As setAttribute() does: an HTML element's attribute names are lowercase, or lookups and the parser's
+            // own attributes would not match the one typed into the inspector.
+            if (element->namespace_uri() == Web::Namespace::HTML && element->document().is_html_document())
+                new_name = new_name.to_ascii_lowercase();
             auto old_attribute_name = Utf16FlyString::from_utf8(*name);
             auto attribute_name = Utf16FlyString::from_utf8(new_name);
             auto before = element->get_attribute(old_attribute_name).map([](auto const& value) { return value.to_utf8(); });
@@ -3804,9 +3808,14 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             auto alt_attr = element->get_attribute(Web::HTML::AttributeNames::alt);
             auto placeholder_attr = element->get_attribute(Web::HTML::AttributeNames::placeholder);
             auto title_attr = element->get_attribute(Web::HTML::AttributeNames::title);
+            // Enough of the text to tell what the name came from, not a large subtree's whole text over IPC.
+            constexpr size_t max_contents_length = 512;
             Optional<Utf16String> text_val;
-            if (auto tc = element->text_content(); tc.has_value() && !tc->is_empty())
-                text_val = *tc;
+            if (auto tc = element->text_content(); tc.has_value() && !tc->is_empty()) {
+                text_val = tc->length_in_code_units() > max_contents_length
+                    ? Utf16String::formatted("{}…", tc->substring_view(0, max_contents_length))
+                    : *tc;
+            }
 
             add_contributor("aria-labelledby"sv, labelledby);
             add_contributor("aria-label"sv, aria_label);
