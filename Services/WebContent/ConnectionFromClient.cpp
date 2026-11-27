@@ -3034,6 +3034,12 @@ static Web::CSS::StyleSheetState* find_style_sheet_by_occurrence_id(Web::DOM::Do
     }
     if (!found)
         document.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::Author, visit_sheet);
+    if (!found) {
+        document.for_each_shadow_root([&](Web::DOM::ShadowRoot const& root) {
+            if (!found && root.is_connected())
+                root.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::Author, visit_sheet);
+        });
+    }
     if (!found)
         document.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::User, visit_sheet);
     if (!found && document.inspector_style_sheet() && document.inspector_style_sheet()->style_engine_occurrence_id() == occurrence_id)

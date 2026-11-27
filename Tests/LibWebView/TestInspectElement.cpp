@@ -131,6 +131,16 @@ TEST_CASE(inspector_attachment_styles_history_and_detach)
           #subject:hover { margin-left: 7px; }
         </style>
         <main style="display: flex"><button id=subject>Distinctive fixture text</button></main>
+        <div id=shadow-host></div>
+        <script>
+            const source = ':host { color: rgb(11, 12, 13); }';
+            const pageStyle = document.createElement('style');
+            pageStyle.textContent = source;
+            document.head.append(pageStyle);
+            const shadowStyle = document.createElement('style');
+            shadowStyle.textContent = source;
+            document.getElementById('shadow-host').attachShadow({ mode: 'open' }).append(shadowStyle);
+        </script>
     )HTML"sv);
     wait_for([&] { return target->title() == "Inspector fixture"_utf16; });
 
@@ -153,7 +163,24 @@ TEST_CASE(inspector_attachment_styles_history_and_detach)
     EXPECT_EQ(state.get_u64("targetViewId"sv), target->view_id());
 
     auto tree = result(*frontend, "getDomTree"sv);
-    EXPECT(tree.get_object("tree"sv).has_value());
+    auto document = tree.get_object("tree"sv);
+    VERIFY(document.has_value());
+    auto children = document->get_array("children"sv);
+    VERIFY(children.has_value() && !children->is_empty());
+    EXPECT_EQ(children->at(0).as_object().get_string("type"sv), "doctype"sv);
+
+    auto host_id = search(*frontend, "#shadow-host"sv);
+    auto host_styles = node_properties(*frontend, host_id, "appliedStyleRules"sv);
+    bool saw_ambiguous_rule = false;
+    for (auto const& item : host_styles.get_array("properties"sv)->values()) {
+        auto rule = item.as_object().get_object("rule"sv);
+        if (rule.has_value() && rule->get_string("cssText"sv).value_or(String {}).starts_with_bytes(":host"sv)) {
+            EXPECT(!rule->has("sheetId"sv));
+            saw_ambiguous_rule = true;
+        }
+    }
+    EXPECT(saw_ambiguous_rule);
+
     auto node_id = search(*frontend, "#subject"sv);
     EXPECT_EQ(search(*frontend, "//*[@id='subject']"sv), node_id);
     EXPECT(search(*frontend, "Distinctive fixture text"sv) != 0);

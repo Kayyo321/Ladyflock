@@ -619,6 +619,28 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
 {
     JsonArray entries;
 
+    // A compiled stylesheet can be shared by the document and any connected shadow root.
+    // The matched rule identifies its compiled source without naming the occurrence.
+    HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
+    auto add_occurrences = [&](StyleScope const& scope) {
+        scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
+            auto* compiled = sheet.shared_compiled_style_sheet();
+            if (!compiled)
+                return;
+            auto* snapshot = &compiled->contents();
+            auto existing = live_sheet_by_snapshot.get(snapshot);
+            if (!existing.has_value())
+                live_sheet_by_snapshot.set(snapshot, &sheet);
+            else if (*existing != &sheet)
+                live_sheet_by_snapshot.set(snapshot, nullptr);
+        });
+    };
+    add_occurrences(m_document->style_scope());
+    m_document->for_each_shadow_root([&](DOM::ShadowRoot const& root) {
+        if (root.is_connected())
+            add_occurrences(root.style_scope());
+    });
+
     auto append_rules_for_abstract_element = [&](DOM::AbstractElement current_element, Optional<UniqueNodeID> inherited_node_id) {
         if (auto inline_style = current_element.inline_style()) {
             if (!inherited_node_id.has_value() || has_inherited_declaration(m_document, inline_style->properties(), inline_style->custom_properties()))
@@ -637,27 +659,6 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
         u32 expected_pseudo = current_element.pseudo_element().has_value()
             ? to_underlying(*current_element.pseudo_element())
             : NumericLimits<u32>::max();
-        // The engine may name a shared compiled stylesheet. Edits must use the live occurrence
-        // in this element's style scope. Ambiguous occurrences remain readable from the snapshot.
-        HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
-        auto add_occurrences = [&](StyleScope const& scope) {
-            scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
-                auto* compiled = sheet.shared_compiled_style_sheet();
-                if (!compiled)
-                    return;
-                auto* snapshot = &compiled->contents();
-                auto existing = live_sheet_by_snapshot.get(snapshot);
-                if (!existing.has_value())
-                    live_sheet_by_snapshot.set(snapshot, &sheet);
-                else if (*existing != &sheet)
-                    live_sheet_by_snapshot.set(snapshot, nullptr);
-            });
-        };
-        auto& own_scope = current_element.element().document_or_shadow_root_style_scope();
-        add_occurrences(own_scope);
-        if (&own_scope != &m_document->style_scope())
-            add_occurrences(m_document->style_scope());
-
         for (auto const& match : matches.in_reverse()) {
             if (match.pseudo_element != expected_pseudo)
                 continue;

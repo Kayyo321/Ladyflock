@@ -41,6 +41,8 @@ static constexpr Web::DOM::NodeType parse_dom_node_type(StringView type)
         return Web::DOM::NodeType::TEXT_NODE;
     if (type == "comment"sv)
         return Web::DOM::NodeType::COMMENT_NODE;
+    if (type == "doctype"sv)
+        return Web::DOM::NodeType::DOCUMENT_TYPE_NODE;
     return Web::DOM::NodeType::INVALID;
 }
 
