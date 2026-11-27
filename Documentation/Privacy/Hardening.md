@@ -32,8 +32,9 @@ See [NetworkEnforcement.md](NetworkEnforcement.md), [IdentitiesAndStorage.md](Id
 - Favicons, which are not stored per identity.
 - What the UI process still holds in memory for the identity, until it restarts.
 - Downloads the user had already saved. Ones in progress are cancelled.
+- The Qt UI's saved session (`Sessions.db`), which has one store for ordinary windows and one for private ones and does not record a tab's identity. A persistent named identity's open tabs may be saved there. The headless tests cannot exercise this.
 
-**Evidence (`TestLibWebView --suite TestIdentityPurge`, 3 tests).** Markers are looked for in the raw bytes of `Ladybird.db`, `History.db` and their `-wal`, `-shm` and `-journal` files, not through the stores that wrote them.
+**Evidence (`TestLibWebView --suite TestIdentityPurge`, 3 tests).** Markers are looked for in the raw bytes of `Ladybird.db`, `History.db` and their `-wal`, `-shm` and `-journal` files, and after the purge in every file under the test's profile, not through the stores that wrote them.
 
 - **Positive controls:** before the purge, each identity's markers are on disk, and so are its permissions file and cache.
 - **Purge:**
@@ -66,7 +67,7 @@ An administrator can bind every identity with a JSON file in a protected locatio
 
 | | |
 |---|---|
-| Location | macOS: `/Library/Managed Preferences/org.ladyflock.browser/policy.json`. Linux and BSD: `/etc/ladyflock/policies/policy.json`. No location on other platforms. No option or environment variable can name another file. |
+| Location | macOS: `/Library/Managed Preferences/org.ladyflock.browser/policy.json`. Linux and BSD: `/etc/ladyflock/policies/policy.json`. Other platforms have no location, so no policy is read. No option or environment variable can name another file. |
 | Trust | The file and its directory must belong to root, and neither may be writable by its group or by others. The file must be a regular file. A symbolic link is examined as itself and refused, and the file read must be the one that was checked. |
 | When | Once, at startup, before any policy is compiled. There is no live reload. |
 | Effect | `network` becomes the administrative ceiling of every identity: the default one, named ones and Tor-routed ones. Command-line options, an identity's own requirement, `set_network_mode` and `apply_policy_input` (even with a ceiling of its own) can narrow it but never widen it. A managed route and a different route required by an identity (such as Tor) leave that identity with no network. `stripTrackingParameters: true` turns stripping on whatever the command line says. `about:privacy` shows whether a policy is in force. |
@@ -77,7 +78,7 @@ An administrator can bind every identity with a JSON file in a protected locatio
 - There is no signature check, freshness check or remote distribution.
 - The managed route is used without per-site stream isolation. A command-line route with `--privacy-proxy-isolation` alongside it counts as a different route, and closes the network.
 - The real protected locations, owned by root, were not exercised: the tests point an in-process test application at a file owned by the account running them.
-- Windows: a policy file is always refused there. The code has not been built on Windows.
+- Windows has no location, and the loader refuses any policy file there because it has no ownership check yet. None of this has been built on Windows.
 
 **Evidence:**
 - **`TestLibPrivacy` (`TestPrivacyManagedPolicy`, 4 tests):**
@@ -109,7 +110,10 @@ An administrator can bind every identity with a JSON file in a protected locatio
 - **Routed:** a Tor-routed identity's download completes over its SOCKS route, which resolves the name. Neither the destination nor the DNS observer sees anything.
 - **Orphaned:** a download for a destroyed identity fails without opening a stream.
 
-**Not covered:** download history per identity, a memory-only download mode, checksums, executable warnings and metadata stripping.
+**Not covered:**
+- The test starts its downloads through `download_file`, as saving a link does. Downloads that a page's own response turns into (`adopt_download`) take their identity from the same `owner_for`, but no test exercises that path.
+- The download list for a window is still chosen by private or not, so a Tor-routed identity's downloads are listed with the private windows' downloads.
+- Download history per identity, a memory-only download mode, checksums, executable warnings and metadata stripping.
 
 ## 4. Fixes found on the way
 

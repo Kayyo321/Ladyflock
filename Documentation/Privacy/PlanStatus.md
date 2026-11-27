@@ -6,7 +6,7 @@ This compares the privacy plan, which is kept as a local design proposal and is 
 
 How each status was established:
 
-- **Tested:** a test exercises the behavior and passed on this revision (macOS 26.3.1, Apple Silicon).
+- **Tested:** a test exercises the behavior and passed on this revision (macOS 26.3.1, Apple Silicon). The full `TestLibWebView`, `TestLibWeb`, `TestLibPrivacy` and `TestUIQt` suites pass. Of `TestRequestServer`, `TestPrivacyNetworkGate` passes when run on its own. The full run stops in `TestProxyHostResolution`, which also failed before Milestone 3, so the suites after it were not run.
 - **Partial:** some of the domain exists. The gaps are named.
 - **Absent:** no implementation was found.
 - **Upstream:** inherited from Ladybird, not added by Ladyflock.
@@ -46,7 +46,7 @@ How each status was established:
 | 2 | Anti-fingerprinting | Absent (upstream compatibility spoofing only) | — | Profiles, noise, canvas/WebGL/audio, fonts, letterboxing, timezone, detection. |
 | 3 | Network privacy | Partial, the strongest domain | Offline, proxy-only with one route, SOCKS isolation, Tor-routed identities (external endpoint), WebRTC gating, DNS denial. All tested. | Supervised Tor/Arti, DoH/ODoH, local-network checks, ECH, a test for QUIC/Alt-Svc on the route. |
 | 4 | Cookie and storage privacy | Partial | Identity namespaces, partitioning by top-level site for cookies, storage, cache, SharedWorker and BroadcastChannel, migration. All tested. | Third-party cookie blocking, lifetime clamps, Storage Access API, bounce-tracking purge, retention, storage inspection. |
-| 5 | Identities | Partial | The identity engine, isolation, pre-DNS handoff, and now purge with recovery. All tested. | No UI to create, switch or purge identities. Temporary and Disposable lifetimes are not enforced. Direct-network identities exist only as a name. |
+| 5 | Identities | Partial | The identity engine, isolation, pre-DNS handoff, and now purge with recovery. All tested. | No UI to create, switch or purge identities. No code ends a Temporary or Disposable identity: it lasts until something destroys it. Direct-network identities exist only as a name. The Qt session store does not record a tab's identity. |
 | 6 | URL and navigation privacy | Partial | Tracking-parameter stripping (tested, command-line only). | Clean-link copy, custom rules, referrer controls, beacon limits, HTTPS-only, IDN lookalikes. |
 | 7 | JavaScript and Web API controls | Partial | Per-site JavaScript off (tested, no UI). Global disable (upstream flag). | Third-party JS, eval, JIT/Wasm toggles, worker toggles, CSP overlays. |
 | 8 | Permissions | Partial, mostly upstream | One-time grants, embargo and a global Block per capability (upstream). Per-identity managers (tested). | Timed grants, default-deny mode, revocation of unused grants, most capabilities, auditing. |
@@ -71,5 +71,7 @@ How each status was established:
 | Persistent-profile tests wrote to the developer profile in the user's home directory. | Fixed on this branch: the test environment now redirects data and cache. |
 | The `dns` tool did not link, so a full build failed. | Fixed on this branch. |
 | Search suggestions for a named identity go through the default identity's session, with its cookies. | **Open.** `Services/Hub/ConnectionFromUI.cpp`, `fetch_search_suggestions`. |
-| Update checks are automatic by default, against Ladybird's feed. The plan asks for manual or user-scheduled checks. | **Open.** |
+| In builds with the update checker (`LADYBIRD_ENABLE_UPDATE_CHECK`, on by default in CMake), automatic checks are on by default, against Ladybird's feed. The plan asks for manual or user-scheduled checks. Ladyflock development builds turn the checker off. | **Open.** |
+| A Tor-routed (ephemeral) identity's downloads are listed with the private windows' downloads. | **Open**, display only. |
+| The Qt session store saves ordinary tabs without their identity, so a persistent named identity's tabs would be restored in the default identity, and a purge does not reach them. | **Open.** |
 | `test-privacy-flags-reach-the-browser.py` and `test-webdriver-privacy.py` are not run by CMake or CI. | **Open.** They were run by hand. |
