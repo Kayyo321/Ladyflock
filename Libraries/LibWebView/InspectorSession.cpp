@@ -399,7 +399,11 @@ void InspectorSession::unbind_web_ui(InspectorUI& web_ui)
     if (m_web_ui.ptr() != &web_ui)
         return;
 
-    detach_frontend();
+    // The frontend's document went away, as it does when it reloads or its process is lost, but the frontend view is
+    // still the one Inspect Element opened for this tab: let go of the target until the WebUI of its next document
+    // binds again. Closing the Inspector, or the frontend view, detaches the frontend for good.
+    m_web_ui = nullptr;
+    detach_from_target_client();
 }
 
 void InspectorSession::detach_frontend()
