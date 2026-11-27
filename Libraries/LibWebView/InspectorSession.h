@@ -101,14 +101,6 @@ public:
     // Observation hooks called by ViewImplementation / WebContentPage alongside Firefox RDP.
     void did_receive_dom_node_properties(u64 request_id, DOMNodeProperties const& properties);
     void did_receive_dom_mutation(Mutation const& mutation);
-    void did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id);
-    void did_receive_dom_node_html(String const& html);
-    void did_receive_grid_layouts(JsonArray const& layouts);
-    void did_receive_current_grid(Optional<JsonObject> const& grid);
-    void did_receive_current_flexbox(Optional<JsonObject> const& flexbox);
-    void did_receive_accessibility_tree(JsonObject const& tree);
-    void did_receive_style_sheet_list(Vector<Web::CSS::StyleSheetIdentifier> const& stylesheets);
-    void did_receive_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier, URL::URL const& base_url, Utf16String const& source);
     void did_add_devtools_source(Web::HTML::ScriptRegistryDescription const& source);
     void did_pause_debugger(DebuggerPause const& pause);
     void did_resume_debugger();
@@ -260,18 +252,6 @@ private:
         Optional<String> pseudo_element;
     };
     HashMap<u64, NodePropertiesRequest> m_node_properties_requests;
-    Optional<u64> m_pending_html_request_id;
-    MonotonicTime m_pending_html_request_started { MonotonicTime::now_coarse() };
-    Optional<u64> m_pending_edit_request_id;
-    Optional<EditJournalEntry> m_pending_edit_journal_entry;
-    Optional<u64> m_pending_a11y_request_id;
-    MonotonicTime m_pending_a11y_request_started { MonotonicTime::now_coarse() };
-    Optional<u64> m_pending_stylesheets_request_id;
-    Optional<u64> m_pending_stylesheet_source_request_id;
-    MonotonicTime m_pending_stylesheet_source_request_started { MonotonicTime::now_coarse() };
-    Optional<u64> m_pending_grid_layouts_request_id;
-    Optional<u64> m_pending_current_grid_request_id;
-    Optional<u64> m_pending_current_flexbox_request_id;
 };
 
 }

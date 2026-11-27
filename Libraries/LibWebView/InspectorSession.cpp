@@ -504,15 +504,6 @@ void InspectorSession::reset_for_new_document(KeepRequestsOfCurrentLoad keep_req
     m_selection_history.clear();
     m_completed_mutation_replies.clear();
     m_node_properties_requests.clear();
-    m_pending_html_request_id.clear();
-    m_pending_edit_request_id.clear();
-    m_pending_edit_journal_entry.clear();
-    m_pending_a11y_request_id.clear();
-    m_pending_stylesheets_request_id.clear();
-    m_pending_stylesheet_source_request_id.clear();
-    m_pending_grid_layouts_request_id.clear();
-    m_pending_current_grid_request_id.clear();
-    m_pending_current_flexbox_request_id.clear();
     m_edit_journal.clear();
     m_edit_journal_truncated = false;
     if (!m_preserve_console_log)
@@ -1228,97 +1219,98 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         send_reply(request_id, true, JsonObject {});
         return;
     }
+    // Answers the request with what the target sends back, or with the error when it sends nothing, unless the document
+    // changed in the meantime, when the frontend has given up on the request.
+    auto reply_with = [&](StringView error_message, auto serialize) {
+        return [weak_this = make_weak_ptr(), request_id, generation = m_document_generation, error = MUST(String::from_utf8(error_message)), serialize = move(serialize)](auto&&... answer) mutable {
+            auto self = weak_this.strong_ref();
+            if (!self || generation != self->m_document_generation)
+                return;
+            Optional<JsonObject> payload = serialize(forward<decltype(answer)>(answer)...);
+            if (payload.has_value())
+                self->send_reply(request_id, true, payload.release_value());
+            else
+                self->send_reply(request_id, false, {}, error);
+        };
+    };
     if (command == "inspectGridLayouts"sv) {
         auto root_id = Web::UniqueNodeID(params.get_i64("rootNodeId"sv).value_or(0));
-        if (m_pending_grid_layouts_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_grid_layouts_request_id = request_id;
-        view->inspect_grid_layouts(root_id);
+        view->inspect_grid_layouts(root_id, reply_with({}, [](JsonArray layouts) -> Optional<JsonObject> {
+            JsonObject payload;
+            payload.set("layouts"sv, move(layouts));
+            return payload;
+        }));
         return;
     }
-    if (command == "inspectCurrentGrid"sv) {
+    if (command == "inspectCurrentGrid"sv || command == "inspectCurrentFlexbox"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        if (m_pending_current_grid_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_current_grid_request_id = request_id;
-        view->inspect_current_grid(node_id);
+        auto key = command == "inspectCurrentGrid"sv ? "grid"sv : "flexbox"sv;
+        auto on_complete = reply_with({}, [key](Optional<JsonObject> layout) -> Optional<JsonObject> {
+            JsonObject payload;
+            if (layout.has_value())
+                payload.set(key, layout.release_value());
+            return payload;
+        });
+        if (command == "inspectCurrentGrid"sv)
+            view->inspect_current_grid(node_id, move(on_complete));
+        else
+            view->inspect_current_flexbox(node_id, params.get_bool("onlyLookAtParents"sv).value_or(false), move(on_complete));
         return;
     }
-    if (command == "inspectCurrentFlexbox"sv) {
-        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        auto only_parents = params.get_bool("onlyLookAtParents"sv).value_or(false);
-        if (m_pending_current_flexbox_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_current_flexbox_request_id = request_id;
-        view->inspect_current_flexbox(node_id, only_parents);
-        return;
-    }
-
-    // WebContent does not answer some reads it cannot serve, such as the markup of a node that left the document, and
-    // the frontend gives up on a read after ten seconds. A read still waiting by then is abandoned, so that one
-    // unanswerable read does not block every later one of its kind until the page navigates.
-    auto take_read_slot = [&](Optional<u64>& slot, MonotonicTime& started) {
-        auto now = MonotonicTime::now_coarse();
-        if (slot.has_value()) {
-            if (now - started < AK::Duration::from_seconds(10)) {
-                send_reply(request_id, false, {}, "The previous request is still running."_string);
-                return false;
-            }
-            send_reply(*slot, false, {}, "The target did not answer in time."_string);
-        }
-        slot = request_id;
-        started = now;
-        return true;
-    };
 
     // DOM Editing (with Flight Recorder journal entries!)
     if (command == "getNodeHtml"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        auto outer = params.get_bool("outer"sv).value_or(true);
-        if (!take_read_slot(m_pending_html_request_id, m_pending_html_request_started))
-            return;
-        if (outer)
-            view->get_dom_node_outer_html(node_id);
+        auto on_complete = reply_with("The node is no longer in the document."sv, [](Optional<String> html) -> Optional<JsonObject> {
+            if (!html.has_value())
+                return {};
+            JsonObject payload;
+            payload.set("html"sv, html.release_value());
+            return payload;
+        });
+        if (params.get_bool("outer"sv).value_or(true))
+            view->get_dom_node_outer_html(node_id, move(on_complete));
         else
-            view->get_dom_node_inner_html(node_id);
+            view->get_dom_node_inner_html(node_id, move(on_complete));
         return;
     }
+    // An edit answers with the node to select afterwards; one that took effect goes into the journal.
+    auto finish_dom_edit = [&](Optional<EditJournalEntry> journal_entry = {}) {
+        return [weak_this = make_weak_ptr(), request_id, generation = m_document_generation, journal_entry = move(journal_entry)](Optional<Web::UniqueNodeID> node_id) mutable {
+            auto self = weak_this.strong_ref();
+            if (!self || generation != self->m_document_generation)
+                return;
+            if (!node_id.has_value()) {
+                self->send_reply(request_id, false, {}, "The DOM edit could not be applied."_string);
+                return;
+            }
+            JsonObject payload;
+            payload.set("nodeId"sv, node_id->value());
+            if (journal_entry.has_value())
+                self->record_edit_entry(journal_entry.release_value());
+            if (self->m_completed_mutation_replies.size() >= max_edit_journal_entries)
+                self->m_completed_mutation_replies.clear();
+            self->m_completed_mutation_replies.set(request_id, payload);
+            self->send_reply(request_id, true, move(payload));
+        };
+    };
     if (command == "setNodeOuterHtml"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
         auto html = params.get_string("html"sv).value_or(String {});
-        auto before_html = params.get_string("beforeHtml"sv).value_or(String {});
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->set_dom_node_outer_html(node_id, html);
         EditJournalEntry entry;
         entry.request_id = request_id;
         entry.kind = "dom-outer-html"_string;
         entry.target_label = params.get_string("label"sv).value_or(MUST(String::formatted("Node #{}", node_id.value())));
         entry.group_key = MUST(String::formatted("node:{}", node_id.value()));
-        entry.before_text = before_html;
+        entry.before_text = params.get_string("beforeHtml"sv).value_or(String {});
         entry.after_text = html;
-        m_pending_edit_journal_entry = move(entry);
+        view->set_dom_node_outer_html(node_id, html, finish_dom_edit(move(entry)));
         return;
     }
     if (command == "setNodeTag"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
         auto tag = params.get_string("tag"sv).value_or(String {});
         auto before_tag = params.get_string("beforeTag"sv).value_or(String {});
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->set_dom_node_tag(node_id, Utf16FlyString::from_utf8(tag));
         EditJournalEntry entry;
         entry.request_id = request_id;
         entry.kind = "dom-tag"_string;
@@ -1326,17 +1318,11 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         entry.group_key = MUST(String::formatted("node:{}", node_id.value()));
         entry.before_text = before_tag;
         entry.after_text = tag;
-        m_pending_edit_journal_entry = move(entry);
+        view->set_dom_node_tag(node_id, Utf16FlyString::from_utf8(tag), finish_dom_edit(move(entry)));
         return;
     }
     if (command == "removeNode"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->remove_dom_node(node_id);
         EditJournalEntry entry;
         entry.request_id = request_id;
         entry.kind = "dom-remove"_string;
@@ -1344,37 +1330,19 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         entry.group_key = MUST(String::formatted("node:{}", node_id.value()));
         entry.before_text = params.get_string("beforeHtml"sv).value_or(String {});
         entry.after_text = "(removed)"_string;
-        m_pending_edit_journal_entry = move(entry);
+        view->remove_dom_node(node_id, finish_dom_edit(move(entry)));
         return;
     }
     if (command == "cloneNode"sv) {
-        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->clone_dom_node(node_id);
+        view->clone_dom_node(Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0)), finish_dom_edit());
         return;
     }
     if (command == "createChildElement"sv) {
-        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->create_child_element(node_id);
+        view->create_child_element(Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0)), finish_dom_edit());
         return;
     }
     if (command == "createChildText"sv) {
-        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->create_child_text_node(node_id);
+        view->create_child_text_node(Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0)), finish_dom_edit());
         return;
     }
     if (command == "insertNodeBefore"sv) {
@@ -1383,12 +1351,7 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         Optional<Web::UniqueNodeID> sibling_id;
         if (auto raw = params.get_i64("siblingNodeId"sv); raw.has_value() && *raw != 0)
             sibling_id = Web::UniqueNodeID(*raw);
-        if (m_pending_edit_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_edit_request_id = request_id;
-        view->insert_dom_node_before(node_id, parent_id, sibling_id);
+        view->insert_dom_node_before(node_id, parent_id, sibling_id, finish_dom_edit());
         return;
     }
     if (command == "takeNodeScreenshot"sv) {
@@ -1410,20 +1373,26 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
 
     // Accessibility
     if (command == "getAccessibilityTree"sv) {
-        if (!take_read_slot(m_pending_a11y_request_id, m_pending_a11y_request_started))
-            return;
-        view->inspect_accessibility_tree();
+        view->inspect_accessibility_tree(reply_with("The page has no document to inspect."sv, [](Optional<JsonObject> tree) -> Optional<JsonObject> {
+            if (!tree.has_value())
+                return {};
+            JsonObject payload;
+            payload.set("tree"sv, tree.release_value());
+            return payload;
+        }));
         return;
     }
 
     // Stylesheets
     if (command == "listStyleSheets"sv) {
-        if (m_pending_stylesheets_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_stylesheets_request_id = request_id;
-        view->list_style_sheets();
+        view->list_style_sheets(reply_with({}, [](Vector<Web::CSS::StyleSheetIdentifier> stylesheets) -> Optional<JsonObject> {
+            JsonArray array;
+            for (auto const& sheet : stylesheets)
+                array.must_append(serialize_style_sheet_identifier(sheet));
+            JsonObject payload;
+            payload.set("styleSheets"sv, move(array));
+            return payload;
+        }));
         return;
     }
     if (command == "getStyleSheetSource"sv) {
@@ -1432,9 +1401,15 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
             send_reply(request_id, false, JsonValue {}, "Invalid stylesheet identifier."_string);
             return;
         }
-        if (!take_read_slot(m_pending_stylesheet_source_request_id, m_pending_stylesheet_source_request_started))
-            return;
-        view->request_style_sheet_source(*id);
+        view->request_style_sheet_source(*id, reply_with("The stylesheet is no longer available."sv, [identifier = *id](Optional<Utf16String> source, URL::URL const& base_url) -> Optional<JsonObject> {
+            if (!source.has_value())
+                return {};
+            JsonObject payload;
+            payload.set("identifier"sv, serialize_style_sheet_identifier(identifier));
+            payload.set("baseUrl"sv, base_url.serialize());
+            payload.set("source"sv, source->to_utf8_but_should_be_ported_to_utf16());
+            return payload;
+        }));
         return;
     }
 
@@ -2013,97 +1988,6 @@ void InspectorSession::did_receive_dom_mutation(Mutation const& mutation)
         });
 
     send_event("domMutation"sv, move(payload));
-}
-
-void InspectorSession::did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id)
-{
-    JsonObject payload;
-    if (node_id.has_value())
-        payload.set("nodeId"sv, node_id->value());
-    if (auto req = exchange(m_pending_edit_request_id, {}); req.has_value()) {
-        auto journal_entry = exchange(m_pending_edit_journal_entry, {});
-        if (!node_id.has_value()) {
-            send_reply(*req, false, {}, "The DOM edit could not be applied."_string);
-            return;
-        }
-        if (journal_entry.has_value())
-            record_edit_entry(journal_entry.release_value());
-        if (m_completed_mutation_replies.size() >= max_edit_journal_entries)
-            m_completed_mutation_replies.clear();
-        m_completed_mutation_replies.set(*req, payload);
-        send_reply(*req, true, payload);
-    }
-    send_event("domNodeEdited"sv, move(payload));
-}
-
-void InspectorSession::did_receive_dom_node_html(String const& html)
-{
-    JsonObject payload;
-    payload.set("html"sv, html);
-    if (auto req = exchange(m_pending_html_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("domNodeHtml"sv, move(payload));
-}
-
-void InspectorSession::did_receive_grid_layouts(JsonArray const& layouts)
-{
-    JsonObject payload;
-    payload.set("layouts"sv, layouts);
-    if (auto req = exchange(m_pending_grid_layouts_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("gridLayouts"sv, move(payload));
-}
-
-void InspectorSession::did_receive_current_grid(Optional<JsonObject> const& grid)
-{
-    JsonObject payload;
-    if (grid.has_value())
-        payload.set("grid"sv, *grid);
-    if (auto req = exchange(m_pending_current_grid_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("currentGrid"sv, move(payload));
-}
-
-void InspectorSession::did_receive_current_flexbox(Optional<JsonObject> const& flexbox)
-{
-    JsonObject payload;
-    if (flexbox.has_value())
-        payload.set("flexbox"sv, *flexbox);
-    if (auto req = exchange(m_pending_current_flexbox_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("currentFlexbox"sv, move(payload));
-}
-
-void InspectorSession::did_receive_accessibility_tree(JsonObject const& tree)
-{
-    JsonObject payload;
-    payload.set("tree"sv, tree);
-    if (auto req = exchange(m_pending_a11y_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("accessibilityTree"sv, move(payload));
-}
-
-void InspectorSession::did_receive_style_sheet_list(Vector<Web::CSS::StyleSheetIdentifier> const& stylesheets)
-{
-    JsonArray arr;
-    for (auto const& sheet : stylesheets)
-        arr.must_append(serialize_style_sheet_identifier(sheet));
-    JsonObject payload;
-    payload.set("styleSheets"sv, move(arr));
-    if (auto req = exchange(m_pending_stylesheets_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("styleSheetList"sv, move(payload));
-}
-
-void InspectorSession::did_receive_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier, URL::URL const& base_url, Utf16String const& source)
-{
-    JsonObject payload;
-    payload.set("identifier"sv, serialize_style_sheet_identifier(identifier));
-    payload.set("baseUrl"sv, base_url.serialize());
-    payload.set("source"sv, source.to_utf8_but_should_be_ported_to_utf16());
-    if (auto req = exchange(m_pending_stylesheet_source_request_id, {}); req.has_value())
-        send_reply(*req, true, payload);
-    send_event("styleSheetSource"sv, move(payload));
 }
 
 void InspectorSession::did_add_devtools_source(Web::HTML::ScriptRegistryDescription const& source)

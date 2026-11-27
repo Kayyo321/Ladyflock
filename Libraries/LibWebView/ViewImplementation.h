@@ -487,7 +487,18 @@ public:
 
     void inspect_dom_tree();
     void inspect_storage(Web::StorageAPI::StorageEndpointType, u64 request_id);
-    void inspect_accessibility_tree();
+    // Each of these requests gets its own answer, so the Inspector and remote DevTools can both have one waiting. A
+    // request that the page displaying the tab can no longer answer, because another page has taken its place, gets
+    // an empty one.
+    using OnAccessibilityTreeInspected = Function<void(Optional<JsonObject>)>;
+    using OnGridLayoutsInspected = Function<void(JsonArray)>;
+    using OnLayoutInspected = Function<void(Optional<JsonObject>)>;
+    using OnDOMNodeHTMLReceived = Function<void(Optional<String>)>;
+    using OnDOMNodeEdited = Function<void(Optional<Web::UniqueNodeID>)>;
+    using OnStyleSheetListReceived = Function<void(Vector<Web::CSS::StyleSheetIdentifier>)>;
+    using OnStyleSheetSourceReceived = Function<void(Optional<Utf16String>, URL::URL const& base_url)>;
+
+    void inspect_accessibility_tree(OnAccessibilityTreeInspected);
     void request_accessibility_tree();
     void perform_accessibility_action(i64 node_id, String action);
     void perform_accessibility_text_action(i64 node_id, String action, i32 offset_start, i32 offset_end, String text);
@@ -525,9 +536,9 @@ public:
     void cancel_pending_inspector_engine_commands();
 
     void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {}, u64 request_id = 0);
-    void inspect_grid_layouts(Web::UniqueNodeID root_node_id);
-    void inspect_current_grid(Web::UniqueNodeID node_id);
-    void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents);
+    void inspect_grid_layouts(Web::UniqueNodeID root_node_id, OnGridLayoutsInspected);
+    void inspect_current_grid(Web::UniqueNodeID node_id, OnLayoutInspected);
+    void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents, OnLayoutInspected);
     void retrieve_devtools_sources(DevTools::DevToolsDelegate::OnSourcesReceived);
     // The Inspector and remote DevTools may both ask for one script's source; each answer goes to everyone waiting.
     using OnDevToolsSourceReceived = Function<void(Optional<Web::HTML::ScriptRegistryContent>)>;
@@ -562,21 +573,22 @@ public:
     void did_connect_devtools_client();
     void did_disconnect_devtools_client();
     void start_sending_console_output(bool messages, bool errors);
-    void get_dom_node_inner_html(Web::UniqueNodeID node_id);
-    void get_dom_node_outer_html(Web::UniqueNodeID node_id);
-    void set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html);
-    void set_dom_node_text(Web::UniqueNodeID node_id, String const& text);
-    void set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name);
-    void add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes);
-    void replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes);
-    void create_child_element(Web::UniqueNodeID node_id);
-    void create_child_text_node(Web::UniqueNodeID node_id);
-    void insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id);
-    void clone_dom_node(Web::UniqueNodeID node_id);
-    void remove_dom_node(Web::UniqueNodeID node_id);
+    void get_dom_node_inner_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived);
+    void get_dom_node_outer_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived);
+    void set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html, OnDOMNodeEdited);
+    void set_dom_node_text(Web::UniqueNodeID node_id, String const& text, OnDOMNodeEdited);
+    void set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name, OnDOMNodeEdited);
+    void add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes, OnDOMNodeEdited);
+    void replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes, OnDOMNodeEdited);
+    void create_child_element(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void create_child_text_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id, OnDOMNodeEdited);
+    void clone_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void remove_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
 
-    void list_style_sheets();
-    void request_style_sheet_source(Web::CSS::StyleSheetIdentifier const&);
+    void list_style_sheets(OnStyleSheetListReceived);
+    // The source also goes to on_received_style_sheet_source, which remote DevTools listens to.
+    void request_style_sheet_source(Web::CSS::StyleSheetIdentifier const&, OnStyleSheetSourceReceived = {});
 
     void did_block_resource(Badge<WebContentPage>, URL::URL const&, StringView kind);
     void reset_blocked_resources();
@@ -757,18 +769,11 @@ public:
     Function<void(JsonObject)> on_received_dom_tree;
     Function<void(DOMNodeProperties)> on_received_dom_node_properties;
     HashMap<u64, Function<void(ErrorOr<Vector<DevTools::DevToolsDelegate::StorageItem>>)>> on_received_storage_items;
-    Function<void(JsonArray)> on_received_grid_layouts;
-    Function<void(Optional<JsonObject>)> on_received_current_grid;
-    Function<void(Optional<JsonObject>)> on_received_current_flexbox;
-    Function<void(JsonObject)> on_received_accessibility_tree;
     Function<void(u64 sequence, Vector<AccessibilityNodeData>)> on_accessibility_tree_received;
     Function<void(u64 base_sequence, u64 sequence, AccessibilityTreeDelta)> on_accessibility_tree_changed;
     Function<void(i64)> on_accessibility_focus_changed;
     Function<void(Web::UniqueNodeID)> on_received_hovered_node_id;
     Function<void(Mutation)> on_dom_mutation_received;
-    Function<void(Optional<Web::UniqueNodeID> const& node_id)> on_finished_editing_dom_node;
-    Function<void(String)> on_received_dom_node_html;
-    Function<void(Vector<Web::CSS::StyleSheetIdentifier>)> on_received_style_sheet_list;
     Function<void(Web::CSS::StyleSheetIdentifier const&, URL::URL const&, Utf16String const&)> on_received_style_sheet_source;
     HashMap<u64, DevTools::DevToolsDelegate::OnSourcesReceived> on_received_devtools_sources;
     HashMap<Web::HTML::ScriptRegistryIdentifier, Vector<OnDevToolsSourceReceived>> on_received_devtools_source;
@@ -1374,6 +1379,16 @@ protected:
     void answer_pending_console_input_completions();
     u64 m_next_js_console_completion_request_id { 1 };
     u64 m_next_js_console_input_request_id { 1 };
+
+    void answer_pending_inspection_requests();
+    u64 m_next_inspection_request_id { 1 };
+    HashMap<u64, OnAccessibilityTreeInspected> m_pending_accessibility_tree_inspections;
+    HashMap<u64, OnGridLayoutsInspected> m_pending_grid_layouts_inspections;
+    HashMap<u64, OnLayoutInspected> m_pending_layout_inspections;
+    HashMap<u64, OnDOMNodeHTMLReceived> m_pending_dom_node_html_requests;
+    HashMap<u64, OnDOMNodeEdited> m_pending_dom_node_edits;
+    HashMap<u64, OnStyleSheetListReceived> m_pending_style_sheet_list_requests;
+    HashMap<u64, OnStyleSheetSourceReceived> m_pending_style_sheet_source_requests;
 
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerBreakpointOperationComplete> m_pending_debugger_breakpoint_requests;
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerEnvironmentsReceived> m_pending_debugger_environments_requests;

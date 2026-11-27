@@ -2386,9 +2386,11 @@ void ViewImplementation::inspect_storage(Web::StorageAPI::StorageEndpointType st
     page().async_inspect_storage(storage_endpoint, request_id);
 }
 
-void ViewImplementation::inspect_accessibility_tree()
+void ViewImplementation::inspect_accessibility_tree(OnAccessibilityTreeInspected on_complete)
 {
-    page().async_inspect_accessibility_tree();
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_accessibility_tree_inspections.set(request_id, move(on_complete));
+    page().async_inspect_accessibility_tree(request_id);
 }
 
 void ViewImplementation::request_accessibility_tree()
@@ -2550,19 +2552,25 @@ void ViewImplementation::inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProp
     page().async_inspect_dom_node(property_type, node_id, pseudo_element, move(options), request_id);
 }
 
-void ViewImplementation::inspect_grid_layouts(Web::UniqueNodeID root_node_id)
+void ViewImplementation::inspect_grid_layouts(Web::UniqueNodeID root_node_id, OnGridLayoutsInspected on_complete)
 {
-    page().async_inspect_grid_layouts(root_node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_grid_layouts_inspections.set(request_id, move(on_complete));
+    page().async_inspect_grid_layouts(request_id, root_node_id);
 }
 
-void ViewImplementation::inspect_current_grid(Web::UniqueNodeID node_id)
+void ViewImplementation::inspect_current_grid(Web::UniqueNodeID node_id, OnLayoutInspected on_complete)
 {
-    page().async_inspect_current_grid(node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_layout_inspections.set(request_id, move(on_complete));
+    page().async_inspect_current_grid(request_id, node_id);
 }
 
-void ViewImplementation::inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents)
+void ViewImplementation::inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents, OnLayoutInspected on_complete)
 {
-    page().async_inspect_current_flexbox(node_id, only_look_at_parents);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_layout_inspections.set(request_id, move(on_complete));
+    page().async_inspect_current_flexbox(request_id, node_id, only_look_at_parents);
 }
 
 void ViewImplementation::inspect_indexed_database_storage(DevTools::DevToolsDelegate::OnIndexedDBInspectionComplete on_complete)
@@ -3305,74 +3313,131 @@ void ViewImplementation::cancel_pending_inspector_engine_commands()
         command.value.callback(false, JsonValue {}, "The inspection request was canceled."_string);
 }
 
-void ViewImplementation::get_dom_node_inner_html(Web::UniqueNodeID node_id)
+void ViewImplementation::get_dom_node_inner_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived on_complete)
 {
-    page().async_get_dom_node_inner_html(node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_dom_node_html_requests.set(request_id, move(on_complete));
+    page().async_get_dom_node_inner_html(request_id, node_id);
 }
 
-void ViewImplementation::get_dom_node_outer_html(Web::UniqueNodeID node_id)
+void ViewImplementation::get_dom_node_outer_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived on_complete)
 {
-    page().async_get_dom_node_outer_html(node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_dom_node_html_requests.set(request_id, move(on_complete));
+    page().async_get_dom_node_outer_html(request_id, node_id);
 }
 
-void ViewImplementation::set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html)
+// Each DOM edit answers with the node it leaves to select, or with nothing when it could not be made.
+template<typename Send>
+static void send_dom_node_edit(u64& next_request_id, HashMap<u64, ViewImplementation::OnDOMNodeEdited>& pending_edits, ViewImplementation::OnDOMNodeEdited on_complete, Send&& send)
 {
-    page().async_set_dom_node_outer_html(node_id, html);
+    auto request_id = next_request_id++;
+    pending_edits.set(request_id, move(on_complete));
+    send(request_id);
 }
 
-void ViewImplementation::set_dom_node_text(Web::UniqueNodeID node_id, String const& text)
+void ViewImplementation::set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html, OnDOMNodeEdited on_complete)
 {
-    page().async_set_dom_node_text(node_id, text);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_outer_html(request_id, node_id, html);
+    });
 }
 
-void ViewImplementation::set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name)
+void ViewImplementation::set_dom_node_text(Web::UniqueNodeID node_id, String const& text, OnDOMNodeEdited on_complete)
 {
-    page().async_set_dom_node_tag(node_id, name);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_text(request_id, node_id, text);
+    });
 }
 
-void ViewImplementation::add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes)
+void ViewImplementation::set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name, OnDOMNodeEdited on_complete)
 {
-    page().async_add_dom_node_attributes(node_id, attributes);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_tag(request_id, node_id, name);
+    });
 }
 
-void ViewImplementation::replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes)
+void ViewImplementation::add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes, OnDOMNodeEdited on_complete)
 {
-    page().async_replace_dom_node_attribute(node_id, name, replacement_attributes);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_add_dom_node_attributes(request_id, node_id, attributes);
+    });
 }
 
-void ViewImplementation::create_child_element(Web::UniqueNodeID node_id)
+void ViewImplementation::replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes, OnDOMNodeEdited on_complete)
 {
-    page().async_create_child_element(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_replace_dom_node_attribute(request_id, node_id, name, replacement_attributes);
+    });
 }
 
-void ViewImplementation::create_child_text_node(Web::UniqueNodeID node_id)
+void ViewImplementation::create_child_element(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_create_child_text_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_create_child_element(request_id, node_id);
+    });
 }
 
-void ViewImplementation::insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id)
+void ViewImplementation::create_child_text_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_insert_dom_node_before(node_id, parent_node_id, sibling_node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_create_child_text_node(request_id, node_id);
+    });
 }
 
-void ViewImplementation::clone_dom_node(Web::UniqueNodeID node_id)
+void ViewImplementation::insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_clone_dom_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_insert_dom_node_before(request_id, node_id, parent_node_id, sibling_node_id);
+    });
 }
 
-void ViewImplementation::remove_dom_node(Web::UniqueNodeID node_id)
+void ViewImplementation::clone_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_remove_dom_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_clone_dom_node(request_id, node_id);
+    });
 }
 
-void ViewImplementation::list_style_sheets()
+void ViewImplementation::remove_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_list_style_sheets();
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_remove_dom_node(request_id, node_id);
+    });
 }
 
-void ViewImplementation::request_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier)
+void ViewImplementation::list_style_sheets(OnStyleSheetListReceived on_complete)
 {
-    page().async_request_style_sheet_source(identifier);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_style_sheet_list_requests.set(request_id, move(on_complete));
+    page().async_list_style_sheets(request_id);
+}
+
+void ViewImplementation::request_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier, OnStyleSheetSourceReceived on_complete)
+{
+    auto request_id = m_next_inspection_request_id++;
+    if (on_complete)
+        m_pending_style_sheet_source_requests.set(request_id, move(on_complete));
+    page().async_request_style_sheet_source(request_id, identifier);
+}
+
+// A request the outgoing page did not answer gets an empty answer, so whoever made it is not left waiting.
+void ViewImplementation::answer_pending_inspection_requests()
+{
+    for (auto& pending : exchange(m_pending_accessibility_tree_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_grid_layouts_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_layout_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_dom_node_html_requests, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_dom_node_edits, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_style_sheet_list_requests, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_style_sheet_source_requests, {}))
+        pending.value({}, {});
 }
 
 // The page names what it blocked, so its kind is taken only from those the content blocker names, and the list of what
@@ -4424,8 +4489,9 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
     if (auto pending_info_request = move(m_pending_info_request))
         pending_info_request->reject(Error::from_string_literal("The displayed page changed before sending its info"));
 
-    // So did console input completion requests, and requests for a script's source.
+    // So did console input completion requests, requests for a script's source, and the Inspector's requests.
     answer_pending_console_input_completions();
+    answer_pending_inspection_requests();
     auto pending_source_requests = move(on_received_devtools_source);
     for (auto& pending : pending_source_requests) {
         for (auto& handler : pending.value)

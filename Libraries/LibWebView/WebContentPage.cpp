@@ -1206,36 +1206,27 @@ void WebContentPage::did_inspect_storage(u64 request_id, String storage_items)
     }
 }
 
-void WebContentPage::did_inspect_grid_layouts(String grid_layouts)
+void WebContentPage::did_inspect_grid_layouts(u64 request_id, String grid_layouts)
 {
     if (displays_tab()) {
-        auto parsed = parse_json_array(grid_layouts, "grid layouts"sv);
-        if (auto* session = view().inspector_session())
-            session->did_receive_grid_layouts(parsed);
-        if (view().on_received_grid_layouts)
-            view().on_received_grid_layouts(move(parsed));
+        if (auto handler = view().m_pending_grid_layouts_inspections.take(request_id); handler.has_value())
+            (*handler)(parse_json_array(grid_layouts, "grid layouts"sv));
     }
 }
 
-void WebContentPage::did_inspect_current_grid(String grid_layout)
+void WebContentPage::did_inspect_current_grid(u64 request_id, String grid_layout)
 {
     if (displays_tab()) {
-        auto parsed = parse_optional_json_object(grid_layout, "current grid"sv);
-        if (auto* session = view().inspector_session())
-            session->did_receive_current_grid(parsed);
-        if (view().on_received_current_grid)
-            view().on_received_current_grid(move(parsed));
+        if (auto handler = view().m_pending_layout_inspections.take(request_id); handler.has_value())
+            (*handler)(parse_optional_json_object(grid_layout, "current grid"sv));
     }
 }
 
-void WebContentPage::did_inspect_current_flexbox(String flexbox_layout)
+void WebContentPage::did_inspect_current_flexbox(u64 request_id, String flexbox_layout)
 {
     if (displays_tab()) {
-        auto parsed = parse_optional_json_object(flexbox_layout, "current flexbox"sv);
-        if (auto* session = view().inspector_session())
-            session->did_receive_current_flexbox(parsed);
-        if (view().on_received_current_flexbox)
-            view().on_received_current_flexbox(move(parsed));
+        if (auto handler = view().m_pending_layout_inspections.take(request_id); handler.has_value())
+            (*handler)(parse_optional_json_object(flexbox_layout, "current flexbox"sv));
     }
 }
 
@@ -1245,14 +1236,11 @@ void WebContentPage::did_inspect_indexed_database(u64 request_id, String result)
         view().did_receive_indexed_database_inspection(request_id, parse_json(result, "IndexedDB inspection result"sv));
 }
 
-void WebContentPage::did_inspect_accessibility_tree(String accessibility_tree)
+void WebContentPage::did_inspect_accessibility_tree(u64 request_id, Optional<String> accessibility_tree)
 {
     if (displays_tab()) {
-        auto parsed = parse_json(accessibility_tree, "accessibility tree"sv);
-        if (auto* session = view().inspector_session())
-            session->did_receive_accessibility_tree(parsed);
-        if (view().on_received_accessibility_tree)
-            view().on_received_accessibility_tree(move(parsed));
+        if (auto handler = view().m_pending_accessibility_tree_inspections.take(request_id); handler.has_value())
+            (*handler)(accessibility_tree.map([](auto const& tree) { return parse_json(tree, "accessibility tree"sv); }));
     }
 }
 
@@ -1295,23 +1283,21 @@ void WebContentPage::did_get_node_id_at_position(u64 request_id, Web::UniqueNode
     }
 }
 
-void WebContentPage::did_list_style_sheets(Vector<Web::CSS::StyleSheetIdentifier> stylesheets)
+void WebContentPage::did_list_style_sheets(u64 request_id, Vector<Web::CSS::StyleSheetIdentifier> stylesheets)
 {
     if (displays_tab()) {
-        if (auto* session = view().inspector_session())
-            session->did_receive_style_sheet_list(stylesheets);
-        if (view().on_received_style_sheet_list)
-            view().on_received_style_sheet_list(stylesheets);
+        if (auto handler = view().m_pending_style_sheet_list_requests.take(request_id); handler.has_value())
+            (*handler)(move(stylesheets));
     }
 }
 
-void WebContentPage::did_get_style_sheet_source(Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Utf16String source)
+void WebContentPage::did_get_style_sheet_source(u64 request_id, Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Optional<Utf16String> source)
 {
     if (displays_tab()) {
-        if (auto* session = view().inspector_session())
-            session->did_receive_style_sheet_source(identifier, base_url, source);
-        if (view().on_received_style_sheet_source)
-            view().on_received_style_sheet_source(identifier, base_url, source);
+        if (auto handler = view().m_pending_style_sheet_source_requests.take(request_id); handler.has_value())
+            (*handler)(source, base_url);
+        if (source.has_value() && view().on_received_style_sheet_source)
+            view().on_received_style_sheet_source(identifier, base_url, *source);
     }
 }
 
@@ -2678,13 +2664,11 @@ void WebContentPage::did_inspect_dom_node(u64 request_id, DOMNodeProperties prop
     }
 }
 
-void WebContentPage::did_finish_editing_dom_node(Optional<Web::UniqueNodeID> node_id)
+void WebContentPage::did_finish_editing_dom_node(u64 request_id, Optional<Web::UniqueNodeID> node_id)
 {
     if (displays_tab()) {
-        if (auto* session = view().inspector_session())
-            session->did_finish_editing_dom_node(node_id);
-        if (view().on_finished_editing_dom_node)
-            view().on_finished_editing_dom_node(node_id);
+        if (auto handler = view().m_pending_dom_node_edits.take(request_id); handler.has_value())
+            (*handler)(node_id);
     }
 }
 
@@ -2698,13 +2682,11 @@ void WebContentPage::did_mutate_dom(Mutation mutation)
     }
 }
 
-void WebContentPage::did_get_dom_node_html(String html)
+void WebContentPage::did_get_dom_node_html(u64 request_id, Optional<String> html)
 {
     if (displays_tab()) {
-        if (auto* session = view().inspector_session())
-            session->did_receive_dom_node_html(html);
-        if (view().on_received_dom_node_html)
-            view().on_received_dom_node_html(move(html));
+        if (auto handler = view().m_pending_dom_node_html_requests.take(request_id); handler.has_value())
+            (*handler)(move(html));
     }
 }
 

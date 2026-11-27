@@ -1031,6 +1031,48 @@ TEST_CASE(inspector_source_requests_for_one_script_are_all_answered)
     )JS"sv);
 }
 
+// Reads and edits each get their own answer, even while another is waiting, and one the page cannot serve fails at
+// once instead of when the frontend gives up on it.
+TEST_CASE(inspector_reads_and_edits_each_get_their_own_answer)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorRequests"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+    auto& frontend = *fixture.frontend;
+
+    expect_holds(frontend, "Overlapping reads and edits are answered in kind"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const outcome = promise => promise.then(result => result, error => error.message);
+        const para = findElement(n => n.attributes?.id === "para");
+        const labelled = findElement(n => n.attributes?.id === "labelled");
+        const [paraHtml, labelledHtml] = await Promise.all([
+            outcome(sendCommand("getNodeHtml", { nodeId: para.id, outer: true })),
+            outcome(sendCommand("getNodeHtml", { nodeId: labelled.id, outer: true })),
+        ]);
+        const [paraChild, labelledChild] = await Promise.all([
+            outcome(sendCommand("createChildElement", { nodeId: para.id })),
+            outcome(sendCommand("createChildElement", { nodeId: labelled.id })),
+        ]);
+        const results = {
+            paraHtml: paraHtml?.html?.startsWith('<p id="para">'),
+            labelledHtml: labelledHtml?.html?.startsWith('<span id="labelled"'),
+            paraChild: typeof paraChild?.nodeId === "number",
+            labelledChild: typeof labelledChild?.nodeId === "number" && labelledChild.nodeId !== paraChild?.nodeId,
+        };
+        return Object.values(results).every(Boolean) ? null : { results, paraHtml, labelledHtml, paraChild, labelledChild };
+    )JS"sv);
+
+    run_in_target(*fixture.target, R"JS(window.removed = document.getElementById("labelled"); window.removed.remove(); document.title = "Removed";)JS"sv, "Removed"sv);
+    expect_holds(frontend, "A read of a node that left the page fails at once"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const labelled = findElement(n => n.attributes?.id === "labelled");
+        const started = Date.now();
+        const outcome = await sendCommand("getNodeHtml", { nodeId: labelled.id, outer: true }).then(() => "answered", error => error.message);
+        const late = Date.now() - started > 5000;
+        return outcome === "The node is no longer in the document." && !late ? null : { outcome, late };
+    )JS"sv);
+}
+
 // An Inspector that could not take the debugger from remote DevTools still gives back what it took before.
 TEST_CASE(inspector_releases_the_debugger_after_remote_devtools_held_it)
 {
