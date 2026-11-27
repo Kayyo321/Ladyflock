@@ -1121,6 +1121,66 @@ TEST_CASE(inspector_target_closes_in_device_mode)
         return null;
     )JS"sv);
     {
+constexpr auto controls_html = R"HTML(<!doctype html><title>Controls</title>
+<div id="target" class="one two three" role="note" aria-hidden="true">Target</div>
+<script>
+  document.getElementById("target").title = "long ".repeat(1000);
+  document.title = "Controls ready";
+</script>
+)HTML"sv;
+
+// The values the Inspector's own controls show are what the page has, so an edit made through them is not refused as
+// one that would replace a change: a long attribute in the tree, two class toggles in a row, and an ARIA attribute.
+TEST_CASE(inspector_controls_edit_what_they_show)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorControls"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { controls_html, "Controls ready"sv, 5 });
+    auto& frontend = *fixture.frontend;
+
+    expect_holds(frontend, "Each control's edit applies"sv, R"JS(
+        const toast = () => document.getElementById("status-pill")?.textContent || "";
+        const attribute = name => findElement(n => n.attributes?.id === "target")?.attributes?.[name];
+        const settle = async (condition, what) => {
+            try {
+                await until(condition);
+            } catch {
+                throw new Error(`${what} did not apply; the Inspector said: ${toast()}`);
+            }
+        };
+        await select(n => n.attributes?.id === "target", () => app.state.lastComputedStyle);
+
+        // The tree's own editor for the 5000-character title.
+        const nameSpan = [...document.querySelectorAll(".dom-attr-name")].find(span => span.textContent === "title");
+        nameSpan.nextSibling.nextSibling.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        const titleInput = document.querySelector('.dom-inline-input[aria-label="Value of title"]');
+        titleInput.value = "short";
+        titleInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        await settle(() => attribute("title") === "short", "The title edit");
+
+        // Two class toggles in a row, each from the class list as the pane then shows it.
+        app.stylesPane.showCls = true;
+        app.stylesPane.render();
+        const toggle = async (name, expected) => {
+            await until(() => [...document.querySelectorAll(".class-toggle-list label")].some(label => label.textContent === `.${name}`));
+            const label = [...document.querySelectorAll(".class-toggle-list label")].find(label => label.textContent === `.${name}`);
+            label.querySelector("input").click();
+            await settle(() => attribute("class") === expected, `Unticking .${name}`);
+        };
+        await toggle("one", "two three");
+        await toggle("two", "three");
+
+        // The Accessibility pane's input for aria-hidden.
+        app.selectSidebar("accessibility");
+        await until(() => document.querySelector('.aria-input[aria-label="aria-hidden"]'));
+        const ariaInput = document.querySelector('.aria-input[aria-label="aria-hidden"]');
+        ariaInput.value = "false";
+        ariaInput.dispatchEvent(new Event("change", { bubbles: true }));
+        await settle(() => attribute("aria-hidden") === "false", "The aria-hidden edit");
+        return null;
+    )JS"sv);
+}
+
         auto closing_target = move(fixture.target);
     }
     // NB: The view's destruction runs in this process, which would have stopped at the call into the destroyed view.

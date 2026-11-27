@@ -728,13 +728,18 @@ export class SidebarsController {
                     "aria-label": k,
                     disabled: !!this.app.state.ghostSnapshot || !!this.app.state.selectedPseudo,
                     class: "aria-input",
-                    onChange: () => sendCommand("setAttribute", {
-                        nodeId: domNode.id,
-                        name: k,
-                        newName: k,
-                        value: inp.value,
-                        beforeValue: String(v),
-                    }).then(() => this.loadAccessibility()).catch(err => this.app.showToast(err.message)),
+                    onChange: () => {
+                        // Starts from the value the node has now, which an earlier edit may have changed.
+                        const before = String(domNode.attributes?.[k] ?? v);
+                        const value = inp.value;
+                        const params = { nodeId: domNode.id, name: k, newName: k, value, beforeValue: before };
+                        sendCommand("setAttribute", params)
+                            .then(() => {
+                                domNode.attributes = { ...(domNode.attributes || {}), [k]: value };
+                                this.loadAccessibility();
+                            })
+                            .catch(err => this.app.showToast(err.message));
+                    },
                 });
                 ariaSec.appendChild(el("div", { class: "aria-row" }, el("span", { class: "monospace decl-prop", text: k }), inp));
             }

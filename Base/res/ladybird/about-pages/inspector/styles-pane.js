@@ -264,14 +264,19 @@ export class StylesPaneController {
 
     buildClassSubdrawer() {
         const node = this.app.state.selectedNode;
-        const classes = String(node?.attributes?.class || "").trim().split(/\s+/).filter(Boolean);
+        // Each change starts from the classes the node has when it is made: the tree may have caught up with an
+        // earlier change since the list was drawn.
+        const currentNode = () => (this.app.state.selectedNode?.id === node?.id ? this.app.state.selectedNode : node);
+        const classesOf = target => String(target?.attributes?.class || "").trim().split(/\s+/).filter(Boolean);
+        const classes = classesOf(node);
         const addInput = el("input", {
             type: "text",
             placeholder: "Add new class",
             onKeydown: e => {
                 if (e.key === "Enter" && addInput.value.trim()) {
-                    const next = [...new Set([...classes, ...addInput.value.trim().split(/\s+/)])].join(" ");
-                    this.updateClassAttribute(node, next);
+                    const target = currentNode();
+                    const next = [...new Set([...classesOf(target), ...addInput.value.trim().split(/\s+/)])].join(" ");
+                    this.updateClassAttribute(target, next);
                     addInput.value = "";
                 }
             },
@@ -282,8 +287,8 @@ export class StylesPaneController {
                 type: "checkbox",
                 checked: true,
                 onChange: () => {
-                    const next = classes.filter(c => c !== cls).join(" ");
-                    this.updateClassAttribute(node, next);
+                    const target = currentNode();
+                    this.updateClassAttribute(target, classesOf(target).filter(c => c !== cls).join(" "));
                 },
             });
             list.appendChild(el("label", {}, cb, `.${cls}`));
@@ -301,7 +306,11 @@ export class StylesPaneController {
             value: nextClassValue,
             beforeValue: String(node.attributes?.class || ""),
             label: this.app.elementsTree.describeNodeShort(node),
-        }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => {
+        }).then(() => {
+            // The node shows the class as set until the tree, which refreshes after the page changes, replaces it.
+            node.attributes = { ...(node.attributes || {}), class: nextClassValue };
+            this.app.refreshSelectedNodeProperties();
+        }).catch(err => {
             // A change the page made, or one made before this pane caught up, is not overwritten; show the class as
             // it is now.
             this.app.showToast(err.message);

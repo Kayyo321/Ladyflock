@@ -776,7 +776,11 @@ export class ElementsTreeController {
                     value: next,
                     beforeValue: beforeVal,
                     label: this.describeNodeShort(node),
-                }).then(() => announce(`Updated ${attrName}`)).catch(err => this.app.showToast(err.message));
+                }).then(() => {
+                    // Shown as set until the tree, which refreshes after the page changes, replaces the node.
+                    node.attributes = { ...(node.attributes || {}), [attrName]: next };
+                    announce(`Updated ${attrName}`);
+                }).catch(err => this.app.showToast(err.message));
             }
             this.endEditing({ refocus });
         };
@@ -801,7 +805,10 @@ export class ElementsTreeController {
                 return;
             finished = true;
             if (commit && input.value !== before) {
-                sendCommand("setNodeText", { nodeId: node.id, text: input.value, beforeText: before }).catch(err => this.app.showToast(err.message));
+                const text = input.value;
+                sendCommand("setNodeText", { nodeId: node.id, text, beforeText: before })
+                    .then(() => { node.text = text; })
+                    .catch(err => this.app.showToast(err.message));
             }
             this.endEditing({ refocus });
         };
