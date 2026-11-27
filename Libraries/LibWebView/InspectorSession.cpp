@@ -1739,8 +1739,14 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
             send_reply(request_id, false, {}, "This edit cannot be undone."_string);
             return;
         }
-        auto const action = entry->undo_payload.get_string("action"sv).value();
-        view->dispatch_inspector_engine_command(request_id, action, entry->undo_payload, [weak_this = make_weak_ptr(), generation = m_document_generation, request_id, id](bool ok, JsonValue result, Optional<String> error) {
+        // The inverse came from the renderer, which is untrusted: one without an action cannot be undone, and must not
+        // bring down this process.
+        auto const action = entry->undo_payload.get_string("action"sv);
+        if (!action.has_value() || action->is_empty()) {
+            send_reply(request_id, false, {}, "This edit cannot be undone."_string);
+            return;
+        }
+        view->dispatch_inspector_engine_command(request_id, *action, entry->undo_payload, [weak_this = make_weak_ptr(), generation = m_document_generation, request_id, id](bool ok, JsonValue result, Optional<String> error) {
             auto self = weak_this.strong_ref();
             if (!self || self->m_document_generation != generation)
                 return;
