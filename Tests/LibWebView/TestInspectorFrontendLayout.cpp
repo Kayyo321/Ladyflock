@@ -994,6 +994,21 @@ TEST_CASE(inspector_css_overview_reads_current_styles)
     )JS"sv);
 }
 
+// The Inspector's console inputs each get their own answer, even while another is running or after one throws.
+TEST_CASE(inspector_console_inputs_each_get_their_own_answer)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorConsoleInputs"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+
+    expect_holds(*fixture.frontend, "Overlapping inputs are answered in kind"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const evaluate = expression => sendCommand("consoleEvaluate", { expression }).then(result => result, error => error.message);
+        const [one, thrown, two] = await Promise.all([evaluate("'one'"), evaluate("docment.title"), evaluate("'two'")]);
+        return one?.value === "one" && thrown?.thrown === true && two?.value === "two" ? null : { one, thrown, two };
+    )JS"sv);
+}
+
 // Two requests for one script's source, as the Inspector and remote DevTools can make, are both answered.
 TEST_CASE(inspector_source_requests_for_one_script_are_all_answered)
 {

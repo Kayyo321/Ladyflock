@@ -586,7 +586,8 @@ public:
     void debug_request(ByteString const& request, ByteString const& argument = {});
 
     void run_javascript(String const&);
-    void js_console_input(String const&);
+    // Each input gets its own answer, so input from the Inspector and from remote DevTools can run at once.
+    void js_console_input(String const&, DevTools::DevToolsDelegate::OnScriptEvaluationComplete);
     void exit_fullscreen();
     void deny_fullscreen_window();
 
@@ -776,7 +777,7 @@ public:
     Function<void(Web::HTML::ScriptRegistryDescription)> on_devtools_source_available;
     DevTools::DevToolsDelegate::OnDebuggerPaused on_debugger_paused;
     DevTools::DevToolsDelegate::OnDebuggerResumed on_debugger_resumed;
-    Function<void(DebuggerValue)> on_received_js_console_result;
+    HashMap<u64, DevTools::DevToolsDelegate::OnScriptEvaluationComplete> on_executed_js_console_input;
     Function<void(ConsoleOutput)> on_console_message;
     Function<void(Web::UniqueNodeID)> on_inspect_element_request;
     Function<void(u64 request_id, URL::URL const&, ByteString const&, Vector<HTTP::Header> const&, ByteBuffer, Optional<String>, String, bool, Web::Fetch::Infrastructure::RequestPriority)> on_network_request_started;
@@ -1372,6 +1373,7 @@ protected:
     u64 m_next_resolve_dom_node_url_request_id { 1 };
     void answer_pending_console_input_completions();
     u64 m_next_js_console_completion_request_id { 1 };
+    u64 m_next_js_console_input_request_id { 1 };
 
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerBreakpointOperationComplete> m_pending_debugger_breakpoint_requests;
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerEnvironmentsReceived> m_pending_debugger_environments_requests;

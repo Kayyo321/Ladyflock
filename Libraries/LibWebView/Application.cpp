@@ -4572,12 +4572,7 @@ void Application::evaluate_javascript(DevTools::TabDescription const& descriptio
         return;
     }
 
-    view->on_received_js_console_result = [&view = *view, on_complete = move(on_complete)](DebuggerValue result) {
-        view.on_received_js_console_result = nullptr;
-        on_complete(move(result));
-    };
-
-    view->js_console_input(script);
+    view->js_console_input(script, move(on_complete));
 }
 
 void Application::listen_for_console_messages(DevTools::TabDescription const& description, OnConsoleMessage on_console_message) const

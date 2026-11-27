@@ -196,7 +196,7 @@ public:
     virtual void retrieve_debugger_object_properties(TabDescription const&, u64, WebView::DebuggerObjectScope, OnDebuggerObjectPropertiesReceived) const { }
     virtual void retrieve_debugger_source_positions(TabDescription const&, Web::HTML::ScriptRegistryIdentifier, OnDebuggerSourcePositionsReceived) const { }
 
-    using OnScriptEvaluationComplete = Function<void(ErrorOr<WebView::DebuggerValue>)>;
+    using OnScriptEvaluationComplete = Function<void(ErrorOr<WebView::DebuggerEvaluationResult>)>;
     virtual void evaluate_javascript(TabDescription const&, String const&, OnScriptEvaluationComplete) const { }
 
     using OnConsoleMessage = Function<void(WebView::ConsoleOutput)>;

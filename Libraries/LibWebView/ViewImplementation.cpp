@@ -3156,12 +3156,15 @@ void ViewImplementation::retrieve_debugger_source_positions(Web::HTML::ScriptReg
 }
 
 // A DevTools client waits for the answer to each console input completion request before the next, so a request that
-// its page can no longer answer gets no completions instead.
+// its page can no longer answer gets no completions instead. Console input that page can no longer run fails.
 void ViewImplementation::answer_pending_console_input_completions()
 {
     auto pending_console_input_completions = move(on_completed_js_console_input);
     for (auto& pending : pending_console_input_completions)
         pending.value(DevTools::DevToolsDelegate::ConsoleInputCompletion {});
+    auto pending_console_inputs = move(on_executed_js_console_input);
+    for (auto& pending : pending_console_inputs)
+        pending.value(Error::from_string_literal("The page changed before the console input ran"));
 }
 
 void ViewImplementation::complete_js_console_input(String const& input, DevTools::DevToolsDelegate::OnConsoleInputCompleted on_complete)
@@ -3457,9 +3460,11 @@ void ViewImplementation::run_javascript(String const& js_source)
     page().async_run_javascript(js_source);
 }
 
-void ViewImplementation::js_console_input(String const& js_source)
+void ViewImplementation::js_console_input(String const& js_source, DevTools::DevToolsDelegate::OnScriptEvaluationComplete on_complete)
 {
-    page().async_js_console_input(js_source);
+    auto request_id = m_next_js_console_input_request_id++;
+    on_executed_js_console_input.set(request_id, move(on_complete));
+    page().async_js_console_input(request_id, js_source);
 }
 
 void ViewImplementation::exit_fullscreen()
@@ -4421,16 +4426,16 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
 
     // So did console input completion requests, and requests for a script's source.
     answer_pending_console_input_completions();
-
-    auto& page = this->page();
-    if (previous_page) {
-        cancel_pending_inspector_engine_commands();
-        // NB: The page has no hovered link and cannot clear the outgoing page's status label.
     auto pending_source_requests = move(on_received_devtools_source);
     for (auto& pending : pending_source_requests) {
         for (auto& handler : pending.value)
             handler({});
     }
+
+    auto& page = this->page();
+    if (previous_page) {
+        cancel_pending_inspector_engine_commands();
+        // NB: The page has no hovered link and cannot clear the outgoing page's status label.
         if (on_link_unhover)
             on_link_unhover();
         if (m_debugger_paused) {

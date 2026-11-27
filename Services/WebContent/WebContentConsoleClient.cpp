@@ -43,7 +43,7 @@ Optional<Web::HTML::ConsoleInputCompletion> WebContentConsoleClient::complete_in
     return Web::HTML::complete_console_input(settings.realm(), input);
 }
 
-void WebContentConsoleClient::handle_input(StringView js_source)
+void WebContentConsoleClient::handle_input(u64 request_id, StringView js_source)
 {
     auto& settings = Web::HTML::relevant_settings_object(m_console_global_environment_extensions->binding_object());
     auto script_source = Utf16String::from_utf8(js_source);
@@ -56,13 +56,13 @@ void WebContentConsoleClient::handle_input(StringView js_source)
 
     if (!result.is_error()) {
         m_console_global_environment_extensions->set_most_recent_result(result.value());
-        handle_result(result.value(), Thrown::No);
+        handle_result(request_id, result.value(), Thrown::No);
         return;
     }
 
     // Running the script reported the exception to the console already. Answer anyway, so that a client waiting on the
     // result of this input learns that it finished.
-    handle_result(result.value(), Thrown::Yes);
+    handle_result(request_id, result.value(), Thrown::Yes);
 }
 
 }

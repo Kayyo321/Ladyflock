@@ -4941,13 +4941,13 @@ void ConnectionFromClient::reset_zoom(Web::PageId page_id)
         page->page().local_traversable()->reset_zoom();
 }
 
-void ConnectionFromClient::js_console_input(Web::PageId page_id, String js_source)
+void ConnectionFromClient::js_console_input(Web::PageId page_id, u64 request_id, String js_source)
 {
     auto page = this->page(page_id);
     if (!page.has_value())
         return;
 
-    page->js_console_input(js_source);
+    page->js_console_input(request_id, js_source);
 }
 
 void ConnectionFromClient::complete_js_console_input(Web::PageId page_id, u64 request_id, String input)

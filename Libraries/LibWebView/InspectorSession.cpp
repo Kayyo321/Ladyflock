@@ -513,7 +513,6 @@ void InspectorSession::reset_for_new_document(KeepRequestsOfCurrentLoad keep_req
     m_pending_grid_layouts_request_id.clear();
     m_pending_current_grid_request_id.clear();
     m_pending_current_flexbox_request_id.clear();
-    m_pending_console_eval_request_id.clear();
     m_edit_journal.clear();
     m_edit_journal_truncated = false;
     if (!m_preserve_console_log)
@@ -1442,12 +1441,21 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
     // Console
     if (command == "consoleEvaluate"sv) {
         auto source = params.get_string("expression"sv).value_or(String {});
-        if (m_pending_console_eval_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
-            return;
-        }
-        m_pending_console_eval_request_id = request_id;
-        view->js_console_input(source);
+        view->js_console_input(source, [weak_this = make_weak_ptr(), request_id, generation = m_document_generation](ErrorOr<DebuggerEvaluationResult> result) {
+            auto self = weak_this.strong_ref();
+            if (!self || generation != self->m_document_generation)
+                return;
+            if (result.is_error()) {
+                self->send_reply(request_id, false, {}, MUST(String::formatted("{}", result.error())));
+                return;
+            }
+            auto serialized = serialize_debugger_value(result.value().value);
+            // The exception itself reaches the console as an error message; this only tells the frontend the input
+            // finished.
+            if (result.value().is_throw)
+                serialized.set("thrown"sv, true);
+            self->send_reply(request_id, true, move(serialized));
+        });
         return;
     }
     if (command == "consoleComplete"sv) {
@@ -2151,17 +2159,6 @@ void InspectorSession::did_pause_debugger(DebuggerPause const& pause)
 void InspectorSession::did_resume_debugger()
 {
     send_event("debuggerResumed"sv, JsonObject {});
-}
-
-void InspectorSession::did_receive_js_console_result(DebuggerValue const& result, bool thrown)
-{
-    auto serialized = serialize_debugger_value(result);
-    // The exception itself reaches the console as an error message; this only tells the frontend the input finished.
-    if (thrown)
-        serialized.set("thrown"sv, true);
-    if (auto req = exchange(m_pending_console_eval_request_id, {}); req.has_value())
-        send_reply(*req, true, serialized);
-    send_event("consoleResult"sv, move(serialized));
 }
 
 void InspectorSession::did_receive_console_message(ConsoleOutput const& output)

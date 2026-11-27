@@ -2961,9 +2961,9 @@ void PageClient::initialize_js_console(Web::DOM::Document& document)
     document.set_console_client(console_client);
 }
 
-void PageClient::did_execute_js_console_input(WebView::DebuggerValue const& result, bool thrown)
+void PageClient::did_execute_js_console_input(u64 request_id, WebView::DebuggerValue const& result, bool thrown)
 {
-    client().async_did_execute_js_console_input(m_id, result, thrown);
+    client().async_did_execute_js_console_input(m_id, request_id, result, thrown);
 }
 
 // An object of a console result is in the top-level document's console, but a logged one is in the console of whichever
@@ -2980,10 +2980,17 @@ ErrorOr<WebView::DebuggerObjectProperties> PageClient::console_object_properties
     return console_client->properties_for_object(object_id);
 }
 
-void PageClient::js_console_input(StringView js_source)
+void PageClient::js_console_input(u64 request_id, StringView js_source)
 {
-    if (auto console_client = m_top_level_document_console_client.ptr())
-        console_client->handle_input(js_source);
+    if (auto console_client = m_top_level_document_console_client.ptr()) {
+        console_client->handle_input(request_id, js_source);
+        return;
+    }
+    // Every input gets an answer, or its client would wait for it.
+    WebView::DebuggerValue no_console;
+    no_console.type = WebView::DebuggerValueType::String;
+    no_console.text = "The page has no console to run this in."_utf16;
+    did_execute_js_console_input(request_id, no_console, true);
 }
 
 Optional<Web::HTML::ConsoleInputCompletion> PageClient::complete_js_console_input(StringView input)

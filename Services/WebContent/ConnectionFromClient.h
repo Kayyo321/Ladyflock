@@ -298,7 +298,7 @@ private:
     virtual void update_visibility_state(Web::PageId page_id, Web::HTML::CrossProcessId navigable_id, Web::HTML::VisibilityState) override;
     virtual void reset_zoom(Web::PageId page_id) override;
 
-    virtual void js_console_input(Web::PageId page_id, String) override;
+    virtual void js_console_input(Web::PageId page_id, u64 request_id, String) override;
     virtual void run_javascript(Web::PageId page_id, String) override;
 
     virtual void did_open_dialog_in_another_process(Web::PageId page_id, Web::Page::PendingDialog dialog, Utf16String message) override;

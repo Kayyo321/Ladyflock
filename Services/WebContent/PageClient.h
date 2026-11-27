@@ -155,9 +155,9 @@ public:
     void initialize_js_console(Web::DOM::Document& document);
     GC::Ptr<WebContentConsoleClient> attach_js_console(Web::DOM::Document&);
     void for_each_devtools_console_client(Function<void(DevToolsConsoleClient&)> const&);
-    void js_console_input(StringView js_source);
+    void js_console_input(u64 request_id, StringView js_source);
     Optional<Web::HTML::ConsoleInputCompletion> complete_js_console_input(StringView input);
-    void did_execute_js_console_input(WebView::DebuggerValue const&, bool thrown);
+    void did_execute_js_console_input(u64 request_id, WebView::DebuggerValue const&, bool thrown);
     ErrorOr<WebView::DebuggerObjectProperties> console_object_properties(u64 object_id);
     void run_javascript(StringView js_source);
     void did_output_js_console_message(WebView::ConsoleOutput);

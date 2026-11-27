@@ -1415,15 +1415,11 @@ void WebContentPage::did_cut_selected_text(u64 request_id, ByteString selection)
     view().did_cut_selected_text({}, request_id, move(selection));
 }
 
-void WebContentPage::did_execute_js_console_input(DebuggerValue result, bool thrown)
+void WebContentPage::did_execute_js_console_input(u64 request_id, DebuggerValue result, bool thrown)
 {
     if (displays_tab()) {
-        if (auto* session = view().inspector_session())
-            session->did_receive_js_console_result(result, thrown);
-        // Remote DevTools has no way yet to show a thrown evaluation as an exception rather than as its result, so
-        // it gets only results, as before; the exception still reaches it as a console error.
-        if (!thrown && view().on_received_js_console_result)
-            view().on_received_js_console_result(move(result));
+        if (auto handler = view().on_executed_js_console_input.take(request_id); handler.has_value())
+            (*handler)(DebuggerEvaluationResult { .value = move(result), .is_throw = thrown });
     }
 }
 
