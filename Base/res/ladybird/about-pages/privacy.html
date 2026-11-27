@@ -179,6 +179,11 @@
             }
 
             const modeNames = { allow: "Direct", offline: "Offline", "proxy-only": "Proxy only" };
+            const managedPolicyNames = {
+                absent: "None",
+                active: "Set by your administrator",
+                rejected: "Unreadable, so the network is closed",
+            };
 
             function renderStatus(status) {
                 fillList(identityElement, [
@@ -191,6 +196,7 @@
                     ["Local DNS", status.network.localDNS ? "Allowed" : "Not used"],
                     ["WebRTC", status.network.webRTC ? "Allowed" : "Off"],
                     ["Policy epoch", String(status.network.epoch)],
+                    ["Managed policy", managedPolicyNames[status.network.managedPolicy] ?? status.network.managedPolicy],
                 ]);
                 const sites = status.controls.scriptingDisabledSites;
                 fillList(controlsElement, [

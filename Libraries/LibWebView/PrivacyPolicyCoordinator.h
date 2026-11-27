@@ -42,6 +42,8 @@ public:
         bool isolate_proxy_streams { false };
         // The route of Tor-routed identities, whose streams are always isolated. Without one they stay closed.
         Optional<Privacy::ProxyRoute> tor_route {};
+        // The administrator's managed network ceiling. Every policy any session compiles is held within it.
+        Optional<Privacy::NetworkPolicy> administrative_ceiling {};
     };
 
     explicit PrivacyPolicyCoordinator(Configuration);

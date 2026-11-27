@@ -86,6 +86,7 @@ Privacy::PolicyInput PrivacyPolicyCoordinator::default_input_for_session(Browsin
 
     return {
         .schema_version = Privacy::CURRENT_POLICY_SCHEMA_VERSION,
+        .administrative_ceiling = m_configuration.administrative_ceiling,
         .identity_requirement = move(requirement),
         .user_preference = move(preference),
         .has_configured_proxy = has_configured_proxy(),
@@ -248,8 +249,17 @@ PrivacyPolicyCoordinator::TransitionResult PrivacyPolicyCoordinator::renew_route
 PrivacyPolicyCoordinator::TransitionResult PrivacyPolicyCoordinator::apply_policy_input(BrowsingSession& session, Privacy::PolicyInput const& input)
 {
     auto& state = ensure_session_state(session);
+
+    // An input from anywhere, including one with its own ceiling, stays within the administrator's.
+    auto bounded_input = input;
+    if (m_configuration.administrative_ceiling.has_value()) {
+        bounded_input.administrative_ceiling = input.administrative_ceiling.has_value()
+            ? Privacy::NetworkPolicy::intersect(*m_configuration.administrative_ceiling, *input.administrative_ceiling)
+            : *m_configuration.administrative_ceiling;
+    }
+
     auto next_epoch = allocate_epoch();
-    auto compiled = Privacy::PolicyCompiler::compile(session.id(), next_epoch, input);
+    auto compiled = Privacy::PolicyCompiler::compile(session.id(), next_epoch, bounded_input);
     if (compiled.is_error()) {
         // Retain the last accepted policy on malformed reload and report the rejection.
         return {
@@ -297,7 +307,7 @@ PrivacyPolicyCoordinator::TransitionResult PrivacyPolicyCoordinator::apply_polic
     }
 
     // Phase 3: Commit the new policy snapshot.
-    state.input = input;
+    state.input = bounded_input;
     state.committed_snapshot = target_snapshot;
     state.admission_snapshot = target_snapshot;
     state.last_diagnostics = result.diagnostics;

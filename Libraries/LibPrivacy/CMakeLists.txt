@@ -3,6 +3,7 @@ set(SOURCES
     Identity/Types.cpp
     Navigation/TrackingParameters.cpp
     Policy/Compiler.cpp
+    Policy/ManagedPolicy.cpp
     Policy/NetworkGate.cpp
     Policy/Route.cpp
     Policy/Types.cpp
@@ -10,4 +11,4 @@ set(SOURCES
 )
 
 ladybird_lib(LibPrivacy privacy EXPLICIT_SYMBOL_EXPORT)
-target_link_libraries(LibPrivacy PRIVATE LibCrypto LibIPC LibURL)
+target_link_libraries(LibPrivacy PRIVATE LibCore LibCrypto LibIPC LibURL)

@@ -855,11 +855,19 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     m_font_service_host = FontServiceHost::create(*m_font_service);
     if (m_stats_log)
         m_stats_log->start_sampling();
+    // The managed policy is read before any policy is compiled, so no session ever runs outside it.
+    if (auto path = managed_privacy_policy_path(); path.has_value())
+        m_managed_privacy_policy = Privacy::load_managed_policy(*path, managed_privacy_policy_owner());
+    auto managed_policy = m_managed_privacy_policy.effective_policy();
+    if (managed_policy.strip_tracking_parameters)
+        m_browser_options.privacy_strip_tracking_parameters = true;
+
     m_privacy_policy_coordinator = make<PrivacyPolicyCoordinator>(PrivacyPolicyCoordinator::Configuration {
         .default_network_mode = m_browser_options.privacy_network_mode,
         .proxy_route = m_browser_options.privacy_proxy_route,
         .isolate_proxy_streams = m_browser_options.privacy_proxy_isolation,
         .tor_route = m_browser_options.privacy_tor_route,
+        .administrative_ceiling = move(managed_policy.network_ceiling),
     });
     m_privacy_activity = make<PrivacyActivity>();
     m_identity_manager = make<IdentityManager>();

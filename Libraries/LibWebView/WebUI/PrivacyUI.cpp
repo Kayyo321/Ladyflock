@@ -60,6 +60,7 @@ void PrivacyUI::load_status()
         network.set("route"sv, JsonValue {});
     network.set("localDNS"sv, coordinator.allows_dns_resolution(session));
     network.set("webRTC"sv, coordinator.allows_webrtc_network(session));
+    network.set("managedPolicy"sv, Privacy::managed_policy_status_to_string(Application::managed_privacy_policy().status));
 
     auto counters = Application::privacy_activity().counters_for(session);
     JsonObject counts;

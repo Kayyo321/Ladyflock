@@ -30,6 +30,7 @@
 #include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 #include <LibMain/Main.h>
+#include <LibPrivacy/Policy/ManagedPolicy.h>
 #include <LibRequests/Forward.h>
 #include <LibURL/URL.h>
 #include <LibWebCommon/CSS/PreferredColorScheme.h>
@@ -125,6 +126,11 @@ public:
     bool claim_cpu_profiler(ProcessType);
     void set_cpu_profiler_process(Core::Process, OwnPtr<Core::File> control_socket);
 
+    // Where the administrator's managed privacy policy is read from, and the account that must own it and its directory.
+    // Only the in-process test applications point these elsewhere: no option or environment variable can.
+    virtual Optional<ByteString> managed_privacy_policy_path() const { return Privacy::default_managed_policy_path(); }
+    virtual uid_t managed_privacy_policy_owner() const { return 0; }
+
     virtual Optional<String> system_font_family() const { return {}; }
     virtual Optional<String> ui_font_family() const { return {}; }
     // The browser's own pages, such as about:settings, are part of its interface, so they follow the interface theme
@@ -134,6 +140,8 @@ public:
     static RequestServerManager& request_server_manager() { return *the().m_request_server_manager; }
     static PrivacyPolicyCoordinator& privacy_policy_coordinator() { return *the().m_privacy_policy_coordinator; }
     static PrivacyActivity& privacy_activity() { return *the().m_privacy_activity; }
+    // The administrator's managed privacy policy as it was read at startup.
+    static Privacy::ManagedPolicyLoadResult const& managed_privacy_policy() { return the().m_managed_privacy_policy; }
     bool has_privacy_activity() const { return m_privacy_activity; }
     static IdentityManager& identity_manager() { return *the().m_identity_manager; }
     static ImageDecoderManager& image_decoder_manager() { return *the().m_image_decoder_manager; }
@@ -683,6 +691,7 @@ private:
 
     OwnPtr<PrivacyPolicyCoordinator> m_privacy_policy_coordinator;
     OwnPtr<PrivacyActivity> m_privacy_activity;
+    Privacy::ManagedPolicyLoadResult m_managed_privacy_policy;
     OwnPtr<IdentityManager> m_identity_manager;
     OwnPtr<RequestServerManager> m_request_server_manager;
     OwnPtr<ImageDecoderManager> m_image_decoder_manager;
