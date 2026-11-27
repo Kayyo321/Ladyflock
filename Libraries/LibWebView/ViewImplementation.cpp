@@ -35,6 +35,7 @@
 #include <LibWebView/CrashReportReview.h>
 #include <LibWebView/HelperProcess.h>
 #include <LibWebView/HistoryDebug.h>
+#include <LibWebView/InspectorSession.h>
 #include <LibWebView/PageTranslation.h>
 #include <LibWebView/PermissionManager.h>
 #include <LibWebView/PrivacyActivity.h>
@@ -157,6 +158,10 @@ ViewImplementation::ViewImplementation(NonnullRefPtr<BrowsingSession> session)
 
 ViewImplementation::~ViewImplementation()
 {
+    if (auto session = m_inspector_session.strong_ref())
+        session->target_did_close();
+    if (auto owned_session = InspectorSession::find_for_frontend_view(m_view_id))
+        owned_session->detach_frontend();
     stop_counting_as_owned_view();
     Application::the().media_session_coordinator().remove_view(view_id());
     // A tab's capture goes away with the tab.
@@ -415,6 +420,11 @@ void ViewImplementation::did_change_active_document(Badge<CanonicalTraversable>)
     set_title(Utf16String::from_utf8(url().serialize()));
     set_favicon({});
     did_update_url();
+
+    for (auto const& [id, listener] : m_navigation_listeners) {
+        if (listener.on_active_document_change)
+            listener.on_active_document_change(url());
+    }
 }
 
 void ViewImplementation::update_displayed_url()
@@ -2376,9 +2386,11 @@ void ViewImplementation::inspect_storage(Web::StorageAPI::StorageEndpointType st
     page().async_inspect_storage(storage_endpoint, request_id);
 }
 
-void ViewImplementation::inspect_accessibility_tree()
+void ViewImplementation::inspect_accessibility_tree(OnAccessibilityTreeInspected on_complete)
 {
-    page().async_inspect_accessibility_tree();
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_accessibility_tree_inspections.set(request_id, move(on_complete));
+    page().async_inspect_accessibility_tree(request_id);
 }
 
 void ViewImplementation::request_accessibility_tree()
@@ -2405,21 +2417,49 @@ void ViewImplementation::get_hovered_node_id()
 
 void ViewImplementation::start_node_picker(DevTools::DevToolsDelegate::OnNodePickerEvent on_node_picker_event)
 {
-    m_node_picker_active = true;
-    m_node_picker_hovered_node_id.clear();
-    m_pending_node_picker_requests.clear();
-    m_on_node_picker_event = move(on_node_picker_event);
+    start_node_picker_for_owner(InteractiveOwner::RemoteDevTools, move(on_node_picker_event));
 }
 
 void ViewImplementation::stop_node_picker()
 {
-    if (!m_node_picker_active)
+    stop_node_picker_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+void ViewImplementation::start_node_picker_for_owner(InteractiveOwner owner, DevTools::DevToolsDelegate::OnNodePickerEvent on_node_picker_event)
+{
+    if (m_node_picker_active && m_node_picker_owner != InteractiveOwner::None && m_node_picker_owner != owner) {
+        // Cancel the previous owner cleanly before handing over interactive picker control.
+        if (m_on_node_picker_event) {
+            m_on_node_picker_event({
+                .type = DevTools::DevToolsDelegate::NodePickerEvent::Type::Canceled,
+                .node_id = {},
+            });
+        }
+        clear_node_picker();
+    }
+    m_node_picker_active = true;
+    m_node_picker_owner = owner;
+    m_node_picker_hovered_node_id.clear();
+    m_pending_node_picker_requests.clear();
+    m_on_node_picker_event = move(on_node_picker_event);
+
+    // The UI routes the tab's pointer and key input to the picker by this state, so it has to learn of it at once.
+    did_change_state();
+}
+
+void ViewImplementation::stop_node_picker_for_owner(InteractiveOwner owner)
+{
+    if (!m_node_picker_active || m_node_picker_owner != owner)
         return;
 
     clear_node_picker();
     m_node_picker_active = false;
+    m_node_picker_owner = InteractiveOwner::None;
     m_pending_node_picker_requests.clear();
     m_on_node_picker_event = nullptr;
+
+    // Otherwise the UI keeps sending the tab's input to a picker that is gone, and the page gets none of it.
+    did_change_state();
 }
 
 void ViewImplementation::clear_node_picker()
@@ -2466,22 +2506,6 @@ void ViewImplementation::request_node_picker_hit_test(NodePickerRequestType type
     page().async_get_node_id_at_position(request_id, position);
 }
 
-void ViewImplementation::did_receive_node_hit_test(u64 request_id, Web::UniqueNodeID node_id)
-{
-    if (request_id == m_inspect_element_hit_test_request_id) {
-        m_inspect_element_hit_test_request_id.clear();
-        if (node_id != 0)
-            m_inspect_element_node_id = node_id;
-
-        // The user chose Inspect Element before the hit test came back.
-        if (exchange(m_inspect_element_activated_before_hit_test, false) && m_inspect_element_node_id.has_value() && on_inspect_element_request)
-            on_inspect_element_request(*m_inspect_element_node_id);
-        return;
-    }
-
-    did_receive_node_picker_hit_test(request_id, node_id);
-}
-
 void ViewImplementation::did_receive_node_picker_hit_test(u64 request_id, Web::UniqueNodeID node_id)
 {
     auto request_type = m_pending_node_picker_requests.take(request_id);
@@ -2523,24 +2547,30 @@ void ViewImplementation::did_receive_node_picker_hit_test(u64 request_id, Web::U
     });
 }
 
-void ViewImplementation::inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type property_type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options)
+void ViewImplementation::inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type property_type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options, u64 request_id)
 {
-    page().async_inspect_dom_node(property_type, node_id, pseudo_element, move(options));
+    page().async_inspect_dom_node(property_type, node_id, pseudo_element, move(options), request_id);
 }
 
-void ViewImplementation::inspect_grid_layouts(Web::UniqueNodeID root_node_id)
+void ViewImplementation::inspect_grid_layouts(Web::UniqueNodeID root_node_id, OnGridLayoutsInspected on_complete)
 {
-    page().async_inspect_grid_layouts(root_node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_grid_layouts_inspections.set(request_id, move(on_complete));
+    page().async_inspect_grid_layouts(request_id, root_node_id);
 }
 
-void ViewImplementation::inspect_current_grid(Web::UniqueNodeID node_id)
+void ViewImplementation::inspect_current_grid(Web::UniqueNodeID node_id, OnLayoutInspected on_complete)
 {
-    page().async_inspect_current_grid(node_id);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_layout_inspections.set(request_id, move(on_complete));
+    page().async_inspect_current_grid(request_id, node_id);
 }
 
-void ViewImplementation::inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents)
+void ViewImplementation::inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents, OnLayoutInspected on_complete)
 {
-    page().async_inspect_current_flexbox(node_id, only_look_at_parents);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_layout_inspections.set(request_id, move(on_complete));
+    page().async_inspect_current_flexbox(request_id, node_id, only_look_at_parents);
 }
 
 void ViewImplementation::inspect_indexed_database_storage(DevTools::DevToolsDelegate::OnIndexedDBInspectionComplete on_complete)
@@ -2602,8 +2632,9 @@ void ViewImplementation::retrieve_devtools_sources(DevTools::DevToolsDelegate::O
     page().async_list_devtools_sources(request_id);
 }
 
-void ViewImplementation::request_devtools_source(Web::HTML::ScriptRegistryIdentifier const& source_id)
+void ViewImplementation::request_devtools_source(Web::HTML::ScriptRegistryIdentifier const& source_id, OnDevToolsSourceReceived on_complete)
 {
+    on_received_devtools_source.ensure(source_id).append(move(on_complete));
     page().async_request_devtools_source(source_id);
 }
 
@@ -2611,8 +2642,22 @@ void ViewImplementation::attach_debugger(DevTools::DevToolsDelegate::OnDebuggerP
 {
     on_debugger_paused = move(on_paused);
     on_debugger_resumed = move(on_resumed);
-    m_debugger_is_attached = true;
-    page().async_attach_debugger();
+    attach_debugger_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+bool ViewImplementation::attach_debugger_for_owner(InteractiveOwner owner)
+{
+    if (owner == InteractiveOwner::LocalInspector) {
+        if (m_debugger_owner == InteractiveOwner::RemoteDevTools)
+            return false;
+        m_local_debugger_attached = true;
+    }
+    m_debugger_owner = owner;
+    if (!m_debugger_is_attached) {
+        m_debugger_is_attached = true;
+        page().async_attach_debugger();
+    }
+    return true;
 }
 
 void ViewImplementation::configure_debugger(DebuggerConfiguration configuration)
@@ -2622,10 +2667,24 @@ void ViewImplementation::configure_debugger(DebuggerConfiguration configuration)
 
 void ViewImplementation::detach_debugger()
 {
-    fail_pending_debugger_requests();
-    m_debugger_is_attached = false;
     on_debugger_paused = nullptr;
     on_debugger_resumed = nullptr;
+    detach_debugger_for_owner(InteractiveOwner::RemoteDevTools);
+}
+
+void ViewImplementation::detach_debugger_for_owner(InteractiveOwner owner)
+{
+    if (owner == InteractiveOwner::LocalInspector)
+        m_local_debugger_attached = false;
+    if (m_debugger_owner != owner)
+        return;
+    if (m_local_debugger_attached) {
+        m_debugger_owner = InteractiveOwner::LocalInspector;
+        return;
+    }
+    fail_pending_debugger_requests();
+    m_debugger_is_attached = false;
+    m_debugger_owner = InteractiveOwner::None;
     page().async_detach_debugger();
 }
 
@@ -2672,6 +2731,8 @@ void ViewImplementation::did_resume_debugger(Badge<WebContentPage>)
     set_debugger_paused(false);
     if (on_debugger_resumed)
         on_debugger_resumed();
+    if (auto session = m_inspector_session.strong_ref())
+        session->did_resume_debugger();
 }
 
 void ViewImplementation::did_request_cursor_change(Badge<WebContentPage>, Gfx::Cursor cursor)
@@ -3103,12 +3164,15 @@ void ViewImplementation::retrieve_debugger_source_positions(Web::HTML::ScriptReg
 }
 
 // A DevTools client waits for the answer to each console input completion request before the next, so a request that
-// its page can no longer answer gets no completions instead.
+// its page can no longer answer gets no completions instead. Console input that page can no longer run fails.
 void ViewImplementation::answer_pending_console_input_completions()
 {
     auto pending_console_input_completions = move(on_completed_js_console_input);
     for (auto& pending : pending_console_input_completions)
         pending.value(DevTools::DevToolsDelegate::ConsoleInputCompletion {});
+    auto pending_console_inputs = move(on_executed_js_console_input);
+    for (auto& pending : pending_console_inputs)
+        pending.value(Error::from_string_literal("The page changed before the console input ran"));
 }
 
 void ViewImplementation::complete_js_console_input(String const& input, DevTools::DevToolsDelegate::OnConsoleInputCompleted on_complete)
@@ -3162,13 +3226,29 @@ void ViewImplementation::clear_grid_highlight(Web::UniqueNodeID node_id)
 
 void ViewImplementation::set_listen_for_dom_mutations(bool listen_for_dom_mutations)
 {
-    page().async_set_listen_for_dom_mutations(listen_for_dom_mutations);
+    m_remote_dom_mutation_listening = listen_for_dom_mutations;
+    page().async_set_listen_for_dom_mutations(m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0);
+}
+
+void ViewImplementation::add_dom_mutation_listener_ref()
+{
+    ++m_dom_mutation_listener_count;
+    page().async_set_listen_for_dom_mutations(true);
+}
+
+void ViewImplementation::remove_dom_mutation_listener_ref()
+{
+    if (m_dom_mutation_listener_count > 0)
+        --m_dom_mutation_listener_count;
+    page().async_set_listen_for_dom_mutations(m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0);
 }
 
 void ViewImplementation::did_connect_devtools_client()
 {
+    ++m_devtools_client_count;
     m_devtools_connected = true;
-    page().async_set_has_devtools_client(true);
+    if (m_devtools_client_count == 1)
+        page().async_set_has_devtools_client(true);
 }
 
 void ViewImplementation::start_sending_console_output(bool messages, bool errors)
@@ -3180,80 +3260,184 @@ void ViewImplementation::start_sending_console_output(bool messages, bool errors
 
 void ViewImplementation::did_disconnect_devtools_client()
 {
-    m_devtools_connected = false;
-    m_devtools_takes_console_messages = false;
-    m_devtools_takes_console_errors = false;
-    page().async_set_has_devtools_client(false);
+    if (m_devtools_client_count > 0)
+        --m_devtools_client_count;
+    if (m_devtools_client_count == 0) {
+        m_devtools_connected = false;
+        m_devtools_takes_console_messages = false;
+        m_devtools_takes_console_errors = false;
+        page().async_set_has_devtools_client(false);
+    }
 }
 
-void ViewImplementation::get_dom_node_inner_html(Web::UniqueNodeID node_id)
+InspectorSession* ViewImplementation::inspector_session() const
 {
-    page().async_get_dom_node_inner_html(node_id);
+    return m_inspector_session.ptr();
 }
 
-void ViewImplementation::get_dom_node_outer_html(Web::UniqueNodeID node_id)
+void ViewImplementation::set_inspector_session(Badge<InspectorSession>, WeakPtr<InspectorSession> session)
 {
-    page().async_get_dom_node_outer_html(node_id);
+    m_inspector_session = move(session);
 }
 
-void ViewImplementation::set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html)
+void ViewImplementation::dispatch_inspector_engine_command(u64, String const& action, JsonObject const& params, InspectorEngineReplyCallback callback)
 {
-    page().async_set_dom_node_outer_html(node_id, html);
+    auto request_id = allocate_inspector_request_id();
+    auto document_id = traversable().active_document().id();
+    JsonObject parameters = params;
+    parameters.set("expectedDocumentNamespace"sv, document_id.namespace_id);
+    parameters.set("expectedDocumentLocal"sv, document_id.local_id);
+    if (callback)
+        m_pending_inspector_engine_commands.set(request_id, { document_id, move(callback) });
+    page().async_inspector_engine_command(request_id, action, move(parameters));
 }
 
-void ViewImplementation::set_dom_node_text(Web::UniqueNodeID node_id, String const& text)
+void ViewImplementation::did_complete_inspector_engine_command(WebContentPage const& sender, u64 request_id, bool ok, JsonValue result, Optional<String> error)
 {
-    page().async_set_dom_node_text(node_id, text);
+    if (&sender != &page())
+        return;
+    auto pending = m_pending_inspector_engine_commands.take(request_id);
+    if (!pending.has_value())
+        return;
+    if (pending->document_id != traversable().active_document().id()) {
+        pending->callback(false, JsonValue {}, "The inspected document changed."_string);
+        return;
+    }
+    pending->callback(ok, move(result), move(error));
 }
 
-void ViewImplementation::set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name)
+void ViewImplementation::cancel_pending_inspector_engine_commands()
 {
-    page().async_set_dom_node_tag(node_id, name);
+    auto pending_commands = move(m_pending_inspector_engine_commands);
+    for (auto& command : pending_commands)
+        command.value.callback(false, JsonValue {}, "The inspection request was canceled."_string);
 }
 
-void ViewImplementation::add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes)
+void ViewImplementation::get_dom_node_inner_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived on_complete)
 {
-    page().async_add_dom_node_attributes(node_id, attributes);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_dom_node_html_requests.set(request_id, move(on_complete));
+    page().async_get_dom_node_inner_html(request_id, node_id);
 }
 
-void ViewImplementation::replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes)
+void ViewImplementation::get_dom_node_outer_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived on_complete)
 {
-    page().async_replace_dom_node_attribute(node_id, name, replacement_attributes);
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_dom_node_html_requests.set(request_id, move(on_complete));
+    page().async_get_dom_node_outer_html(request_id, node_id);
 }
 
-void ViewImplementation::create_child_element(Web::UniqueNodeID node_id)
+// Each DOM edit answers with the node it leaves to select, or with nothing when it could not be made.
+template<typename Send>
+static void send_dom_node_edit(u64& next_request_id, HashMap<u64, ViewImplementation::OnDOMNodeEdited>& pending_edits, ViewImplementation::OnDOMNodeEdited on_complete, Send&& send)
 {
-    page().async_create_child_element(node_id);
+    auto request_id = next_request_id++;
+    pending_edits.set(request_id, move(on_complete));
+    send(request_id);
 }
 
-void ViewImplementation::create_child_text_node(Web::UniqueNodeID node_id)
+void ViewImplementation::set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html, OnDOMNodeEdited on_complete)
 {
-    page().async_create_child_text_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_outer_html(request_id, node_id, html);
+    });
 }
 
-void ViewImplementation::insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id)
+void ViewImplementation::set_dom_node_text(Web::UniqueNodeID node_id, String const& text, OnDOMNodeEdited on_complete)
 {
-    page().async_insert_dom_node_before(node_id, parent_node_id, sibling_node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_text(request_id, node_id, text);
+    });
 }
 
-void ViewImplementation::clone_dom_node(Web::UniqueNodeID node_id)
+void ViewImplementation::set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name, OnDOMNodeEdited on_complete)
 {
-    page().async_clone_dom_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_set_dom_node_tag(request_id, node_id, name);
+    });
 }
 
-void ViewImplementation::remove_dom_node(Web::UniqueNodeID node_id)
+void ViewImplementation::add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes, OnDOMNodeEdited on_complete)
 {
-    page().async_remove_dom_node(node_id);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_add_dom_node_attributes(request_id, node_id, attributes);
+    });
 }
 
-void ViewImplementation::list_style_sheets()
+void ViewImplementation::replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes, OnDOMNodeEdited on_complete)
 {
-    page().async_list_style_sheets();
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_replace_dom_node_attribute(request_id, node_id, name, replacement_attributes);
+    });
 }
 
-void ViewImplementation::request_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier)
+void ViewImplementation::create_child_element(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
 {
-    page().async_request_style_sheet_source(identifier);
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_create_child_element(request_id, node_id);
+    });
+}
+
+void ViewImplementation::create_child_text_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
+{
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_create_child_text_node(request_id, node_id);
+    });
+}
+
+void ViewImplementation::insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id, OnDOMNodeEdited on_complete)
+{
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_insert_dom_node_before(request_id, node_id, parent_node_id, sibling_node_id);
+    });
+}
+
+void ViewImplementation::clone_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
+{
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_clone_dom_node(request_id, node_id);
+    });
+}
+
+void ViewImplementation::remove_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited on_complete)
+{
+    send_dom_node_edit(m_next_inspection_request_id, m_pending_dom_node_edits, move(on_complete), [&](u64 request_id) {
+        page().async_remove_dom_node(request_id, node_id);
+    });
+}
+
+void ViewImplementation::list_style_sheets(OnStyleSheetListReceived on_complete)
+{
+    auto request_id = m_next_inspection_request_id++;
+    m_pending_style_sheet_list_requests.set(request_id, move(on_complete));
+    page().async_list_style_sheets(request_id);
+}
+
+void ViewImplementation::request_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier, OnStyleSheetSourceReceived on_complete)
+{
+    auto request_id = m_next_inspection_request_id++;
+    if (on_complete)
+        m_pending_style_sheet_source_requests.set(request_id, move(on_complete));
+    page().async_request_style_sheet_source(request_id, identifier);
+}
+
+// A request the outgoing page did not answer gets an empty answer, so whoever made it is not left waiting.
+void ViewImplementation::answer_pending_inspection_requests()
+{
+    for (auto& pending : exchange(m_pending_accessibility_tree_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_grid_layouts_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_layout_inspections, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_dom_node_html_requests, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_dom_node_edits, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_style_sheet_list_requests, {}))
+        pending.value({});
+    for (auto& pending : exchange(m_pending_style_sheet_source_requests, {}))
+        pending.value({}, {});
 }
 
 // The page names what it blocked, so its kind is taken only from those the content blocker names, and the list of what
@@ -3341,9 +3525,11 @@ void ViewImplementation::run_javascript(String const& js_source)
     page().async_run_javascript(js_source);
 }
 
-void ViewImplementation::js_console_input(String const& js_source)
+void ViewImplementation::js_console_input(String const& js_source, DevTools::DevToolsDelegate::OnScriptEvaluationComplete on_complete)
 {
-    page().async_js_console_input(js_source);
+    auto request_id = m_next_js_console_input_request_id++;
+    on_executed_js_console_input.set(request_id, move(on_complete));
+    page().async_js_console_input(request_id, js_source);
 }
 
 void ViewImplementation::exit_fullscreen()
@@ -3999,6 +4185,8 @@ void ViewImplementation::did_finish_navigation()
 {
     set_loading_state(false);
     m_page_translation->did_finish_loading();
+    if (auto session = m_inspector_session.strong_ref())
+        session->target_did_recover();
 
     if (!m_webdriver_navigation_observation.has_value())
         return;
@@ -4301,11 +4489,18 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
     if (auto pending_info_request = move(m_pending_info_request))
         pending_info_request->reject(Error::from_string_literal("The displayed page changed before sending its info"));
 
-    // So did console input completion requests.
+    // So did console input completion requests, requests for a script's source, and the Inspector's requests.
     answer_pending_console_input_completions();
+    answer_pending_inspection_requests();
+    auto pending_source_requests = move(on_received_devtools_source);
+    for (auto& pending : pending_source_requests) {
+        for (auto& handler : pending.value)
+            handler({});
+    }
 
     auto& page = this->page();
     if (previous_page) {
+        cancel_pending_inspector_engine_commands();
         // NB: The page has no hovered link and cannot clear the outgoing page's status label.
         if (on_link_unhover)
             on_link_unhover();
@@ -4371,6 +4566,10 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
     page.async_set_has_devtools_client(m_devtools_connected);
     if (m_devtools_takes_console_messages || m_devtools_takes_console_errors)
         page.async_start_sending_console_output(m_devtools_takes_console_messages, m_devtools_takes_console_errors);
+    // Mutation listening is per page too: without this, an inspector's Elements tree stops updating after a
+    // cross-site navigation or a crashed page's replacement.
+    if (m_remote_dom_mutation_listening || m_dom_mutation_listener_count > 0)
+        page.async_set_listen_for_dom_mutations(true);
     handle_resize();
     update_ui_overlays();
 
@@ -5035,6 +5234,9 @@ void ViewImplementation::dump_session_history(StringView reason, SessionHistoryD
 
 void ViewImplementation::handle_web_content_process_crash(WebContentCrashReason crash_reason)
 {
+    cancel_pending_inspector_engine_commands();
+    if (auto session = m_inspector_session.strong_ref())
+        session->target_did_crash();
     auto failed_url = url();
     if (auto browser_ui_load_url = this->browser_ui_load_url(); browser_ui_load_url.has_value())
         failed_url = *browser_ui_load_url;
@@ -5723,16 +5925,34 @@ ErrorOr<LexicalPath> ViewImplementation::dump_gc_graph()
 void ViewImplementation::send_context_menu_request(ContextMenuRequest request, Gfx::IntPoint content_position)
 {
     request.widget_position = to_widget_position(content_position);
-    request.can_inspect_element = static_cast<bool>(on_inspect_element_request);
+    request.can_inspect_element = !m_owner_view_id.has_value();
+    request.inspect_menu_generation = m_context_menu_request_id;
     did_request_context_menu(move(request));
 }
 
-void ViewImplementation::inspect_context_menu_element()
+void ViewImplementation::inspect_context_menu_element(u64 generation)
 {
-    if (m_inspect_element_hit_test_request_id.has_value())
-        m_inspect_element_activated_before_hit_test = true;
-    else if (m_inspect_element_node_id.has_value() && on_inspect_element_request)
-        on_inspect_element_request(*m_inspect_element_node_id);
+    if (!is_current_context_menu(generation) || m_owner_view_id.has_value())
+        return;
+
+    Web::UniqueNodeID node_id { 0 };
+    if (m_inspect_element_page.ptr() == &page() && m_inspect_element_page->is_open() && m_inspect_element_document_id.has_value()
+        && m_inspect_element_page->hosts_active_document(*m_inspect_element_document_id))
+        node_id = m_inspect_element_node_id;
+
+    // Open or focus the built-in Ladyflock Inspector on the captured original node, even with remote debugging off.
+    auto session = InspectorSession::ensure_for_target_view(*this);
+    session->queue_inspect_target({
+        .page = m_inspect_element_page,
+        .document_id = m_inspect_element_document_id,
+        .node_id = node_id,
+        .menu_generation = generation,
+    });
+    if (auto& on_open = InspectorSession::ui_callbacks().on_open_requested)
+        on_open(view_id(), "elements"_string, node_id != 0 ? Optional<Web::UniqueNodeID> { node_id } : OptionalNone {}, generation);
+
+    if (node_id != 0 && on_inspect_element_request)
+        on_inspect_element_request(node_id);
 }
 
 void ViewImplementation::replace_context_menu_misspelling(Utf16String const& replacement)
@@ -5785,6 +6005,9 @@ void ViewImplementation::request_context_menu_dictionary_lookup(Function<void(Op
 void ViewImplementation::reject_pending_selection_requests()
 {
     ++m_context_menu_request_id;
+    m_inspect_element_page = nullptr;
+    m_inspect_element_node_id = 0;
+    m_inspect_element_document_id.clear();
 
     auto reject_requests = [](auto& requests) {
         auto pending_requests = move(requests);
@@ -5962,24 +6185,17 @@ void ViewImplementation::did_generate_text_fragment_url(u64 request_id, Optional
     did_make_link_to_highlight(move(url));
 }
 
-void ViewImplementation::prepare_inspect_element(Gfx::IntPoint content_position)
+void ViewImplementation::prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id)
 {
-    m_inspect_element_node_id.clear();
-    m_inspect_element_hit_test_request_id.clear();
-    m_inspect_element_activated_before_hit_test = false;
-
-    if (!on_inspect_element_request)
-        return;
-
-    auto request_id = m_next_node_hit_test_request_id++;
-    m_inspect_element_hit_test_request_id = request_id;
-    page().async_get_node_id_at_position(request_id, { content_position.x(), content_position.y() });
+    m_inspect_element_node_id = inspect_node_id;
+    m_inspect_element_page = requesting_page;
+    m_inspect_element_document_id = document_id;
 }
 
-void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id);
     m_spelling_context_menu_page = requesting_page;
 
     auto request_id = ++m_context_menu_request_id;
@@ -6028,10 +6244,10 @@ void ViewImplementation::did_request_page_context_menu(Badge<WebContentPage>, We
     });
 }
 
-void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
+void ViewImplementation::did_request_link_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<u64> text_fragment_generation_id)
 {
     request_text_fragment_url(text_fragment_generation_id);
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id);
     ++m_context_menu_request_id;
 
     ContextMenuRequest request;
@@ -6065,9 +6281,9 @@ void ViewImplementation::download_url(URL::URL const& url, PromptForPath prompt_
     });
 }
 
-void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
+void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
 {
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id);
     ++m_context_menu_request_id;
 
     ContextMenuRequest request;
@@ -6080,9 +6296,9 @@ void ViewImplementation::did_request_image_context_menu(Badge<WebContentPage>, O
     send_context_menu_request(move(request), content_position);
 }
 
-void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
+void ViewImplementation::did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::MediaContextMenu media, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
-    prepare_inspect_element(content_position);
+    prepare_inspect_element(requesting_page, document_id, inspect_node_id);
     ++m_context_menu_request_id;
 
     m_media_context_menu_page = requesting_page;

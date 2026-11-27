@@ -230,6 +230,7 @@ void View::forward_callbacks_to_ui(bool is_tab)
                 push_state_to_ui();
                 ui->async_view_navigation_load_finish(view_id(), url);
             } },
+        .on_active_document_change = {},
     });
 
     // NB: What the view does differs on whether it has these, so a view that the UI will not answer for must not.

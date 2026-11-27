@@ -1303,7 +1303,7 @@ public:
     virtual void evaluate_javascript(DevTools::TabDescription const&, String const& script, OnScriptEvaluationComplete on_complete) const override
     {
         last_evaluated_script = script;
-        on_complete(console_evaluation_result);
+        on_complete(WebView::DebuggerEvaluationResult { .value = console_evaluation_result, .is_throw = console_evaluation_is_throw });
     }
 
     virtual void retrieve_debugger_object_properties(DevTools::TabDescription const&, u64 object_id, WebView::DebuggerObjectScope scope, OnDebuggerObjectPropertiesReceived on_complete) const override
@@ -1722,6 +1722,7 @@ public:
     mutable Optional<WebView::DebuggerObjectScope> last_debugger_object_scope;
     mutable Optional<String> last_evaluated_script;
     WebView::DebuggerValue console_evaluation_result;
+    bool console_evaluation_is_throw { false };
     mutable Optional<String> debugger_object_properties_error;
     mutable DevTools::DevToolsDelegate::OnDebuggerPaused on_debugger_paused;
     mutable DevTools::DevToolsDelegate::OnDebuggerResumed on_debugger_resumed;
@@ -4777,6 +4778,40 @@ TEST_CASE(console_evaluation_result_object_grips)
     EXPECT_EQ(session->delegate.last_debugger_object_id.value(), 8u);
     EXPECT_EQ(session->delegate.last_debugger_object_scope.value(), WebView::DebuggerObjectScope::Console);
     EXPECT(properties.get_object("ownProperties"sv)->has("answer"sv));
+}
+
+TEST_CASE(console_evaluation_that_throws_reports_an_exception)
+{
+    auto session = create_session();
+    auto& client = *session->client;
+    (void)client.read_message();
+
+    auto target = get_frame_target(client, actor_from(get_tab(client), "actor"sv));
+    auto console_actor = actor_from(target, "consoleActor"sv);
+
+    session->delegate.console_evaluation_result = {
+        .type = WebView::DebuggerValueType::Object,
+        .boolean_value = false,
+        .number_value = 0,
+        .text = {},
+        .object_id = 3,
+        .object_class = "ReferenceError"_string,
+        .grip_fields = {},
+    };
+    session->delegate.console_evaluation_is_throw = true;
+
+    JsonObject evaluate;
+    evaluate.set("to"sv, console_actor);
+    evaluate.set("type"sv, "evaluateJSAsync"sv);
+    evaluate.set("text"sv, "docment.title"sv);
+    auto result_id = client.request(move(evaluate)).get_string("resultID"sv).release_value();
+
+    // The thrown value is the evaluation's exception, not its result.
+    auto evaluation = read_packet_with_type(client, "evaluationResult"sv);
+    EXPECT_EQ(evaluation.get_string("resultID"sv).value(), result_id);
+    EXPECT_EQ(evaluation.get_bool("hasException"sv), true);
+    EXPECT(evaluation.get("result"sv)->is_null());
+    EXPECT_EQ(evaluation.get_object("exception"sv)->get_string("class"sv).value(), "ReferenceError"sv);
 }
 
 TEST_CASE(console_log_object_grips)

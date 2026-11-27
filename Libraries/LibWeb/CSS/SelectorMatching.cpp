@@ -33,6 +33,8 @@ namespace Web::SelectorMatching {
 
 static bool matches_hover_pseudo_class(DOM::Element const& element)
 {
+    if (element.has_forced_pseudo_state(CSS::PseudoClass::Hover))
+        return true;
     auto* hovered_node = element.document().hovered_node();
     if (!hovered_node)
         return false;
@@ -150,15 +152,15 @@ static bool element_popover_is_open(DOM::Element const& element)
 // The states that are one question each, asked of the element itself, a media element, or a meter.
 // Both element_states() and element_matches_state() are generated from these lists, so the two
 // cannot disagree; the states that share a question are written out once in each.
-#define ENUMERATE_ELEMENT_STATES(X)                                          \
-    X(Active, element.is_being_activated())                                  \
-    X(Defined, element.is_defined())                                         \
-    X(Focus, element.is_focused())                                           \
-    X(FocusVisible, element.is_focused() && element.should_indicate_focus()) \
-    X(Fullscreen, element.is_fullscreen_element())                           \
-    X(PictureInPicture, element.is_picture_in_picture_element())             \
-    X(PopoverOpen, element_popover_is_open(element))                         \
-    X(Target, element.is_target())
+#define ENUMERATE_ELEMENT_STATES(X)                                                                                                               \
+    X(Active, element.is_being_activated() || element.has_forced_pseudo_state(CSS::PseudoClass::Active))                                          \
+    X(Defined, element.is_defined())                                                                                                              \
+    X(Focus, element.is_focused() || element.has_forced_pseudo_state(CSS::PseudoClass::Focus))                                                    \
+    X(FocusVisible, (element.is_focused() && element.should_indicate_focus()) || element.has_forced_pseudo_state(CSS::PseudoClass::FocusVisible)) \
+    X(Fullscreen, element.is_fullscreen_element())                                                                                                \
+    X(PictureInPicture, element.is_picture_in_picture_element())                                                                                  \
+    X(PopoverOpen, element_popover_is_open(element))                                                                                              \
+    X(Target, element.is_target() || element.has_forced_pseudo_state(CSS::PseudoClass::Target))
 
 // The states only the kinds of element element_state_questions() calls controls can be in.
 #define ENUMERATE_CONTROL_STATES(X)                                       \
@@ -173,13 +175,13 @@ static bool element_popover_is_open(DOM::Element const& element)
 
 // :playing tracks the paused attribute alone: it flips synchronously on play() and load(), and
 // does not require a playable media resource.
-#define ENUMERATE_MEDIA_ELEMENT_STATES(X) \
-    X(Buffering, media->blocked())        \
-    X(Muted, media->muted())              \
-    X(Paused, media->paused())            \
-    X(Playing, !media->paused())          \
-    X(Seeking, media->seeking())          \
-    X(Stalled, media->stalled())
+#define ENUMERATE_MEDIA_ELEMENT_STATES(X)                                                          \
+    X(Buffering, media->blocked() || element.has_forced_pseudo_state(CSS::PseudoClass::Buffering)) \
+    X(Muted, media->muted())                                                                       \
+    X(Paused, media->paused())                                                                     \
+    X(Playing, !media->paused())                                                                   \
+    X(Seeking, media->seeking())                                                                   \
+    X(Stalled, media->stalled() || element.has_forced_pseudo_state(CSS::PseudoClass::Stalled))
 
 #define ENUMERATE_METER_STATES(X)                                                                  \
     X(EvenLessGoodValue, meter->value_state() == HTML::HTMLMeterElement::ValueState::EvenLessGood) \
@@ -231,7 +233,17 @@ CSS::PseudoClassBitmap element_states(DOM::Element const& element, ElementStateQ
 #define __SET_STATE(name, holds) set(CSS::PseudoClass::name, holds);
 
     ENUMERATE_ELEMENT_STATES(__SET_STATE)
-    set(CSS::PseudoClass::FocusWithin, focus_within_chain.contains(element));
+    set(CSS::PseudoClass::FocusWithin, focus_within_chain.contains(element) || element.has_forced_pseudo_state(CSS::PseudoClass::FocusWithin));
+    if (element.has_forced_pseudo_state(CSS::PseudoClass::Hover))
+        set(CSS::PseudoClass::Hover, true);
+    if (element.has_forced_pseudo_state(CSS::PseudoClass::Visited)) {
+        set(CSS::PseudoClass::Visited, true);
+        set(CSS::PseudoClass::AnyLink, true);
+    }
+    if (element.has_forced_pseudo_state(CSS::PseudoClass::Buffering))
+        set(CSS::PseudoClass::Buffering, true);
+    if (element.has_forced_pseudo_state(CSS::PseudoClass::Stalled))
+        set(CSS::PseudoClass::Stalled, true);
 
     // A custom element's definition says whether it's form-associated, and elements of one name can differ in that.
     if (element.has_custom_element_definition())
@@ -321,11 +333,11 @@ bool element_matches_state(DOM::Element const& element, CSS::PseudoClass pseudo_
 #undef __METER_STATE_CASE
 
     case CSS::PseudoClass::AnyLink:
-        return element.matches_link_pseudo_class() || element.matches_visited_pseudo_class();
+        return element.matches_link_pseudo_class() || element.matches_visited_pseudo_class() || element.has_forced_pseudo_state(CSS::PseudoClass::Visited);
     case CSS::PseudoClass::Default:
         return element_is_default(element);
     case CSS::PseudoClass::FocusWithin:
-        return element.matches_focus_within_pseudo_class();
+        return element.matches_focus_within_pseudo_class() || element.has_forced_pseudo_state(CSS::PseudoClass::FocusWithin);
     case CSS::PseudoClass::Hover:
         return matches_hover_pseudo_class(element);
     case CSS::PseudoClass::Invalid:
@@ -349,7 +361,7 @@ bool element_matches_state(DOM::Element const& element, CSS::PseudoClass pseudo_
     case CSS::PseudoClass::Valid:
         return element_validity_state(element) == ValidityState::Valid;
     case CSS::PseudoClass::Visited:
-        return element.matches_visited_pseudo_class();
+        return element.matches_visited_pseudo_class() || element.has_forced_pseudo_state(CSS::PseudoClass::Visited);
 
     // FIXME: Nothing autofills yet, and volume is never locked, so no element is ever in these states.
     case CSS::PseudoClass::Autofill:

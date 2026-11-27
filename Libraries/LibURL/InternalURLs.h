@@ -17,6 +17,7 @@ namespace URL {
     __URL_ENUMERATE(dashboard)  \
     __URL_ENUMERATE(downloads)  \
     __URL_ENUMERATE(history)    \
+    __URL_ENUMERATE(inspector)  \
     __URL_ENUMERATE(newtab)     \
     __URL_ENUMERATE(settings)   \
     __URL_ENUMERATE(version)    \

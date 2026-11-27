@@ -895,6 +895,11 @@ public:
     static void set_marks_on_focus_within_chain(Document const&, bool);
     bool is_marked_on_focus_within_chain() const { return m_is_marked_on_focus_within_chain; }
 
+    bool has_forced_pseudo_state(CSS::PseudoClass) const;
+    bool set_forced_pseudo_state(CSS::PseudoClass, bool enabled);
+    void clear_forced_pseudo_states();
+    u32 forced_pseudo_states_mask() const { return m_forced_pseudo_states; }
+
     void schedule_list_item_renumber_for_list_owner();
     bool list_item_renumber_affects_rendered_content() const;
     bool after_pseudo_element_style_depends_on_list_item_counter() const;
@@ -1145,6 +1150,7 @@ private:
     mutable u32 m_parent_child_index_generation { 0 };
     mutable u32 m_child_index { 0 };
     mutable u32 m_child_index_of_type { 0 };
+    u32 m_forced_pseudo_states { 0 };
 
     // NB: These are declared next to the u32s above, so that they pack without padding.
     GC::Member<CSS::CSSStyleProperties> m_inline_style;

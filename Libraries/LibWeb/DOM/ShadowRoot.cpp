@@ -49,6 +49,8 @@ ShadowRoot::ShadowRoot(Document& document, Element& host, ShadowRootMode mode)
     set_host(&host);
 }
 
+ShadowRoot::~ShadowRoot() = default;
+
 void ShadowRoot::finalize()
 {
     Base::finalize();
@@ -245,6 +247,8 @@ void ShadowRoot::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
     m_style_scope.visit_edges(visitor);
+    if (m_inspector_style_sheet)
+        m_inspector_style_sheet->visit_edges(visitor);
     visitor.visit(m_style_sheets);
     visitor.visit(m_adopted_style_sheets);
     m_anchor_name_map.visit_edges(visitor);
@@ -255,6 +259,17 @@ void ShadowRoot::visit_edges(Visitor& visitor)
     visitor.visit(m_custom_element_registry);
     visitor.visit(m_radio_button_group_registry);
     visitor.visit(m_slots_needing_assignment);
+}
+
+CSS::StyleSheetState& ShadowRoot::ensure_inspector_style_sheet()
+{
+    if (!m_inspector_style_sheet) {
+        auto sheet = MUST(CSS::StyleSheetState::create_constructed(document()));
+        sheet->set_attribution(CSS::StyleSheetState::AttributionKind::Inspector, "inspector-stylesheet"_string, "inspector-stylesheet"_string);
+        style_scope().add_a_css_style_sheet(*sheet);
+        m_inspector_style_sheet = move(sheet);
+    }
+    return *m_inspector_style_sheet;
 }
 
 HTML::RadioButtonGroupRegistry& ShadowRoot::ensure_radio_button_group_registry()

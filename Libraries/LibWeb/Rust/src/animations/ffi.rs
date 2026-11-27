@@ -705,6 +705,24 @@ pub extern "C" fn animations_animation_playback_rate(animation: &AnimationCell) 
     animation.borrow().playback().playback_rate
 }
 
+/// Returns an owned AK::Utf16String naming this animation and the duration of one iteration of its effect.
+#[unsafe(no_mangle)]
+pub extern "C" fn animations_inspector_animation_name(animation: &AnimationCell, duration: &mut TimeValue) -> usize {
+    let record = animation.borrow();
+    *duration = record.effect().map_or_else(
+        || TimeValue::milliseconds(0.0),
+        |effect| effect.borrow().timing().iteration_duration,
+    );
+    let name = match record.kind() {
+        AnimationKind::CssAnimation(css) => ak::Utf16String::from_utf16(&css.name.to_utf16()),
+        AnimationKind::CssTransition(transition) => ak::Utf16String::from_utf16(&transition.property_name()),
+        AnimationKind::Script if record.dom_id.raw() != 0 => ak::Utf16String::from_utf16(&record.dom_id.to_utf16()),
+        AnimationKind::Script => ak::Utf16String::from_ascii(b"Web Animation"),
+        AnimationKind::Smil { .. } => ak::Utf16String::from_ascii(b"SVG animation"),
+    };
+    name.into_raw()
+}
+
 /// The host's function that keeps `animation`, which it holds a reference to, alive to it with `context` until the call
 /// that handed it the function returns, since what it performs for the animation can run the GC.
 pub type FfiKeepAlive = unsafe extern "C" fn(context: *mut c_void, animation: &AnimationCell);

@@ -36,11 +36,20 @@
 #include <LibJS/Runtime/HostObject.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibUnicode/TimeZone.h>
+#include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/Animations/RecordHandles.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/CSS/CSSNestedDeclarations.h>
+#include <LibWeb/CSS/CSSRuleList.h>
+#include <LibWeb/CSS/CSSStyleProperties.h>
+#include <LibWeb/CSS/CSSStyleRule.h>
 #include <LibWeb/CSS/CustomPropertyData.h>
 #include <LibWeb/CSS/Parser/ErrorReporter.h>
+#include <LibWeb/CSS/Parser/Parser.h>
+#include <LibWeb/CSS/PseudoClass.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleScope.h>
+#include <LibWeb/CSS/StyleSheetImport.h>
 #include <LibWeb/CSS/StyleSheetState.h>
 #include <LibWeb/CSS/VisualViewport.h>
 #include <LibWeb/Compositor/CompositorConnection.h>
@@ -49,10 +58,14 @@
 #include <LibWeb/DOM/AbstractElement.h>
 #include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/CharacterData.h>
+#include <LibWeb/DOM/Comment.h>
+#include <LibWeb/DOM/DOMEventListener.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/ElementFactory.h>
+#include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/DOM/Node.h>
+#include <LibWeb/DOM/NodeList.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/Text.h>
@@ -63,6 +76,7 @@
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/FileAPI/BlobURLStore.h>
 #include <LibWeb/Gamepad/GamepadRegistry.h>
+#include <LibWeb/HTML/AttributeNames.h>
 #include <LibWeb/HTML/AutoplaySettings.h>
 #include <LibWeb/HTML/BroadcastChannel.h>
 #include <LibWeb/HTML/BrowsingContext.h>
@@ -103,6 +117,7 @@
 #include <LibWeb/Platform/RemoteImageCodecPlugin.h>
 #include <LibWeb/Selection/Selection.h>
 #include <LibWeb/UIEvents/InputTypes.h>
+#include <LibWeb/XPath/XPathResult.h>
 #include <LibWebCommon/HTML/SelectedFile.h>
 #include <LibWebCommon/Infra/Strings.h>
 #include <LibWebCommon/Loader/UserAgent.h>
@@ -1607,22 +1622,47 @@ void ConnectionFromClient::storage_area_reset(Web::StorageAPI::StorageAreaId are
     Web::StorageAPI::storage_area_did_reset(area_id, move(keys), move(values));
 }
 
-void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNodeProperties::Type property_type, Web::UniqueNodeID node_id, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options_value)
+Web::DOM::Node* ConnectionFromClient::active_inspector_node(Web::PageId page_id, Web::UniqueNodeID node_id)
+{
+    auto page = this->page(page_id);
+    auto* node = Web::DOM::Node::from_unique_id(node_id);
+    if (!page.has_value() || !node || !node->is_connected())
+        return nullptr;
+    auto navigable = node->document().navigable();
+    if (!navigable || &navigable->page() != &page->page() || navigable->active_document().ptr() != &node->document())
+        return nullptr;
+    return node;
+}
+
+void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNodeProperties::Type property_type, Web::UniqueNodeID node_id, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options_value, u64 request_id)
 {
     auto page = this->page(page_id);
     if (!page.has_value())
         return;
 
-    clear_inspected_dom_node(page_id);
+    if (request_id == 0)
+        clear_inspected_dom_node(page_id);
 
-    auto* node = Web::DOM::Node::from_unique_id(node_id);
+    auto* node = active_inspector_node(page_id, node_id);
     if (!node || !node->is_element()) {
-        async_did_inspect_dom_node(page_id, { property_type, {} });
+        async_did_inspect_dom_node(page_id, request_id, { property_type, {} });
         return;
     }
 
     auto& element = as<Web::DOM::Element>(*node);
-    node->document().set_inspected_node(node);
+    if (request_id == 0) {
+        node->document().set_inspected_node(node);
+    } else {
+        node->document().set_inspector_selected_node(node);
+        // Console input runs in the top-level document's window, so its $0-$4 follow a selection in a frame too, as
+        // long as the top-level document may script that frame's nodes.
+        if (auto top_document = page->page().local_traversable()->active_document(); top_document && top_document.ptr() != &node->document()) {
+            if (node->document().origin().is_same_origin_domain(top_document->origin()))
+                top_document->set_inspector_selected_node(node);
+            else
+                top_document->set_inspector_selected_node_out_of_reach();
+        }
+    }
 
     Web::DOM::AbstractElement abstract_element { element, pseudo_element };
     node->document().update_style_for_element(abstract_element);
@@ -1630,7 +1670,7 @@ void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNod
     auto computed_values = element.computed_style(pseudo_element);
 
     if (!computed_values) {
-        async_did_inspect_dom_node(page_id, { property_type, {} });
+        async_did_inspect_dom_node(page_id, request_id, { property_type, {} });
         return;
     }
 
@@ -1640,7 +1680,7 @@ void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNod
     // Nodes without layout (aka non-visible nodes) do not have box metrics, but DevTools can still ask for their style
     // rules and computed properties.
     if (property_type == WebView::DOMNodeProperties::Type::Layout && !node->layout_node(read)) {
-        async_did_inspect_dom_node(page_id, { property_type, {} });
+        async_did_inspect_dom_node(page_id, request_id, { property_type, {} });
         return;
     }
 
@@ -1746,7 +1786,7 @@ void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNod
         break;
     }
 
-    async_did_inspect_dom_node(page_id, { property_type, move(serialized) });
+    async_did_inspect_dom_node(page_id, request_id, { property_type, move(serialized) });
 }
 
 static Optional<JsonObject> flex_layout_for_node(Web::DOM::Node const& node)
@@ -1813,15 +1853,17 @@ static void append_grid_layouts_for_node_and_frame_descendants(Web::DOM::Node& r
     });
 }
 
-void ConnectionFromClient::inspect_grid_layouts(Web::PageId page_id, Web::UniqueNodeID root_node_id)
+void ConnectionFromClient::inspect_grid_layouts(Web::PageId page_id, u64 request_id, Web::UniqueNodeID root_node_id)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_inspect_grid_layouts(page_id, request_id, "[]"_string);
         return;
+    }
 
     auto* root_node = Web::DOM::Node::from_unique_id(root_node_id);
     if (!root_node) {
-        async_did_inspect_grid_layouts(page_id, "[]"_string);
+        async_did_inspect_grid_layouts(page_id, request_id, "[]"_string);
         return;
     }
 
@@ -1830,18 +1872,20 @@ void ConnectionFromClient::inspect_grid_layouts(Web::PageId page_id, Web::Unique
     JsonArray grid_layouts;
     append_grid_layouts_for_node_and_frame_descendants(*root_node, grid_layouts);
 
-    async_did_inspect_grid_layouts(page_id, grid_layouts.serialized());
+    async_did_inspect_grid_layouts(page_id, request_id, grid_layouts.serialized());
 }
 
-void ConnectionFromClient::inspect_current_grid(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::inspect_current_grid(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_inspect_current_grid(page_id, request_id, "null"_string);
         return;
+    }
 
     auto* node = Web::DOM::Node::from_unique_id(node_id);
     if (!node) {
-        async_did_inspect_current_grid(page_id, "null"_string);
+        async_did_inspect_current_grid(page_id, request_id, "null"_string);
         return;
     }
 
@@ -1849,23 +1893,25 @@ void ConnectionFromClient::inspect_current_grid(Web::PageId page_id, Web::Unique
 
     for (auto const* current = node; current; current = current->parent_or_shadow_host_node()) {
         if (auto grid_layout = grid_layout_for_node(*current); grid_layout.has_value()) {
-            async_did_inspect_current_grid(page_id, grid_layout->serialized());
+            async_did_inspect_current_grid(page_id, request_id, grid_layout->serialized());
             return;
         }
     }
 
-    async_did_inspect_current_grid(page_id, "null"_string);
+    async_did_inspect_current_grid(page_id, request_id, "null"_string);
 }
 
-void ConnectionFromClient::inspect_current_flexbox(Web::PageId page_id, Web::UniqueNodeID node_id, bool only_look_at_parents)
+void ConnectionFromClient::inspect_current_flexbox(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, bool only_look_at_parents)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_inspect_current_flexbox(page_id, request_id, "null"_string);
         return;
+    }
 
     auto* node = Web::DOM::Node::from_unique_id(node_id);
     if (!node) {
-        async_did_inspect_current_flexbox(page_id, "null"_string);
+        async_did_inspect_current_flexbox(page_id, request_id, "null"_string);
         return;
     }
 
@@ -1873,12 +1919,12 @@ void ConnectionFromClient::inspect_current_flexbox(Web::PageId page_id, Web::Uni
 
     for (auto const* current = only_look_at_parents ? node->parent_or_shadow_host_node() : node; current; current = current->parent_or_shadow_host_node()) {
         if (auto flex_layout = flex_layout_for_node(*current); flex_layout.has_value()) {
-            async_did_inspect_current_flexbox(page_id, flex_layout->serialized());
+            async_did_inspect_current_flexbox(page_id, request_id, flex_layout->serialized());
             return;
         }
     }
 
-    async_did_inspect_current_flexbox(page_id, "null"_string);
+    async_did_inspect_current_flexbox(page_id, request_id, "null"_string);
 }
 
 void ConnectionFromClient::inspect_indexed_database_storage(Web::PageId page_id, u64 request_id)
@@ -1974,10 +2020,9 @@ void ConnectionFromClient::clear_inspected_dom_node(Web::PageId page_id)
     if (!page.has_value())
         return;
 
-    for (auto& navigable : Web::HTML::all_local_navigables()) {
-        if (navigable.active_document() != nullptr) {
-            navigable.active_document()->set_inspected_node(nullptr);
-        }
+    for (auto const& navigable : page->page().hosted_navigables()) {
+        if (auto document = navigable->active_document())
+            document->set_inspected_node(nullptr);
     }
 }
 
@@ -1987,13 +2032,12 @@ void ConnectionFromClient::highlight_dom_node(Web::PageId page_id, Web::UniqueNo
     if (!page.has_value())
         return;
 
-    for (auto& navigable : Web::HTML::all_local_navigables()) {
-        if (navigable.active_document() != nullptr) {
-            navigable.active_document()->set_highlighted_node(nullptr, {});
-        }
+    for (auto const& navigable : page->page().hosted_navigables()) {
+        if (auto document = navigable->active_document())
+            document->set_highlighted_node(nullptr, {});
     }
 
-    auto* node = Web::DOM::Node::from_unique_id(node_id);
+    auto* node = active_inspector_node(page_id, node_id);
     if (!node || !node->is_connected())
         return;
 
@@ -2124,12 +2168,15 @@ void ConnectionFromClient::clear_grid_highlight(Web::PageId page_id, Web::Unique
     }
 }
 
-void ConnectionFromClient::inspect_accessibility_tree(Web::PageId page_id)
+void ConnectionFromClient::inspect_accessibility_tree(Web::PageId page_id, u64 request_id)
 {
     if (auto page = this->page(page_id); page.has_value() && page->page().has_local_traversable()) {
-        if (auto doc = page->page().local_traversable()->active_document())
-            async_did_inspect_accessibility_tree(page_id, doc->dump_accessibility_tree_as_json().to_utf8());
+        if (auto doc = page->page().local_traversable()->active_document()) {
+            async_did_inspect_accessibility_tree(page_id, request_id, doc->dump_accessibility_tree_as_json().to_utf8());
+            return;
+        }
     }
+    async_did_inspect_accessibility_tree(page_id, request_id, {});
 }
 
 void ConnectionFromClient::request_accessibility_tree(Web::PageId page_id)
@@ -2320,25 +2367,32 @@ void ConnectionFromClient::get_node_id_at_position(Web::PageId page_id, u64 requ
     async_did_get_node_id_at_position(page_id, request_id, page->page().node_id_at_position(position));
 }
 
-void ConnectionFromClient::list_style_sheets(Web::PageId page_id)
+void ConnectionFromClient::list_style_sheets(Web::PageId page_id, u64 request_id)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_list_style_sheets(page_id, request_id, {});
         return;
+    }
 
-    async_did_list_style_sheets(page_id, page->list_style_sheets());
+    async_did_list_style_sheets(page_id, request_id, page->list_style_sheets());
 }
 
-void ConnectionFromClient::request_style_sheet_source(Web::PageId page_id, Web::CSS::StyleSheetIdentifier identifier)
+void ConnectionFromClient::request_style_sheet_source(Web::PageId page_id, u64 request_id, Web::CSS::StyleSheetIdentifier identifier)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_get_style_sheet_source(page_id, request_id, identifier, {}, {});
         return;
+    }
 
     if (auto document = page->page().local_traversable()->active_document()) {
-        if (auto stylesheet = document->get_style_sheet_source(identifier); stylesheet.has_value())
-            async_did_get_style_sheet_source(page_id, identifier, document->base_url(), stylesheet.value());
+        if (auto stylesheet = document->get_style_sheet_source(identifier); stylesheet.has_value()) {
+            async_did_get_style_sheet_source(page_id, request_id, identifier, document->base_url(), stylesheet.value());
+            return;
+        }
     }
+    async_did_get_style_sheet_source(page_id, request_id, identifier, {}, {});
 }
 
 void ConnectionFromClient::list_devtools_sources(Web::PageId page_id, u64 request_id)
@@ -2583,11 +2637,13 @@ void ConnectionFromClient::start_sending_console_output(Web::PageId page_id, boo
         page->start_sending_console_output(messages, errors);
 }
 
-void ConnectionFromClient::get_dom_node_inner_html(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::get_dom_node_inner_html(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
-    if (!dom_node)
+    auto* dom_node = active_inspector_node(page_id, node_id);
+    if (!dom_node) {
+        async_did_get_dom_node_html(page_id, request_id, {});
         return;
+    }
 
     Utf16String html;
 
@@ -2598,17 +2654,20 @@ void ConnectionFromClient::get_dom_node_inner_html(Web::PageId page_id, Web::Uni
         auto const& character_data = static_cast<Web::DOM::CharacterData const&>(*dom_node);
         html = character_data.data();
     } else {
+        async_did_get_dom_node_html(page_id, request_id, {});
         return;
     }
 
-    async_did_get_dom_node_html(page_id, html.to_utf8_but_should_be_ported_to_utf16());
+    async_did_get_dom_node_html(page_id, request_id, html.to_utf8_but_should_be_ported_to_utf16());
 }
 
-void ConnectionFromClient::get_dom_node_outer_html(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::get_dom_node_outer_html(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
-    if (!dom_node)
+    auto* dom_node = active_inspector_node(page_id, node_id);
+    if (!dom_node) {
+        async_did_get_dom_node_html(page_id, request_id, {});
         return;
+    }
 
     Utf16String html;
 
@@ -2619,58 +2678,67 @@ void ConnectionFromClient::get_dom_node_outer_html(Web::PageId page_id, Web::Uni
         auto const& character_data = static_cast<Web::DOM::CharacterData const&>(*dom_node);
         html = character_data.data();
     } else {
+        async_did_get_dom_node_html(page_id, request_id, {});
         return;
     }
 
-    async_did_get_dom_node_html(page_id, html.to_utf8_but_should_be_ported_to_utf16());
+    async_did_get_dom_node_html(page_id, request_id, html.to_utf8_but_should_be_ported_to_utf16());
 }
 
-void ConnectionFromClient::set_dom_node_outer_html(Web::PageId page_id, Web::UniqueNodeID node_id, String html)
+void ConnectionFromClient::set_dom_node_outer_html(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, String html)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     if (dom_node->is_element()) {
         auto& element = static_cast<Web::DOM::Element&>(*dom_node);
-        element.set_outer_html(html).release_value_but_fixme_should_propagate_errors();
+        if (element.set_outer_html(html).is_exception()) {
+            async_did_finish_editing_dom_node(page_id, request_id, {});
+            return;
+        }
     } else if (dom_node->is_text() || dom_node->is_comment()) {
         auto& character_data = static_cast<Web::DOM::CharacterData&>(*dom_node);
         character_data.set_data(Utf16String::from_utf8(html));
     } else {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
-    async_did_finish_editing_dom_node(page_id, node_id);
+    async_did_finish_editing_dom_node(page_id, request_id, node_id);
 }
 
-void ConnectionFromClient::set_dom_node_text(Web::PageId page_id, Web::UniqueNodeID node_id, String text)
+void ConnectionFromClient::set_dom_node_text(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, String text)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node || (!dom_node->is_text() && !dom_node->is_comment())) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     auto& character_data = static_cast<Web::DOM::CharacterData&>(*dom_node);
     character_data.set_data(Utf16String::from_utf8(text));
 
-    async_did_finish_editing_dom_node(page_id, character_data.unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, character_data.unique_id());
 }
 
-void ConnectionFromClient::set_dom_node_tag(Web::PageId page_id, Web::UniqueNodeID node_id, Utf16FlyString name)
+void ConnectionFromClient::set_dom_node_tag(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, Utf16FlyString name)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node || !dom_node->is_element() || !dom_node->parent()) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     auto& element = static_cast<Web::DOM::Element&>(*dom_node);
-    auto new_element = Web::DOM::create_element(element.document(), move(name), element.namespace_uri(), element.prefix(), element.is_value()).release_value_but_fixme_should_propagate_errors();
+    auto replacement = Web::DOM::create_element(element.document(), move(name), element.namespace_uri(), element.prefix(), element.is_value());
+    if (replacement.is_exception()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
+        return;
+    }
+    auto new_element = replacement.release_value();
 
     element.for_each_attribute([&](Web::DOM::Attr const& attribute) {
         new_element->set_attribute_value(attribute.local_name(), attribute.value(), attribute.prefix(), attribute.namespace_uri());
@@ -2682,14 +2750,14 @@ void ConnectionFromClient::set_dom_node_tag(Web::PageId page_id, Web::UniqueNode
     }
 
     element.parent()->replace_child(*new_element, element).release_value_but_fixme_should_propagate_errors();
-    async_did_finish_editing_dom_node(page_id, new_element->unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, new_element->unique_id());
 }
 
-void ConnectionFromClient::add_dom_node_attributes(Web::PageId page_id, Web::UniqueNodeID node_id, Vector<WebView::Attribute> attributes)
+void ConnectionFromClient::add_dom_node_attributes(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, Vector<WebView::Attribute> attributes)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node || !dom_node->is_element()) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
@@ -2700,14 +2768,14 @@ void ConnectionFromClient::add_dom_node_attributes(Web::PageId page_id, Web::Uni
         element.set_attribute_value(attribute.name, attribute.value);
     }
 
-    async_did_finish_editing_dom_node(page_id, element.unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, element.unique_id());
 }
 
-void ConnectionFromClient::replace_dom_node_attribute(Web::PageId page_id, Web::UniqueNodeID node_id, Utf16FlyString name, Vector<WebView::Attribute> replacement_attributes)
+void ConnectionFromClient::replace_dom_node_attribute(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, Utf16FlyString name, Vector<WebView::Attribute> replacement_attributes)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node || !dom_node->is_element()) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
@@ -2725,100 +2793,115 @@ void ConnectionFromClient::replace_dom_node_attribute(Web::PageId page_id, Web::
     if (should_remove_attribute)
         element.remove_attribute(name);
 
-    async_did_finish_editing_dom_node(page_id, element.unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, element.unique_id());
 }
 
-void ConnectionFromClient::create_child_element(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::create_child_element(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     auto element = Web::DOM::create_element(dom_node->document(), Web::HTML::TagNames::div, Web::Namespace::HTML).release_value_but_fixme_should_propagate_errors();
-    dom_node->append_child(element).release_value_but_fixme_should_propagate_errors();
+    if (dom_node->append_child(element).is_exception()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
+        return;
+    }
 
-    async_did_finish_editing_dom_node(page_id, element->unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, element->unique_id());
 }
 
-void ConnectionFromClient::create_child_text_node(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::create_child_text_node(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     auto text_node = Web::DOM::Text::create(dom_node->document(), "text"_utf16);
-    dom_node->append_child(text_node).release_value_but_fixme_should_propagate_errors();
+    if (dom_node->append_child(text_node).is_exception()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
+        return;
+    }
 
-    async_did_finish_editing_dom_node(page_id, text_node->unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, text_node->unique_id());
 }
 
-void ConnectionFromClient::insert_dom_node_before(Web::PageId page_id, Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id)
+void ConnectionFromClient::insert_dom_node_before(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
-    auto* parent_dom_node = Web::DOM::Node::from_unique_id(parent_node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
+    auto* parent_dom_node = active_inspector_node(page_id, parent_node_id);
 
     if (!dom_node || !parent_dom_node) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     GC::Ptr<Web::DOM::Node> sibling_dom_node;
     if (sibling_node_id.has_value()) {
-        sibling_dom_node = Web::DOM::Node::from_unique_id(*sibling_node_id);
+        sibling_dom_node = active_inspector_node(page_id, *sibling_node_id);
 
         if (!sibling_dom_node) {
-            async_did_finish_editing_dom_node(page_id, {});
+            async_did_finish_editing_dom_node(page_id, request_id, {});
             return;
         }
     }
 
-    parent_dom_node->insert_before(*dom_node, sibling_dom_node);
-    async_did_finish_editing_dom_node(page_id, dom_node->unique_id());
+    if (&dom_node->document() != &parent_dom_node->document() || parent_dom_node->pre_insert(*dom_node, sibling_dom_node).is_exception()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
+        return;
+    }
+    async_did_finish_editing_dom_node(page_id, request_id, dom_node->unique_id());
 }
 
-void ConnectionFromClient::clone_dom_node(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::clone_dom_node(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node || !dom_node->parent_node()) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
     auto dom_node_clone = MUST(dom_node->clone_node(nullptr, true));
     dom_node->parent_node()->insert_before(dom_node_clone, dom_node->next_sibling());
 
-    async_did_finish_editing_dom_node(page_id, dom_node_clone->unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, dom_node_clone->unique_id());
 }
 
-void ConnectionFromClient::remove_dom_node(Web::PageId page_id, Web::UniqueNodeID node_id)
+void ConnectionFromClient::remove_dom_node(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id)
 {
     auto page = this->page(page_id);
-    if (!page.has_value())
+    if (!page.has_value()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
+    }
 
     auto active_document = page->page().local_traversable()->active_document();
     if (!active_document) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
-    auto* dom_node = Web::DOM::Node::from_unique_id(node_id);
+    auto* dom_node = active_inspector_node(page_id, node_id);
     if (!dom_node) {
-        async_did_finish_editing_dom_node(page_id, {});
+        async_did_finish_editing_dom_node(page_id, request_id, {});
         return;
     }
 
+    if (!dom_node->parent() || dom_node->parent()->is_document()) {
+        async_did_finish_editing_dom_node(page_id, request_id, {});
+        return;
+    }
     auto* previous_dom_node = dom_node->previous_sibling();
     if (!previous_dom_node)
         previous_dom_node = dom_node->parent();
 
     dom_node->remove();
 
-    async_did_finish_editing_dom_node(page_id, previous_dom_node->unique_id());
+    async_did_finish_editing_dom_node(page_id, request_id, previous_dom_node->unique_id());
 }
 
 void ConnectionFromClient::take_document_screenshot(Web::PageId page_id)
@@ -2926,6 +3009,1144 @@ void ConnectionFromClient::describe_owners_of_visual_context_nodes(Web::PageId p
     else
         owners.owners.resize(spatial_node_indices.size() + effect_node_indices.size());
     async_did_describe_owners_of_visual_context_nodes(page_id, owners.structural_epoch, move(spatial_node_indices), move(effect_node_indices), move(owners.owners));
+}
+
+static Optional<Web::CSS::PseudoClass> parse_forced_pseudo_state(StringView name)
+{
+    if (name == "hover"sv || name == ":hover"sv)
+        return Web::CSS::PseudoClass::Hover;
+    if (name == "active"sv || name == ":active"sv)
+        return Web::CSS::PseudoClass::Active;
+    if (name == "focus"sv || name == ":focus"sv)
+        return Web::CSS::PseudoClass::Focus;
+    if (name == "focus-visible"sv || name == ":focus-visible"sv)
+        return Web::CSS::PseudoClass::FocusVisible;
+    if (name == "focus-within"sv || name == ":focus-within"sv)
+        return Web::CSS::PseudoClass::FocusWithin;
+    if (name == "target"sv || name == ":target"sv)
+        return Web::CSS::PseudoClass::Target;
+    if (name == "visited"sv || name == ":visited"sv)
+        return Web::CSS::PseudoClass::Visited;
+    if (name == "buffering"sv || name == ":buffering"sv)
+        return Web::CSS::PseudoClass::Buffering;
+    if (name == "stalled"sv || name == ":stalled"sv)
+        return Web::CSS::PseudoClass::Stalled;
+    return {};
+}
+
+static u8 parse_dom_breakpoint_flag(StringView type)
+{
+    if (type == "subtree-modified"sv || type == "subtree"sv)
+        return to_underlying(PageClient::DOMBreakpointFlag::SubtreeModified);
+    if (type == "attribute-modified"sv || type == "attribute"sv)
+        return to_underlying(PageClient::DOMBreakpointFlag::AttributeModified);
+    if (type == "node-removed"sv || type == "removal"sv)
+        return to_underlying(PageClient::DOMBreakpointFlag::NodeRemoved);
+    return 0;
+}
+
+// Visits a tree's nodes in tree order. The callback may name trees to enter at the node it is given, such as an
+// element's shadow root or a frame's document; each is visited before the rest of the tree it is in. A loop rather
+// than recursion, since a page can nest elements deeper than the stack can.
+template<typename Callback>
+static void walk_inspected_trees(Web::DOM::Node& root, Callback callback)
+{
+    struct Tree {
+        GC::Ref<Web::DOM::Node> root;
+        GC::Ptr<Web::DOM::Node> next;
+    };
+    Vector<Tree> trees;
+    trees.append({ root, root });
+    while (!trees.is_empty()) {
+        auto& tree = trees.last();
+        auto node = tree.next;
+        if (!node) {
+            trees.take_last();
+            continue;
+        }
+        tree.next = node->next_in_pre_order(tree.root.ptr());
+        Vector<GC::Ref<Web::DOM::Node>, 2> trees_to_enter;
+        if (callback(*node, trees_to_enter) == IterationDecision::Break)
+            return;
+        for (auto nested_root : trees_to_enter.in_reverse())
+            trees.append({ nested_root, nested_root });
+    }
+}
+
+static Web::CSS::StyleSheetState* find_style_sheet_by_occurrence_id(Web::DOM::Document& document, u64 occurrence_id, Web::DOM::Element* selected_element = nullptr)
+{
+    Web::CSS::StyleSheetState* found = nullptr;
+    Function<void(Web::CSS::StyleSheetState&)> visit_sheet = [&](Web::CSS::StyleSheetState& sheet) {
+        if (found)
+            return;
+        if (sheet.style_engine_occurrence_id() == occurrence_id) {
+            found = &sheet;
+            return;
+        }
+        for (auto const& import_rule : sheet.import_rules()) {
+            if (auto* imported = import_rule->loaded_style_sheet())
+                visit_sheet(*imported);
+        }
+    };
+    if (selected_element) {
+        auto& selected_scope = selected_element->document_or_shadow_root_style_scope();
+        selected_scope.for_each_stylesheet(Web::CSS::CascadeOrigin::Author, visit_sheet);
+    }
+    if (!found)
+        document.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::Author, visit_sheet);
+    if (!found) {
+        document.for_each_shadow_root([&](Web::DOM::ShadowRoot const& root) {
+            if (!found && root.is_connected())
+                root.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::Author, visit_sheet);
+        });
+    }
+    if (!found)
+        document.style_scope().for_each_stylesheet(Web::CSS::CascadeOrigin::User, visit_sheet);
+    if (!found && document.inspector_style_sheet() && document.inspector_style_sheet()->style_engine_occurrence_id() == occurrence_id)
+        found = document.inspector_style_sheet();
+    return found;
+}
+
+static Web::CSS::CSSStyleProperties* declaration_style_for_rule(Web::CSS::CSSRule& rule)
+{
+    if (rule.type() == Web::CSS::CSSRule::Type::Style)
+        return static_cast<Web::CSS::CSSStyleRule&>(rule).style().ptr();
+    if (rule.type() == Web::CSS::CSSRule::Type::NestedDeclarations)
+        return static_cast<Web::CSS::CSSNestedDeclarations&>(rule).style().ptr();
+    return nullptr;
+}
+
+static u64 combined_rule_revision(Web::CSS::StyleSheetState const& sheet, Web::CSS::CSSRule const& rule)
+{
+    u64 decl_rev = 0;
+    if (rule.type() == Web::CSS::CSSRule::Type::Style)
+        decl_rev = static_cast<Web::CSS::CSSStyleRule const&>(rule).declaration().revision();
+    else if (rule.type() == Web::CSS::CSSRule::Type::NestedDeclarations)
+        decl_rev = static_cast<Web::CSS::CSSNestedDeclarations const&>(rule).declaration().revision();
+    return sheet.edit_revision() + decl_rev;
+}
+
+static String describe_dom_node_brief(Web::DOM::Node const& node)
+{
+    if (auto const* element = as_if<Web::DOM::Element>(node)) {
+        StringBuilder sb;
+        sb.append(element->local_name().to_utf16_string().to_utf8());
+        if (auto id = element->id(); id.has_value() && !id->is_empty())
+            sb.appendff("#{}", id->to_utf16_string().to_utf8());
+        size_t count = 0;
+        for (auto const& cls : element->class_names()) {
+            if (count++ >= 2)
+                break;
+            sb.appendff(".{}", cls.to_utf16_string().to_utf8());
+        }
+        return MUST(sb.to_string());
+    }
+    return node.node_name().to_utf16_string().to_utf8();
+}
+
+void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 request_id, String action, JsonValue params_value)
+{
+    JsonObject const empty_params;
+    auto const& params = params_value.is_object() ? params_value.as_object() : empty_params;
+    auto reply_ok = [&](JsonValue result) {
+        async_did_complete_inspector_engine_command(page_id, request_id, true, move(result), {});
+    };
+    auto reply_err = [&](String error) {
+        async_did_complete_inspector_engine_command(page_id, request_id, false, JsonValue {}, move(error));
+    };
+
+    auto page = this->page(page_id);
+    if (!page.has_value()) {
+        reply_err("Target page not found."_string);
+        return;
+    }
+
+    auto document = page->page().has_local_traversable() ? page->page().local_traversable()->active_document() : nullptr;
+    if (!document) {
+        reply_err("No active document."_string);
+        return;
+    }
+
+    auto expected_namespace = params.get_u64("expectedDocumentNamespace"sv);
+    auto expected_local = params.get_u64("expectedDocumentLocal"sv);
+    if ((expected_namespace.has_value() || expected_local.has_value())
+        && (expected_namespace != document->id().namespace_id || expected_local != document->id().local_id)) {
+        reply_err("The target document changed."_string);
+        return;
+    }
+
+    if (action == "getDomTree"sv) {
+        auto tree = JsonValue::from_string(document->dump_dom_tree_as_json().to_utf8());
+        if (tree.is_error()) {
+            reply_err("Unable to read the document tree."_string);
+            return;
+        }
+        reply_ok(tree.release_value());
+        return;
+    }
+
+    if (action == "cleanupLocalInspector"sv) {
+        page->clear_inspected_listeners();
+        for (auto const& navigable : page->page().hosted_navigables()) {
+            if (auto current_document = navigable->active_document()) {
+                current_document->clear_all_forced_pseudo_states();
+                current_document->set_inspector_selected_node(nullptr);
+            }
+        }
+        page->clear_dom_breakpoints();
+        page->restore_inspector_hidden_nodes();
+        reply_ok(JsonObject {});
+        return;
+    }
+
+    if (action == "setNodeText"sv || action == "setAttribute"sv) {
+        auto node_id = params.get_i64("nodeId"sv).value_or(0);
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(node_id));
+        if (!node) {
+            reply_err("Node is no longer available."_string);
+            return;
+        }
+        JsonObject out;
+        out.set("nodeId"sv, node_id);
+        JsonObject inverse;
+        inverse.set("action"sv, action);
+        inverse.set("nodeId"sv, node_id);
+        if (action == "setNodeText"sv) {
+            auto text = params.get_string("text"sv);
+            auto* data = as_if<Web::DOM::CharacterData>(node);
+            if (!data || !text.has_value()) {
+                reply_err("A text or comment node and replacement text are required."_string);
+                return;
+            }
+            auto before = data->data().to_utf8();
+            // An undo names the text it expects as expectedText; an edit, the text the inspector showed as beforeText.
+            auto expected = params.get_string("expectedText"sv);
+            if (!expected.has_value())
+                expected = params.get_string("beforeText"sv);
+            if (expected.has_value() && before != *expected) {
+                reply_err("The node's text changed since this edit."_string);
+                return;
+            }
+            data->set_data(Utf16String::from_utf8(*text));
+            out.set("beforeText"sv, before);
+            out.set("afterText"sv, *text);
+            inverse.set("expectedText"sv, *text);
+            inverse.set("text"sv, before);
+        } else {
+            auto name = params.get_string("name"sv);
+            auto* element = as_if<Web::DOM::Element>(node);
+            if (!name.has_value() || name->is_empty() || !element) {
+                reply_err("An element and attribute name are required."_string);
+                return;
+            }
+            auto new_name = params.get_string("newName"sv).value_or(*name);
+            // As setAttribute() does: an HTML element's attribute names are lowercase, or lookups and the parser's
+            // own attributes would not match the one typed into the inspector.
+            if (element->namespace_uri() == Web::Namespace::HTML && element->document().is_html_document())
+                new_name = new_name.to_ascii_lowercase();
+            auto old_attribute_name = Utf16FlyString::from_utf8(*name);
+            auto attribute_name = Utf16FlyString::from_utf8(new_name);
+            auto before = element->get_attribute(old_attribute_name).map([](auto const& value) { return value.to_utf8(); });
+            if (params.get_bool("isUndo"sv).value_or(false) && before != params.get_string("expectedValue"sv)) {
+                reply_err("The attribute changed since this edit."_string);
+                return;
+            }
+            // An edit carries the value the inspector showed, where a missing attribute shows as empty.
+            if (auto shown = params.get_string("beforeValue"sv); shown.has_value() && before.value_or(String {}) != *shown) {
+                reply_err("The attribute changed since the inspector last showed it."_string);
+                return;
+            }
+            auto value = params.get_string("value"sv);
+            auto replacement_name = Utf16String::from_utf8(new_name);
+            if (!Web::DOM::is_valid_attribute_local_name(replacement_name.utf16_view())) {
+                reply_err("Invalid attribute name."_string);
+                return;
+            }
+            if (value.has_value())
+                element->set_attribute_value(attribute_name, Utf16String::from_utf8(*value));
+            if (!value.has_value() || old_attribute_name != attribute_name)
+                element->remove_attribute(old_attribute_name);
+            out.set("beforeText"sv, before.value_or(String {}));
+            out.set("afterText"sv, value.value_or(String {}));
+            if (old_attribute_name == attribute_name) {
+                inverse.set("name"sv, *name);
+                inverse.set("isUndo"sv, true);
+                if (value.has_value())
+                    inverse.set("expectedValue"sv, *value);
+                if (before.has_value())
+                    inverse.set("value"sv, *before);
+            } else {
+                inverse = {};
+            }
+        }
+        if (!inverse.is_empty())
+            out.set("inverse"sv, move(inverse));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "setForcedPseudoState"sv) {
+        auto node_id_val = params.get_integer<i64>("nodeId"sv);
+        auto state_name = params.get_string("state"sv);
+        auto enabled = params.get_bool("enabled"sv).value_or(true);
+        if (!node_id_val.has_value() || !state_name.has_value()) {
+            reply_err("Missing nodeId or state."_string);
+            return;
+        }
+        auto pseudo = parse_forced_pseudo_state(*state_name);
+        if (!pseudo.has_value()) {
+            reply_err(MUST(String::formatted("Unsupported pseudo-state '{}'.", *state_name)));
+            return;
+        }
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(*node_id_val));
+        if (!node || !node->is_element()) {
+            reply_err("Node not found or not an element."_string);
+            return;
+        }
+        auto& element = as<Web::DOM::Element>(*node);
+        element.set_forced_pseudo_state(*pseudo, enabled);
+        element.document().update_style();
+        JsonObject out;
+        out.set("ok"sv, true);
+        out.set("nodeId"sv, *node_id_val);
+        out.set("state"sv, *state_name);
+        out.set("enabled"sv, enabled);
+        out.set("mask"sv, element.forced_pseudo_states_mask());
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "clearForcedPseudoStates"sv) {
+        for (auto const& navigable : page->page().hosted_navigables()) {
+            if (auto doc = navigable->active_document())
+                doc->clear_all_forced_pseudo_states();
+        }
+        document->update_style();
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action.is_one_of("editStyleDeclaration"sv, "toggleStyleDeclaration"sv, "restoreStyleDeclarations"sv)) {
+        bool restoring = action == "restoreStyleDeclarations"sv;
+        auto property = params.get_string("property"sv).value_or(String {});
+        auto old_property = params.get_string("oldProperty"sv);
+        auto value = params.get_string("value"sv).value_or(String {});
+        auto priority = params.get_string("priority"sv).value_or(String {});
+        bool enabled = params.get_bool("enabled"sv).value_or(true);
+        bool is_toggle = (action == "toggleStyleDeclaration"sv);
+
+        if (!restoring && property.is_empty()) {
+            reply_err("Missing property name."_string);
+            return;
+        }
+
+        auto apply_to_style = [&](Web::CSS::CSSStyleProperties& style, Web::DOM::Document const& style_document, JsonObject& out) -> ErrorOr<void, String> {
+            auto before = style.serialized();
+            if (restoring) {
+                auto expected = params.get_string("expectedText"sv);
+                auto replacement = params.get_string("text"sv);
+                if (!expected.has_value() || !replacement.has_value() || before.to_utf8() != *expected)
+                    return "CSS declarations changed since this edit."_string;
+                auto text = Utf16String::from_utf8(*replacement);
+                if (style.set_css_text(text.utf16_view()).is_exception())
+                    return "Unable to restore CSS declarations."_string;
+            } else {
+                auto property_name = Utf16FlyString::from_utf8(property);
+                if ((is_toggle && !enabled) || (!is_toggle && value.is_empty())) {
+                    if (style.remove_property(property_name).is_exception())
+                        return "Unable to remove CSS declaration."_string;
+                } else {
+                    if (!priority.is_empty() && !priority.equals_ignoring_ascii_case("important"sv))
+                        return "Invalid CSS declaration priority."_string;
+                    auto declaration = MUST(String::formatted("{}: {}{};", property, value, priority.is_empty() ? ""sv : " !important"sv));
+                    auto parsed = Web::CSS::Parser::parse_css_declaration_block_for_devtools(Web::CSS::Parser::ParsingParams(style_document), declaration);
+                    if (parsed.size() != 1 || !parsed.first().is_valid)
+                        return "Invalid CSS declaration."_string;
+                    auto value_text = Utf16String::from_utf8(value);
+                    auto priority_text = Utf16String::from_utf8(priority);
+                    if (style.set_property(property_name, value_text.utf16_view(), priority_text.utf16_view()).is_exception()
+                        || style.get_property_value(property_name).is_empty())
+                        return "Unable to apply CSS declaration."_string;
+                }
+                if (old_property.has_value() && !old_property->is_empty() && *old_property != property)
+                    (void)style.remove_property(Utf16FlyString::from_utf8(*old_property));
+            }
+            out.set("beforeText"sv, before.to_utf8());
+            out.set("afterText"sv, style.serialized().to_utf8());
+            return {};
+        };
+
+        auto set_inverse = [&](JsonObject& out) {
+            if (restoring || out.get_string("beforeText"sv) == out.get_string("afterText"sv))
+                return;
+            JsonObject inverse;
+            inverse.set("action"sv, "restoreStyleDeclarations"sv);
+            inverse.set("text"sv, *out.get_string("beforeText"sv));
+            inverse.set("expectedText"sv, *out.get_string("afterText"sv));
+            for (auto key : { "nodeId"sv, "sheetId"sv, "ruleIdentity"sv }) {
+                if (auto value = out.get(key); value.has_value())
+                    inverse.set(key, *value);
+            }
+            out.set("inverse"sv, move(inverse));
+        };
+
+        if (auto sheet_id_str = params.get_string("sheetId"sv); sheet_id_str.has_value() && !sheet_id_str->is_empty()) {
+            auto sheet_id = sheet_id_str->to_number<u64>();
+            auto rule_id_str = params.get_string("ruleIdentity"sv).value_or(String {});
+            auto rule_id = rule_id_str.to_number<u64>();
+            if (!sheet_id.has_value() || !rule_id.has_value()) {
+                reply_err("Invalid sheetId or ruleIdentity."_string);
+                return;
+            }
+            auto* element = active_inspector_node(page_id, Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0)));
+            auto& sheet_document = element ? element->document() : *document;
+            auto* sheet = find_style_sheet_by_occurrence_id(sheet_document, *sheet_id, as_if<Web::DOM::Element>(element));
+            if (!sheet) {
+                reply_err("Stylesheet not found."_string);
+                return;
+            }
+            if (sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::ContentBlocker
+                || sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::Extension
+                || sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::UserStyle) {
+                reply_err("Extension and content-blocker stylesheets are read-only."_string);
+                return;
+            }
+            auto* rule = sheet->rules().rule_for_identity(*rule_id);
+            if (!rule) {
+                reply_err("CSS rule not found."_string);
+                return;
+            }
+            u64 current_rev = combined_rule_revision(*sheet, *rule);
+            if (auto base_rev = params.get_integer<u64>("baseRevision"sv); base_rev.has_value() && *base_rev != current_rev) {
+                JsonObject conflict;
+                conflict.set("conflict"sv, true);
+                conflict.set("sheetId"sv, *sheet_id_str);
+                conflict.set("ruleIdentity"sv, rule_id_str);
+                conflict.set("expectedRevision"sv, *base_rev);
+                conflict.set("currentRevision"sv, current_rev);
+                conflict.set("reason"sv, "Stylesheet was modified externally since it was last read."_string);
+                reply_ok(move(conflict));
+                return;
+            }
+            auto* style = declaration_style_for_rule(*rule);
+            if (!style) {
+                reply_err("CSS rule does not carry editable declarations."_string);
+                return;
+            }
+            JsonObject out;
+            auto applied = apply_to_style(*style, sheet_document, out);
+            if (applied.is_error()) {
+                reply_err(applied.release_error());
+                return;
+            }
+            sheet->bump_edit_revision();
+            sheet_document.update_style();
+            out.set("ok"sv, true);
+            out.set("conflict"sv, false);
+            out.set("sheetId"sv, *sheet_id_str);
+            out.set("ruleIdentity"sv, rule_id_str);
+            if (element)
+                out.set("nodeId"sv, element->unique_id().value());
+            out.set("sheetRevision"sv, combined_rule_revision(*sheet, *rule));
+            set_inverse(out);
+            reply_ok(move(out));
+            return;
+        }
+
+        auto node_id_val = params.get_integer<i64>("nodeId"sv);
+        if (!node_id_val.has_value() || params.get_string("ruleIdentity"sv).has_value()) {
+            reply_err("Missing inline node or stylesheet identity."_string);
+            return;
+        }
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(*node_id_val));
+        if (!node || !node->is_element()) {
+            reply_err("Element not found."_string);
+            return;
+        }
+        auto& element = as<Web::DOM::Element>(*node);
+        auto style = element.style();
+        JsonObject out;
+        auto applied = apply_to_style(*style, element.document(), out);
+        if (applied.is_error()) {
+            reply_err(applied.release_error());
+            return;
+        }
+        element.document().update_style();
+        out.set("ok"sv, true);
+        out.set("conflict"sv, false);
+        out.set("nodeId"sv, *node_id_val);
+        set_inverse(out);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "editStyleRuleSelector"sv) {
+        auto sheet_id_str = params.get_string("sheetId"sv).value_or(String {});
+        auto rule_id_str = params.get_string("ruleIdentity"sv).value_or(String {});
+        auto selector_text = params.get_string("selectorText"sv).value_or(String {});
+        auto sheet_id = sheet_id_str.to_number<u64>();
+        auto rule_id = rule_id_str.to_number<u64>();
+        if (!sheet_id.has_value() || !rule_id.has_value() || selector_text.is_empty()) {
+            reply_err("Missing sheetId, ruleIdentity, or selectorText."_string);
+            return;
+        }
+        auto node_id = params.get_i64("nodeId"sv).value_or(0);
+        auto* element = as_if<Web::DOM::Element>(active_inspector_node(page_id, Web::UniqueNodeID(node_id)));
+        auto& sheet_document = element ? element->document() : *document;
+        auto* sheet = find_style_sheet_by_occurrence_id(sheet_document, *sheet_id, element);
+        if (!sheet) {
+            reply_err("Stylesheet not found."_string);
+            return;
+        }
+        auto* rule = sheet->rules().rule_for_identity(*rule_id);
+        if (!rule || rule->type() != Web::CSS::CSSRule::Type::Style) {
+            reply_err("Editable style rule not found."_string);
+            return;
+        }
+        u64 current_rev = combined_rule_revision(*sheet, *rule);
+        if (auto base_rev = params.get_integer<u64>("baseRevision"sv); base_rev.has_value() && *base_rev != current_rev) {
+            JsonObject conflict;
+            conflict.set("conflict"sv, true);
+            conflict.set("currentRevision"sv, current_rev);
+            conflict.set("reason"sv, "Stylesheet was modified externally since it was last read."_string);
+            reply_ok(move(conflict));
+            return;
+        }
+        if (sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::ContentBlocker
+            || sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::Extension
+            || sheet->attribution_kind() == Web::CSS::StyleSheetState::AttributionKind::UserStyle) {
+            reply_err("This stylesheet is read-only."_string);
+            return;
+        }
+        auto& style_rule = static_cast<Web::CSS::CSSStyleRule&>(*rule);
+        auto before = style_rule.selector_text().to_utf8();
+        if (auto expected = params.get_string("expectedSelector"sv); expected.has_value() && before != *expected) {
+            reply_err("The rule's selector changed since this edit."_string);
+            return;
+        }
+        // A selector that parses replaces the rule's and marks the rule's sheet edited, even when it serializes as
+        // the old one did (div>p for div > p); one that does not parse leaves both as they were.
+        auto* rule_sheet = style_rule.parent_style_sheet();
+        auto revision_before_change = rule_sheet ? rule_sheet->edit_revision() : 0;
+        auto selector_u16 = Utf16String::from_utf8(selector_text);
+        style_rule.set_selector_text(selector_u16.utf16_view());
+        if (!rule_sheet || rule_sheet->edit_revision() == revision_before_change) {
+            reply_err("The selector could not be changed."_string);
+            return;
+        }
+        sheet_document.update_style();
+        JsonObject out;
+        out.set("ok"sv, true);
+        out.set("conflict"sv, false);
+        auto after = style_rule.selector_text().to_utf8();
+        auto revision = combined_rule_revision(*sheet, *rule);
+        out.set("sheetId"sv, sheet_id_str);
+        out.set("beforeText"sv, before);
+        out.set("afterText"sv, after);
+        out.set("selectorText"sv, after);
+        out.set("sheetRevision"sv, revision);
+        if (before != after) {
+            JsonObject inverse;
+            inverse.set("action"sv, "editStyleRuleSelector"sv);
+            inverse.set("sheetId"sv, sheet_id_str);
+            inverse.set("ruleIdentity"sv, rule_id_str);
+            inverse.set("nodeId"sv, node_id);
+            inverse.set("expectedSelector"sv, after);
+            inverse.set("selectorText"sv, before);
+            out.set("inverse"sv, move(inverse));
+        }
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "addStyleRule"sv) {
+        auto selector = params.get_string("selector"sv).value_or(String {});
+        auto declarations = params.get_string("declarations"sv).value_or(String {});
+        if (selector.is_empty()) {
+            reply_err("Missing selector."_string);
+            return;
+        }
+        // The rule goes where it can match the selected element: into the inspector sheet of its own document, which
+        // may be an iframe's, or of the shadow root whose tree it is in.
+        auto* element = as_if<Web::DOM::Element>(active_inspector_node(page_id, Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0))));
+        auto& sheet_document = element ? element->document() : *document;
+        auto shadow_root = element ? element->containing_shadow_root() : nullptr;
+        auto& sheet = shadow_root ? shadow_root->ensure_inspector_style_sheet() : sheet_document.ensure_inspector_style_sheet();
+        auto rule_text = MUST(String::formatted("{} {{ {} }}", selector, declarations));
+        auto rule_u16 = Utf16String::from_utf8(rule_text);
+        auto index_or_err = sheet.insert_rule(rule_u16.utf16_view(), static_cast<unsigned>(sheet.native_rules().size()));
+        if (index_or_err.is_exception()) {
+            reply_err("Invalid CSS rule syntax."_string);
+            return;
+        }
+        auto idx = index_or_err.release_value();
+        auto* rule = sheet.rules().item(idx);
+        sheet_document.update_style();
+        JsonObject out;
+        out.set("ok"sv, true);
+        out.set("sheetId"sv, String::number(sheet.style_engine_occurrence_id()));
+        if (rule) {
+            out.set("ruleIdentity"sv, String::number(rule->native_rule().identity()));
+            out.set("sheetRevision"sv, combined_rule_revision(sheet, *rule));
+        }
+        out.set("selector"sv, selector);
+        if (rule)
+            out.set("afterText"sv, rule->serialized().to_utf8());
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "searchDom"sv) {
+        auto query = params.get_string("query"sv).value_or(String {});
+        JsonArray matches;
+        HashTable<i64> seen;
+        auto append_match = [&](Web::DOM::Node const& node) {
+            auto id_val = node.unique_id().value();
+            if (seen.set(id_val) != AK::HashSetResult::InsertedNewEntry)
+                return;
+            if (matches.size() >= 250)
+                return;
+            JsonObject m;
+            m.set("nodeId"sv, id_val);
+            m.set("name"sv, node.node_name().to_utf16_string().to_utf8());
+            m.set("summary"sv, describe_dom_node_brief(node));
+            matches.must_append(move(m));
+        };
+
+        auto query_trimmed = MUST(query.trim_ascii_whitespace());
+        if (!query_trimmed.is_empty()) {
+            if (query_trimmed.starts_with('/') || query_trimmed.starts_with('(') || query_trimmed.starts_with_bytes("./"sv)) {
+                auto expr_u16 = Utf16String::from_utf8(query_trimmed);
+                auto xpath_res = document->evaluate(expr_u16, *document, nullptr, Web::XPath::XPathResult::ORDERED_NODE_SNAPSHOT_TYPE, nullptr);
+                if (!xpath_res.is_exception()) {
+                    auto result = xpath_res.release_value();
+                    auto len_or_err = result->snapshot_length();
+                    if (!len_or_err.is_exception()) {
+                        auto len = len_or_err.release_value();
+                        for (u32 i = 0; i < len && matches.size() < 250; ++i) {
+                            auto item_or_err = result->snapshot_item(i);
+                            if (!item_or_err.is_exception() && item_or_err.value())
+                                append_match(*item_or_err.value());
+                        }
+                    }
+                }
+            }
+
+            auto selector_u16 = Utf16String::from_utf8(query_trimmed);
+            Function<void(Web::DOM::ParentNode&)> run_selector_in_root = [&](Web::DOM::ParentNode& root) {
+                auto list_or_err = root.query_selector_all(selector_u16);
+                if (!list_or_err.is_exception()) {
+                    auto list = list_or_err.release_value();
+                    for (u32 i = 0; i < list->length() && matches.size() < 250; ++i) {
+                        if (auto* item = list->item(i))
+                            append_match(*item);
+                    }
+                }
+            };
+
+            auto needle = query_trimmed.bytes_as_string_view();
+            walk_inspected_trees(*document, [&](Web::DOM::Node& node, auto& trees_to_enter) {
+                if (matches.size() >= 250)
+                    return IterationDecision::Break;
+                if (auto* doc_node = as_if<Web::DOM::Document>(node))
+                    run_selector_in_root(*doc_node);
+                else if (auto* shadow = as_if<Web::DOM::ShadowRoot>(node))
+                    run_selector_in_root(*shadow);
+
+                if (auto* element = as_if<Web::DOM::Element>(node)) {
+                    auto local_utf8 = element->local_name().to_utf16_string().to_utf8();
+                    if (local_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive)) {
+                        append_match(node);
+                    } else if (element->has_attributes()) {
+                        bool attr_matched = false;
+                        element->for_each_attribute([&](Utf16FlyString const& attr_name, Utf16View attr_val) {
+                            if (attr_matched)
+                                return;
+                            auto name_utf8 = attr_name.to_utf16_string().to_utf8();
+                            auto val_utf8 = MUST(attr_val.to_utf8());
+                            if (name_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive)
+                                || val_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive))
+                                attr_matched = true;
+                        });
+                        if (attr_matched)
+                            append_match(node);
+                    }
+                    if (auto shadow = element->shadow_root()) {
+                        if (!shadow->is_user_agent_internal())
+                            trees_to_enter.append(*shadow);
+                    }
+                    if (element->is_navigable_container()) {
+                        auto& container = static_cast<Web::HTML::NavigableContainer&>(*element);
+                        if (auto* navigable = as_if<Web::HTML::LocalNavigable>(container.content_navigable().ptr())) {
+                            if (auto content_document = navigable->active_document())
+                                trees_to_enter.append(*content_document);
+                        }
+                    }
+                } else if (auto* text = as_if<Web::DOM::Text>(node)) {
+                    auto data_utf8 = text->data().to_utf8();
+                    if (data_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive))
+                        append_match(node);
+                } else if (auto* comment = as_if<Web::DOM::Comment>(node)) {
+                    auto data_utf8 = comment->data().to_utf8();
+                    if (data_utf8.bytes_as_string_view().contains(needle, CaseSensitivity::CaseInsensitive))
+                        append_match(node);
+                }
+                return IterationDecision::Continue;
+            });
+        }
+
+        JsonObject out;
+        out.set("query"sv, query);
+        out.set("total"sv, matches.size());
+        out.set("matches"sv, move(matches));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "setNodeHidden"sv) {
+        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
+        auto hidden = params.get_bool("hidden"sv).value_or(true);
+        auto* element = as_if<Web::DOM::Element>(active_inspector_node(page_id, node_id));
+        if (!element || !page->set_inspector_node_hidden(*element, hidden)) {
+            reply_err("Unable to change the element's visibility."_string);
+            return;
+        }
+        JsonObject out;
+        out.set("hidden"sv, hidden);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "getEventListeners"sv) {
+        auto node_id_val = params.get_integer<i64>("nodeId"sv);
+        bool include_ancestors = params.get_bool("includeAncestors"sv).value_or(true);
+        if (!node_id_val.has_value()) {
+            reply_err("Missing nodeId."_string);
+            return;
+        }
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(*node_id_val));
+        if (!node) {
+            reply_err("Node not found."_string);
+            return;
+        }
+
+        JsonArray listeners;
+        page->forget_collected_inspected_listeners();
+        auto collect_target = [&](Web::DOM::EventTarget const& target, i64 target_node_id, String target_label, bool is_ancestor, bool window_target = false) {
+            for (auto const& listener : target.event_listener_list()) {
+                if (listener->removed)
+                    continue;
+                JsonObject item;
+                item.set("nodeId"sv, target_node_id);
+                item.set("target"sv, target_label);
+                item.set("ancestor"sv, is_ancestor);
+                item.set("type"sv, listener->type.to_utf16_string().to_utf8());
+                item.set("capture"sv, listener->capture);
+                item.set("once"sv, listener->once);
+                item.set("passive"sv, listener->passive.value_or(false));
+                item.set("listenerId"sv, String::number(page->remember_inspected_listener(*listener)));
+                item.set("windowTarget"sv, window_target);
+                String handler_name = "anonymous"_string;
+                if (auto event_handler_name = target.event_handler_name_for_listener(*listener); event_handler_name.has_value()) {
+                    // The listener of an event handler calls a function of the engine's that has no name, so name the handler.
+                    handler_name = MUST(String::formatted("on{}", *event_handler_name));
+                    item.set("eventHandler"sv, true);
+                } else if (listener->callback) {
+                    auto& cb_obj = listener->callback->callback().callback;
+                    if (auto const* fn = as_if<JS::FunctionObject>(*cb_obj)) {
+                        auto fn_name = fn->name_for_call_stack();
+                        if (!fn_name.is_empty())
+                            handler_name = fn_name.to_utf8();
+                    }
+                }
+                item.set("handlerName"sv, move(handler_name));
+                listeners.must_append(move(item));
+            }
+        };
+
+        collect_target(*node, node->unique_id().value(), describe_dom_node_brief(*node), false);
+        if (include_ancestors) {
+            for (auto* ancestor = node->parent(); ancestor; ancestor = ancestor->parent())
+                collect_target(*ancestor, ancestor->unique_id().value(), describe_dom_node_brief(*ancestor), true);
+            if (auto win = node->document().window())
+                collect_target(*win, node->document().unique_id().value(), "window"_string, true, true);
+        }
+
+        JsonObject out;
+        out.set("nodeId"sv, *node_id_val);
+        out.set("listeners"sv, move(listeners));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "removeEventListener"sv) {
+        auto node_id_val = params.get_integer<i64>("nodeId"sv).value_or(0);
+        auto listener_id = params.get_string("listenerId"sv).value_or(String {}).to_number<u64>();
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(node_id_val));
+        Web::DOM::EventTarget* target = node;
+        if (params.get_bool("windowTarget"sv).value_or(false))
+            target = node && node->is_document() ? node->document().window().ptr() : nullptr;
+        if (!target) {
+            reply_err("Event target not found."_string);
+            return;
+        }
+        auto listener = page->inspected_listener(listener_id.value_or(0));
+        if (!listener || listener->removed || !target->event_listener_list().contains_slow(GC::Ref { *listener })) {
+            reply_err("This listener has changed. Refresh the listener list."_string);
+            return;
+        }
+        if (!target->deactivate_event_handler_for_listener(*listener))
+            target->remove_an_event_listener(*listener);
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action.is_one_of("setDomBreakpoint"sv, "removeDomBreakpoint"sv, "restoreDomBreakpoint"sv)) {
+        auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
+        auto flag = parse_dom_breakpoint_flag(params.get_string("type"sv).value_or(String {}));
+        if (flag == 0) {
+            reply_err("Invalid DOM breakpoint type."_string);
+            return;
+        }
+        if (action == "removeDomBreakpoint"sv) {
+            page->remove_dom_breakpoint(node_id, flag);
+            reply_ok(JsonObject {});
+            return;
+        }
+
+        Optional<Web::UniqueNodeID> path_node;
+        if (auto path = params.get_string("nodePath"sv); path.has_value() && !path->is_empty()) {
+            auto selector = Utf16String::from_utf8(*path);
+            auto matches = document->query_selector_all(selector);
+            if (!matches.is_exception() && matches.value()->length() == 1)
+                path_node = matches.value()->item(0)->unique_id();
+        }
+        if (action == "restoreDomBreakpoint"sv)
+            node_id = path_node.value_or(0);
+        auto* node = active_inspector_node(page_id, node_id);
+        if (!node) {
+            reply_err("DOM breakpoint target could not be resolved."_string);
+            return;
+        }
+        if (params.get_bool("enabled"sv).value_or(true))
+            page->set_dom_breakpoint(node_id, flag);
+        JsonObject out;
+        out.set("nodeId"sv, node_id.value());
+        out.set("canRestore"sv, &node->document() == document.ptr() && path_node == node_id);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "getAccessibilityNodeDetails"sv) {
+        auto node_id_val = params.get_integer<i64>("nodeId"sv);
+        if (!node_id_val.has_value()) {
+            reply_err("Missing nodeId."_string);
+            return;
+        }
+        auto* node = active_inspector_node(page_id, Web::UniqueNodeID(*node_id_val));
+        if (!node) {
+            reply_err("Node not found."_string);
+            return;
+        }
+
+        JsonObject out;
+        out.set("nodeId"sv, *node_id_val);
+        out.set("name"sv, node->accessible_name(node->document()).value_or(Utf16String {}).to_utf8());
+        out.set("description"sv, node->accessible_description(node->document()).value_or(Utf16String {}).to_utf8());
+
+        JsonArray contributors;
+        if (auto* element = as_if<Web::DOM::Element>(*node)) {
+            if (auto role = element->role_or_default(); role.has_value())
+                out.set("role"sv, Web::ARIA::role_name(*role).to_utf8());
+            else
+                out.set("role"sv, "generic"_string);
+            out.set("focusable"sv, element->is_focusable());
+            bool aria_hidden = element->get_attribute("aria-hidden"_utf16_fly_string)
+                                   .map([](auto const& v) { return v == u"true"sv; })
+                                   .value_or(false);
+            bool display_none = element->computed_style() && element->computed_style()->display().is_none();
+            out.set("ignored"sv, aria_hidden || display_none);
+            if (aria_hidden)
+                out.set("ignoredReason"sv, "aria-hidden=\"true\""_string);
+            else if (display_none)
+                out.set("ignoredReason"sv, "display: none"_string);
+
+            auto add_contributor = [&](StringView source, Optional<Utf16String> val) {
+                JsonObject c;
+                c.set("source"sv, source);
+                c.set("present"sv, val.has_value() && !val->is_empty());
+                c.set("value"sv, val.has_value() ? val->to_utf8() : String {});
+                contributors.must_append(move(c));
+            };
+
+            auto labelledby = element->get_attribute("aria-labelledby"_utf16_fly_string);
+            auto aria_label = element->get_attribute("aria-label"_utf16_fly_string);
+            auto alt_attr = element->get_attribute(Web::HTML::AttributeNames::alt);
+            auto placeholder_attr = element->get_attribute(Web::HTML::AttributeNames::placeholder);
+            auto title_attr = element->get_attribute(Web::HTML::AttributeNames::title);
+            // Enough of the text to tell what the name came from, not a large subtree's whole text over IPC.
+            constexpr size_t max_contents_length = 512;
+            Optional<Utf16String> text_val;
+            if (auto tc = element->text_content(); tc.has_value() && !tc->is_empty()) {
+                text_val = tc->length_in_code_units() > max_contents_length
+                    ? Utf16String::formatted("{}…", tc->substring_view(0, max_contents_length))
+                    : *tc;
+            }
+
+            add_contributor("aria-labelledby"sv, labelledby);
+            add_contributor("aria-label"sv, aria_label);
+            add_contributor("alt"sv, alt_attr);
+            add_contributor("placeholder"sv, placeholder_attr);
+            add_contributor("title"sv, title_attr);
+            add_contributor("contents"sv, text_val);
+        } else {
+            out.set("role"sv, "text"_string);
+            out.set("focusable"sv, false);
+            out.set("ignored"sv, false);
+        }
+        out.set("nameInputs"sv, move(contributors));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "previewCosmeticFilter"sv) {
+        auto selector = params.get_string("selector"sv).value_or(String {});
+        if (selector.is_empty()) {
+            document->set_highlighted_node(nullptr, {});
+            JsonObject out;
+            out.set("valid"sv, false);
+            out.set("count"sv, 0);
+            reply_ok(move(out));
+            return;
+        }
+        auto selector_u16 = Utf16String::from_utf8(selector);
+        auto list_or_err = document->query_selector_all(selector_u16);
+        if (list_or_err.is_exception()) {
+            document->set_highlighted_node(nullptr, {});
+            JsonObject out;
+            out.set("valid"sv, false);
+            out.set("count"sv, 0);
+            out.set("error"sv, "Invalid CSS selector."_string);
+            reply_ok(move(out));
+            return;
+        }
+        auto list = list_or_err.release_value();
+        JsonArray sample_ids;
+        for (u32 i = 0; i < list->length() && i < 20; ++i) {
+            if (auto* item = list->item(i))
+                sample_ids.must_append(item->unique_id().value());
+        }
+        if (params.get_bool("highlight"sv).value_or(true)) {
+            if (list->length() > 0 && list->item(0))
+                highlight_dom_node(page_id, list->item(0)->unique_id(), {});
+            else
+                document->set_highlighted_node(nullptr, {});
+        }
+        JsonObject out;
+        out.set("valid"sv, true);
+        out.set("selector"sv, selector);
+        out.set("count"sv, list->length());
+        out.set("sampleNodeIds"sv, move(sample_ids));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "clearCosmeticFilterPreview"sv) {
+        document->set_highlighted_node(nullptr, {});
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "getAnimations"sv) {
+        using namespace Web::Animations;
+        document->update_style();
+        JsonArray animations;
+        for (auto const& animation : associated_animations_of(document->document_animations())) {
+            auto effect = animation.effect();
+            auto* target = effect.has_value() ? effect->target() : nullptr;
+            if (!target || !target->is_connected() || &target->document() != document.ptr())
+                continue;
+            StringView play_state;
+            switch (animation.play_state()) {
+            case RustFFI::AnimationPlayState::Idle:
+                continue;
+            case RustFFI::AnimationPlayState::Running:
+                play_state = "running"sv;
+                break;
+            case RustFFI::AnimationPlayState::Paused:
+                play_state = "paused"sv;
+                break;
+            case RustFFI::AnimationPlayState::Finished:
+                play_state = "finished"sv;
+                break;
+            }
+            RustFFI::TimeValue duration {};
+            auto name = Utf16String::adopt_raw(RustFFI::animations_inspector_animation_name(&animation.record(), &duration));
+            JsonObject item;
+            item.set("nodeId"sv, target->unique_id().value());
+            item.set("target"sv, describe_dom_node_brief(*target));
+            item.set("name"sv, name.to_utf8());
+            item.set("duration"sv, MUST(String::formatted("{}{}", duration.value, duration.type == RustFFI::TimeValueType::Milliseconds ? "ms"sv : "%"sv)));
+            item.set("playState"sv, play_state);
+            item.set("playbackRate"sv, animation.playback_rate());
+            animations.must_append(move(item));
+        }
+        JsonObject out;
+        out.set("hasAssociatedAnimations"sv, !animations.is_empty());
+        out.set("animations"sv, move(animations));
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "pauseAllAnimations"sv || action == "setAnimationsPlaybackRate"sv) {
+        reply_err("The animation inspector supports reading timeline state only."_string);
+        return;
+    }
+
+    if (action == "setRenderingOverrides"sv) {
+        if (auto scheme = params.get_string("colorScheme"sv); scheme.has_value()) {
+            if (*scheme == "dark"sv)
+                page->set_preferred_color_scheme(Web::CSS::PreferredColorScheme::Dark);
+            else if (*scheme == "light"sv)
+                page->set_preferred_color_scheme(Web::CSS::PreferredColorScheme::Light);
+            else
+                page->set_preferred_color_scheme(Web::CSS::PreferredColorScheme::Auto);
+        }
+        if (auto motion = params.get_string("reducedMotion"sv); motion.has_value()) {
+            if (*motion == "reduce"sv)
+                page->set_preferred_motion(Web::CSS::PreferredMotion::Reduce);
+            else
+                page->set_preferred_motion(Web::CSS::PreferredMotion::NoPreference);
+        }
+        if (auto contrast = params.get_string("contrast"sv); contrast.has_value()) {
+            if (*contrast == "more"sv)
+                page->set_preferred_contrast(Web::CSS::PreferredContrast::More);
+            else if (*contrast == "less"sv)
+                page->set_preferred_contrast(Web::CSS::PreferredContrast::Less);
+            else
+                page->set_preferred_contrast(Web::CSS::PreferredContrast::NoPreference);
+        }
+        if (auto force_dark = params.get_bool("forceDark"sv); force_dark.has_value())
+            page->page().set_force_dark_for_local_roots(*force_dark);
+
+        document->update_style();
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "setDeviceMode"sv) {
+        auto width = params.get_integer<i32>("width"sv);
+        auto height = params.get_integer<i32>("height"sv);
+        auto dpr = params.get_double_with_precision_loss("dpr"sv).value_or(1.0);
+        if (!width.has_value() || !height.has_value() || *width <= 0 || *height <= 0 || *width > 8192 || *height > 8192 || dpr < 0.5 || dpr > 4.0) {
+            reply_err("Device dimensions or pixel ratio are out of range."_string);
+            return;
+        }
+        page->set_viewport(Web::DevicePixelSize(static_cast<int>(round(*width * dpr)), static_cast<int>(round(*height * dpr))), dpr);
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "setSensorOverrides"sv) {
+        if (!params.get_bool("enabled"sv).value_or(true)) {
+            page->page().set_emulated_position_data(Empty {});
+        } else {
+            auto lat = params.get_double_with_precision_loss("latitude"sv);
+            auto lon = params.get_double_with_precision_loss("longitude"sv);
+            if (!lat.has_value() || !lon.has_value() || *lat < -90 || *lat > 90 || *lon < -180 || *lon > 180) {
+                reply_err("Latitude or longitude is out of range."_string);
+                return;
+            }
+            auto accuracy = params.get_double_with_precision_loss("accuracy"sv).value_or(10.0);
+            WebView::GeolocationPositionData pos {};
+            pos.latitude = *lat;
+            pos.longitude = *lon;
+            pos.accuracy = accuracy;
+            page->set_geolocation_emulated_position(pos, {});
+        }
+        JsonObject out;
+        out.set("ok"sv, true);
+        reply_ok(move(out));
+        return;
+    }
+
+    if (action == "runCssOverviewAudit"sv) {
+        u64 element_count = 0;
+        HashTable<String> colors;
+        HashTable<String> backgrounds;
+        HashTable<String> fonts;
+        JsonArray issues;
+
+        // The page may have changed since its style was last computed; an element it just added has none yet.
+        document->update_style();
+        walk_inspected_trees(*document, [&](Web::DOM::Node& node, auto& trees_to_enter) {
+            if (auto* element = as_if<Web::DOM::Element>(node)) {
+                if (auto shadow = element->shadow_root(); shadow && !shadow->is_user_agent_internal())
+                    trees_to_enter.append(*shadow);
+                ++element_count;
+                if (auto computed = element->computed_style()) {
+                    if (colors.size() < 40)
+                        colors.set(computed->computed_style_value(Web::CSS::PropertyID::Color)->to_string(Web::CSS::SerializationMode::Normal));
+                    if (backgrounds.size() < 40) {
+                        auto bg = computed->computed_style_value(Web::CSS::PropertyID::BackgroundColor)->to_string(Web::CSS::SerializationMode::Normal);
+                        if (bg != "rgba(0, 0, 0, 0)"sv && bg != "transparent"sv)
+                            backgrounds.set(bg);
+                    }
+                    if (fonts.size() < 25)
+                        fonts.set(computed->computed_style_value(Web::CSS::PropertyID::FontFamily)->to_string(Web::CSS::SerializationMode::Normal));
+                }
+                auto tag = element->local_name().to_utf16_string().to_utf8();
+                if (tag == "img"sv && !element->has_attribute(Web::HTML::AttributeNames::alt) && issues.size() < 50) {
+                    JsonObject issue;
+                    issue.set("category"sv, "accessibility"sv);
+                    issue.set("severity"sv, "warning"sv);
+                    issue.set("nodeId"sv, element->unique_id().value());
+                    issue.set("message"sv, "<img> element is missing an alt attribute."_string);
+                    issues.must_append(move(issue));
+                }
+                if ((tag == "button"sv || tag == "a"sv) && issues.size() < 50) {
+                    auto acc_name = element->accessible_name(element->document()).value_or(Utf16String {}).to_utf8();
+                    if (MUST(acc_name.trim_ascii_whitespace()).is_empty()) {
+                        JsonObject issue;
+                        issue.set("category"sv, "accessibility"sv);
+                        issue.set("severity"sv, "warning"sv);
+                        issue.set("nodeId"sv, element->unique_id().value());
+                        issue.set("message"sv, MUST(String::formatted("<{}> has no accessible name.", tag)));
+                        issues.must_append(move(issue));
+                    }
+                }
+            }
+            return IterationDecision::Continue;
+        });
+
+        auto set_to_json = [](HashTable<String> const& set) {
+            JsonArray arr;
+            for (auto const& s : set)
+                arr.must_append(s);
+            return arr;
+        };
+
+        JsonObject out;
+        out.set("elementCount"sv, element_count);
+        out.set("colors"sv, set_to_json(colors));
+        out.set("backgroundColors"sv, set_to_json(backgrounds));
+        out.set("fonts"sv, set_to_json(fonts));
+        out.set("issues"sv, move(issues));
+        reply_ok(move(out));
+        return;
+    }
+
+    reply_err(MUST(String::formatted("Unknown inspector engine action '{}'.", action)));
 }
 
 void ConnectionFromClient::request_internal_page_info(Web::PageId page_id, WebView::PageInfoType type)
@@ -3744,13 +4965,13 @@ void ConnectionFromClient::reset_zoom(Web::PageId page_id)
         page->page().local_traversable()->reset_zoom();
 }
 
-void ConnectionFromClient::js_console_input(Web::PageId page_id, String js_source)
+void ConnectionFromClient::js_console_input(Web::PageId page_id, u64 request_id, String js_source)
 {
     auto page = this->page(page_id);
     if (!page.has_value())
         return;
 
-    page->js_console_input(js_source);
+    page->js_console_input(request_id, js_source);
 }
 
 void ConnectionFromClient::complete_js_console_input(Web::PageId page_id, u64 request_id, String input)

@@ -1229,4 +1229,28 @@ void HubConnection::view_compositor_layers_change(u64 view_id, Compositing::Comp
         view->on_compositor_layers_change(layers);
 }
 
+void HubConnection::view_inspector_open_requested(u64 target_view_id, String panel, Optional<i64> node_id, u64 menu_generation)
+{
+    if (auto* view = RemoteView::find(target_view_id); view && view->on_inspector_open_requested)
+        view->on_inspector_open_requested(panel, node_id, menu_generation);
+}
+
+void HubConnection::view_inspector_close_requested(u64 target_view_id)
+{
+    if (auto* view = RemoteView::find(target_view_id); view && view->on_inspector_close_requested)
+        view->on_inspector_close_requested();
+}
+
+void HubConnection::view_inspector_dock_mode_changed(u64 target_view_id, String dock_mode)
+{
+    if (auto* view = RemoteView::find(target_view_id); view && view->on_inspector_dock_mode_changed)
+        view->on_inspector_dock_mode_changed(dock_mode);
+}
+
+void HubConnection::view_inspector_picker_state_changed(u64 target_view_id, bool picker_active)
+{
+    if (auto* view = RemoteView::find(target_view_id); view && view->on_inspector_picker_state_changed)
+        view->on_inspector_picker_state_changed(picker_active);
+}
+
 }

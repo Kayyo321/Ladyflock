@@ -486,7 +486,7 @@ public:
         });
 
         m_move_focus_action = make_action("Move &Focus Between Toolbar and Page");
-        m_move_focus_action->setShortcut(QKeySequence(Qt::Key_F6));
+        m_move_focus_action->setShortcuts({ QKeySequence(Qt::Key_F6), QKeySequence(Qt::SHIFT | Qt::Key_F6) });
         QObject::connect(m_move_focus_action, &QAction::triggered, this, []() {
             if (auto* window = Application::the().active_window_if_any())
                 window->move_focus_between_chrome_and_page();
@@ -505,6 +505,9 @@ public:
 
         m_open_settings_action = create_application_action(*m_application_widget, application.open_settings_page_action(), IncludeActionIcon::No);
         m_open_downloads_action = create_application_action(*m_application_widget, application.open_downloads_page_action(), IncludeActionIcon::No);
+        m_toggle_inspector_action = create_application_action(*m_application_widget, application.toggle_inspector_action(), IncludeActionIcon::No);
+        m_toggle_inspector_picker_action = create_application_action(*m_application_widget, application.toggle_inspector_picker_action(), IncludeActionIcon::No);
+        m_open_inspector_console_action = create_application_action(*m_application_widget, application.open_inspector_console_action(), IncludeActionIcon::No);
 
         m_toggle_bookmark_bar_action = create_application_action(*m_application_widget, Application::bookmarks().toggle_bookmark_bar_action(), IncludeActionIcon::No);
         m_toggle_sidebar_action = create_application_action(*m_application_widget, application.toggle_vertical_tabs_expanded_action(), IncludeActionIcon::No);
@@ -677,6 +680,9 @@ private:
     QAction* m_open_file_action { nullptr };
     QAction* m_open_settings_action { nullptr };
     QAction* m_open_downloads_action { nullptr };
+    QAction* m_toggle_inspector_action { nullptr };
+    QAction* m_toggle_inspector_picker_action { nullptr };
+    QAction* m_open_inspector_console_action { nullptr };
     QAction* m_toggle_bookmark_bar_action { nullptr };
     QAction* m_toggle_sidebar_action { nullptr };
     QAction* m_open_location_action { nullptr };
@@ -3384,6 +3390,9 @@ DEFINE_APP_MENU_GETTER(QAction, move_focus_action);
 DEFINE_APP_MENU_GETTER(QAction, open_file_action);
 DEFINE_APP_MENU_GETTER(QAction, open_settings_action);
 DEFINE_APP_MENU_GETTER(QAction, open_downloads_action);
+DEFINE_APP_MENU_GETTER(QAction, toggle_inspector_action);
+DEFINE_APP_MENU_GETTER(QAction, toggle_inspector_picker_action);
+DEFINE_APP_MENU_GETTER(QAction, open_inspector_console_action);
 DEFINE_APP_MENU_GETTER(QAction, toggle_bookmark_bar_action);
 DEFINE_APP_MENU_GETTER(QAction, toggle_sidebar_action);
 DEFINE_APP_MENU_GETTER(QAction, open_location_action);

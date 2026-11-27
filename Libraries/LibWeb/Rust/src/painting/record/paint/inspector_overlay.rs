@@ -79,26 +79,56 @@ fn paint_box_model_highlight<O: Observer>(
     let padding_rect = paintable_geometry::absolute_padding_box_rect(recorder.source, paintable);
 
     let converter = recorder.converter;
-    let paint_inspector_rect = |recorder: &mut PaintRecorder<'_, O>, rect: CssPixelRect, color: Color| {
-        let device_rect = converter.enclosing_device_rect(rect);
-        recorder
-            .recorder
-            .fill_rect(device_rect, color.with_alpha(100), ForceDarkRole::None);
-        recorder
-            .recorder
-            .draw_rect(device_rect, color, false, ForceDarkRole::None);
-    };
-    paint_inspector_rect(recorder, margin_rect, Color::from_rgb(255, 255, 0));
-    paint_inspector_rect(recorder, padding_rect, Color::from_rgb(0, 255, 255));
-    paint_inspector_rect(recorder, border_rect, Color::from_rgb(0, 255, 0));
-    paint_inspector_rect(recorder, content_rect, Color::from_rgb(255, 0, 255));
+    let paint_inspector_rect =
+        |recorder: &mut PaintRecorder<'_, O>, rect: CssPixelRect, color: Color, fill_alpha: u8, stroke_alpha: u8| {
+            let device_rect = converter.enclosing_device_rect(rect);
+            recorder
+                .recorder
+                .fill_rect(device_rect, color.with_alpha(fill_alpha), ForceDarkRole::None);
+            recorder
+                .recorder
+                .draw_rect(device_rect, color.with_alpha(stroke_alpha), false, ForceDarkRole::None);
+        };
+    // Quiet Loupe palette: muted terracotta margin, amber border, sage green padding, steel blue content.
+    paint_inspector_rect(recorder, margin_rect, Color::from_rgb(214, 118, 84), 72, 195);
+    paint_inspector_rect(recorder, border_rect, Color::from_rgb(232, 181, 72), 84, 210);
+    paint_inspector_rect(recorder, padding_rect, Color::from_rgb(76, 175, 118), 80, 205);
+    paint_inspector_rect(recorder, content_rect, Color::from_rgb(74, 144, 226), 96, 235);
 
     let text: Vec<u16> = highlight.label.encode_utf16().collect();
     let label = shape_overlay_label(recorder, &text, &highlight.fonts);
-    let mut size_text_rect = border_rect;
-    size_text_rect.y = border_rect.y + border_rect.height;
-    size_text_rect.width = CssPixels::nearest_value_for_f32(label.css_width) + CssPixels::from_integer(4);
-    size_text_rect.height = CssPixels::nearest_value_for_f32(label.css_pixel_size) + CssPixels::from_integer(4);
+    let viewport_rect = recorder.inputs.css_viewport_rect;
+    let label_w = CssPixels::nearest_value_for_f32(label.css_width) + CssPixels::from_integer(12);
+    let label_h = CssPixels::nearest_value_for_f32(label.css_pixel_size) + CssPixels::from_integer(6);
+    let mut size_text_rect = CssPixelRect {
+        x: border_rect.x,
+        y: border_rect.y + border_rect.height + CssPixels::from_integer(4),
+        width: label_w,
+        height: label_h,
+    };
+    // The label is drawn in the element's space, and the viewport rect is in the document's. The two agree only for an
+    // element that moves with the root scroller alone; one in a scrolled box, a transformed box or a fixed one is
+    // drawn somewhere a clamp in document space would not know, so its label just follows it.
+    let viewport = recorder.viewport;
+    let moves_with_root_scroller = recorder.source.paintable_row_is_populated(viewport)
+        && recorder.data(paintable).accumulated_visual_context.spatial
+            == recorder
+                .data(viewport)
+                .accumulated_visual_context_for_descendants
+                .spatial;
+    if moves_with_root_scroller {
+        if size_text_rect.y + size_text_rect.height > viewport_rect.y + viewport_rect.height {
+            size_text_rect.y = border_rect.y - label_h - CssPixels::from_integer(4);
+        }
+        size_text_rect.x = size_text_rect
+            .x
+            .min(viewport_rect.x + viewport_rect.width - label_w)
+            .max(viewport_rect.x);
+        size_text_rect.y = size_text_rect
+            .y
+            .min(viewport_rect.y + viewport_rect.height - label_h)
+            .max(viewport_rect.y);
+    }
     let device_rect = converter.enclosing_device_rect(size_text_rect);
     let inputs = recorder.inputs;
     recorder

@@ -24,10 +24,16 @@ class WebContentConsoleClient : public JS::ConsoleClient {
 public:
     virtual ~WebContentConsoleClient() override;
 
-    void handle_input(StringView js_source);
+    // The request ID goes back with the result, so that each client that sent input gets the result of its own.
+    void handle_input(u64 request_id, StringView js_source);
+    ConsoleGlobalEnvironmentExtensions& console_global_environment_extensions() { return m_console_global_environment_extensions; }
     Optional<Web::HTML::ConsoleInputCompletion> complete_input(StringView input);
 
-    virtual void handle_result(JS::Value) = 0;
+    enum class Thrown : bool {
+        No,
+        Yes,
+    };
+    virtual void handle_result(u64 request_id, JS::Value, Thrown) = 0;
 
 protected:
     WebContentConsoleClient(JS::Console&, PageClient&, ConsoleGlobalEnvironmentExtensions&);

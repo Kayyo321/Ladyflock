@@ -3195,7 +3195,8 @@ static StyleComputer::NonAuthorStyleSheetsKey non_author_style_sheets_key(DOM::D
         .in_quirks_mode = document.in_quirks_mode(),
         .needs_mathml_and_svg_user_agent_style_sheets = document.needs_mathml_and_svg_user_agent_style_sheets(),
         .is_html_document = document.document_type() == DOM::Document::Type::HTML,
-        .user_style_sheet = style_scope.m_user_style_sheet.ptr(),
+        // All inspector-attributed user sheets are rebuilt together.
+        .user_style_sheet = style_scope.m_user_style_sheets.is_empty() ? nullptr : style_scope.m_user_style_sheets.first().ptr(),
     };
 }
 
@@ -3442,6 +3443,7 @@ void move_style_hover(DOM::Document& document, GC::Ptr<DOM::Node> node)
 
 void record_element_state_changed(DOM::Element& element, PseudoClass pseudo_class, bool new_value)
 {
+    new_value |= element.has_forced_pseudo_state(pseudo_class);
     auto fact = state_fact_for(pseudo_class);
     if (!fact.has_value())
         return;

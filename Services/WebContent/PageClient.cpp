@@ -28,6 +28,7 @@
 #include <LibMedia/Sinks/AudioOutputFactory.h>
 #include <LibMediaClient/RemotePlaybackManager.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/CSS/CSSStyleProperties.h>
 #include <LibWeb/CSS/StyleScope.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/CSS/StyleSheetImport.h>
@@ -35,11 +36,13 @@
 #include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/ContentSecurityPolicy/BlockingAlgorithms.h>
 #include <LibWeb/DOM/CharacterData.h>
+#include <LibWeb/DOM/DOMEventListener.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/MutationType.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NodeList.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Editing/WritingSuggestionController.h>
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
@@ -76,6 +79,7 @@
 #include <LibWebCommon/WebView/ZoomLevel.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/DevToolsConsoleClient.h>
+#include <WebContent/DevToolsDebugger.h>
 #include <WebContent/DevToolsIndexedDB.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
@@ -1441,7 +1445,7 @@ Optional<URL::URL> PageClient::generate_text_fragment_url(u64 generation_id)
 void PageClient::page_did_request_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, GC::Ptr<Web::DOM::Range> selected_text_range)
 {
     auto text_fragment_generation_id = prepare_text_fragment_generation(selected_text_range);
-    client().async_did_request_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), for_input_events_target, move(misspelled_word), text_fragment_generation_id);
+    client().async_did_request_context_menu(m_id, local_root_id, document_id, page().last_context_menu_inspect_node_id(), page().css_to_device_point(content_position).to_type<int>(), for_input_events_target, move(misspelled_word), text_fragment_generation_id);
 }
 
 void PageClient::page_did_request_spelling_menu_action_for_testing(Web::SpellingMenuActionForTesting action, u32 guess_index)
@@ -1452,7 +1456,7 @@ void PageClient::page_did_request_spelling_menu_action_for_testing(Web::Spelling
 void PageClient::page_did_request_link_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, GC::Ptr<Web::DOM::Range> selected_text_range)
 {
     auto text_fragment_generation_id = prepare_text_fragment_generation(selected_text_range);
-    client().async_did_request_link_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, text_fragment_generation_id);
+    client().async_did_request_link_context_menu(m_id, local_root_id, document_id, page().last_context_menu_inspect_node_id(), page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, text_fragment_generation_id);
 }
 
 void PageClient::page_did_request_image_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const& target, unsigned modifiers, Optional<Gfx::Bitmap const*> bitmap_pointer, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type)
@@ -1461,12 +1465,12 @@ void PageClient::page_did_request_image_context_menu(Web::HTML::CrossProcessId l
     if (bitmap_pointer.has_value() && bitmap_pointer.value())
         bitmap = bitmap_pointer.value()->to_shareable_bitmap();
 
-    client().async_did_request_image_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, bitmap, move(link_navigation), move(image_mime_type));
+    client().async_did_request_image_context_menu(m_id, local_root_id, document_id, page().last_context_menu_inspect_node_id(), page().css_to_device_point(content_position).to_type<int>(), move(navigation), target, modifiers, bitmap, move(link_navigation), move(image_mime_type));
 }
 
 void PageClient::page_did_request_media_context_menu(Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::CSSPixelPoint content_position, ByteString const& target, unsigned modifiers, Web::Page::MediaContextMenu const& menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation)
 {
-    client().async_did_request_media_context_menu(m_id, local_root_id, document_id, page().css_to_device_point(content_position).to_type<int>(), target, modifiers, menu, move(navigation));
+    client().async_did_request_media_context_menu(m_id, local_root_id, document_id, page().last_context_menu_inspect_node_id(), page().css_to_device_point(content_position).to_type<int>(), target, modifiers, menu, move(navigation));
 }
 
 void PageClient::set_geolocation_emulated_position(WebView::GeolocationPositionData const& position, Optional<u16> error_code)
@@ -2555,6 +2559,36 @@ void PageClient::close_worker_agent(Web::HTML::WorkerAgentId agent_id, Web::HTML
 
 void PageClient::page_did_mutate_dom(Utf16FlyString const& type, Web::DOM::Node const& target, Web::DOM::NodeList& added_nodes, Web::DOM::NodeList& removed_nodes, GC::Ptr<Web::DOM::Node>, GC::Ptr<Web::DOM::Node>, Optional<Utf16FlyString> const& attribute_name)
 {
+    if (!m_dom_breakpoints.is_empty()) {
+        Optional<String> pause_reason;
+        if (type == Web::DOM::MutationType::attributes) {
+            if (auto flags = m_dom_breakpoints.get(target.unique_id()); flags.has_value() && (*flags & to_underlying(DOMBreakpointFlag::AttributeModified)))
+                pause_reason = MUST(String::formatted("DOM Breakpoint: attribute '{}' modified on <{}>", attribute_name.value_or(u""_utf16_fly_string).to_utf16_string().to_utf8(), target.node_name().to_utf16_string().to_utf8()));
+        } else if (type == Web::DOM::MutationType::childList) {
+            for (auto i = 0u; i < removed_nodes.length(); ++i) {
+                auto* removed = removed_nodes.item(i);
+                if (!removed)
+                    continue;
+                if (auto flags = m_dom_breakpoints.get(removed->unique_id()); flags.has_value() && (*flags & to_underlying(DOMBreakpointFlag::NodeRemoved))) {
+                    pause_reason = MUST(String::formatted("DOM Breakpoint: node <{}> removed", removed->node_name().to_utf16_string().to_utf8()));
+                    break;
+                }
+            }
+            if (!pause_reason.has_value()) {
+                for (auto const* ancestor = &target; ancestor; ancestor = ancestor->parent()) {
+                    if (auto flags = m_dom_breakpoints.get(ancestor->unique_id()); flags.has_value() && (*flags & to_underlying(DOMBreakpointFlag::SubtreeModified))) {
+                        pause_reason = MUST(String::formatted("DOM Breakpoint: subtree modified under <{}>", ancestor->node_name().to_utf16_string().to_utf8()));
+                        break;
+                    }
+                }
+            }
+        }
+        if (pause_reason.has_value()) {
+            if (auto* debugger = client().devtools_debugger())
+                debugger->request_pause_for_dom_breakpoint(*this, *pause_reason);
+        }
+    }
+
     Optional<WebView::Mutation::Type> mutation;
 
     if (type == Web::DOM::MutationType::attributes) {
@@ -2749,6 +2783,92 @@ void PageClient::page_did_receive_network_response_body(u64 request_id, Readonly
     client().async_did_receive_network_response_body(m_id, request_id, data);
 }
 
+u64 PageClient::remember_inspected_listener(Web::DOM::DOMEventListener& listener)
+{
+    // A listener keeps its id while it lives, so a list that a later request superseded still names it correctly.
+    for (auto const& [id, remembered] : m_inspected_listeners) {
+        if (remembered.ptr().ptr() == &listener)
+            return id;
+    }
+    auto id = m_next_inspected_listener_id++;
+    m_inspected_listeners.set(id, listener);
+    return id;
+}
+
+void PageClient::forget_collected_inspected_listeners()
+{
+    m_inspected_listeners.remove_all_matching([](u64, GC::Weak<Web::DOM::DOMEventListener> const& listener) { return !listener; });
+}
+
+GC::Ptr<Web::DOM::DOMEventListener> PageClient::inspected_listener(u64 id) const
+{
+    auto it = m_inspected_listeners.find(id);
+    if (it == m_inspected_listeners.end())
+        return nullptr;
+    return it->value.ptr();
+}
+
+bool PageClient::set_inspector_node_hidden(Web::DOM::Element& element, bool hidden)
+{
+    auto const property = "visibility"_utf16_fly_string;
+    auto style = element.style();
+    auto id = element.unique_id();
+    if (hidden) {
+        if (m_inspector_hidden_nodes.contains(id))
+            return true;
+        InspectorHiddenNodeStyle before { style->get_property_value(property), style->get_property_priority(property) };
+        if (style->set_property(property, u"hidden"sv, u"important"sv).is_exception())
+            return false;
+        m_inspector_hidden_nodes.set(id, move(before));
+        return true;
+    }
+
+    auto before = m_inspector_hidden_nodes.take(id);
+    if (!before.has_value())
+        return true;
+    if (style->get_property_value(property) != u"hidden"sv || style->get_property_priority(property) != u"important"sv)
+        return false;
+    if (before->visibility.is_empty())
+        return !style->remove_property(property).is_exception();
+    return !style->set_property(property, before->visibility.utf16_view(), before->priority.utf16_view()).is_exception();
+}
+
+void PageClient::restore_inspector_hidden_nodes()
+{
+    auto node_ids = m_inspector_hidden_nodes.keys();
+    for (auto id : node_ids) {
+        if (auto* element = as_if<Web::DOM::Element>(Web::DOM::Node::from_unique_id(id))) {
+            if (auto navigable = element->document().navigable(); navigable && &navigable->page() == &page())
+                set_inspector_node_hidden(*element, false);
+        }
+    }
+    m_inspector_hidden_nodes.clear();
+}
+
+void PageClient::set_dom_breakpoint(Web::UniqueNodeID node_id, u8 flag_bit)
+{
+    auto existing = m_dom_breakpoints.get(node_id).value_or(0);
+    m_dom_breakpoints.set(node_id, existing | flag_bit);
+    page().set_listen_for_dom_mutations(true);
+}
+
+void PageClient::remove_dom_breakpoint(Web::UniqueNodeID node_id, u8 flag_bit)
+{
+    auto existing = m_dom_breakpoints.get(node_id);
+    if (!existing.has_value())
+        return;
+    u8 updated = *existing & ~flag_bit;
+    if (updated == 0)
+        m_dom_breakpoints.remove(node_id);
+    else
+        m_dom_breakpoints.set(node_id, updated);
+}
+
+void PageClient::clear_dom_breakpoints()
+{
+    m_dom_breakpoints.clear();
+}
+
 void PageClient::set_has_devtools_client(bool has_devtools_client)
 {
     if (m_has_devtools_client == has_devtools_client)
@@ -2769,14 +2889,19 @@ void PageClient::set_has_devtools_client(bool has_devtools_client)
         auto active_document = navigable.active_document();
         if (!active_document)
             continue;
-        if (has_devtools_client)
+        if (has_devtools_client) {
             active_document->update_layout(Web::DOM::UpdateLayoutReason::InspectDevToolsLayoutData);
-        else
+        } else {
             active_document->clear_devtools_layout_inspection_data();
+            active_document->clear_all_forced_pseudo_states();
+        }
     }
+    if (!has_devtools_client)
+        m_dom_breakpoints.clear();
 
     // No client is left to take messages, or to expand the objects of those logged for the last one.
     if (!has_devtools_client) {
+        clear_inspected_listeners();
         m_devtools_takes_console_messages = false;
         m_devtools_takes_console_errors = false;
         for_each_devtools_console_client([](DevToolsConsoleClient& client) { client.forget_logged_objects(); });
@@ -2837,9 +2962,9 @@ void PageClient::initialize_js_console(Web::DOM::Document& document)
     document.set_console_client(console_client);
 }
 
-void PageClient::did_execute_js_console_input(WebView::DebuggerValue const& result)
+void PageClient::did_execute_js_console_input(u64 request_id, WebView::DebuggerValue const& result, bool thrown)
 {
-    client().async_did_execute_js_console_input(m_id, result);
+    client().async_did_execute_js_console_input(m_id, request_id, result, thrown);
 }
 
 // An object of a console result is in the top-level document's console, but a logged one is in the console of whichever
@@ -2856,10 +2981,17 @@ ErrorOr<WebView::DebuggerObjectProperties> PageClient::console_object_properties
     return console_client->properties_for_object(object_id);
 }
 
-void PageClient::js_console_input(StringView js_source)
+void PageClient::js_console_input(u64 request_id, StringView js_source)
 {
-    if (auto console_client = m_top_level_document_console_client.ptr())
-        console_client->handle_input(js_source);
+    if (auto console_client = m_top_level_document_console_client.ptr()) {
+        console_client->handle_input(request_id, js_source);
+        return;
+    }
+    // Every input gets an answer, or its client would wait for it.
+    WebView::DebuggerValue no_console;
+    no_console.type = WebView::DebuggerValueType::String;
+    no_console.text = "The page has no console to run this in."_utf16;
+    did_execute_js_console_input(request_id, no_console, true);
 }
 
 Optional<Web::HTML::ConsoleInputCompletion> PageClient::complete_js_console_input(StringView input)
@@ -2930,6 +3062,13 @@ Vector<Web::CSS::StyleSheetIdentifier> PageClient::list_style_sheets() const
         for (auto& sheet : document->style_scope().style_sheets()) {
             gather_style_sheets(results, sheet);
         }
+        // A shadow tree's <style> and <link> elements are in its own sheets, not the document's.
+        document->for_each_shadow_root([&](Web::DOM::ShadowRoot& shadow_root) {
+            if (!shadow_root.is_connected())
+                return;
+            for (auto& sheet : shadow_root.style_scope().style_sheets())
+                gather_style_sheets(results, sheet);
+        });
     }
 
     // User style

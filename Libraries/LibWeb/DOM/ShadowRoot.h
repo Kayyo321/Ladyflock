@@ -29,6 +29,7 @@ class WEB_API ShadowRoot final : public DocumentFragment {
 
 public:
     [[nodiscard]] static GC::Ref<ShadowRoot> create(Document&, Element& host, ShadowRootMode);
+    virtual ~ShadowRoot() override;
 
     ShadowRootMode mode() const { return m_mode; }
 
@@ -104,6 +105,10 @@ public:
 
     CSS::StyleScope const& style_scope() const { return m_style_scope; }
     CSS::StyleScope& style_scope() { return m_style_scope; }
+
+    // The sheet that the Inspector's "New style rule" adds rules to for elements in this shadow tree, whose rules
+    // a sheet in the document could not reach.
+    CSS::StyleSheetState& ensure_inspector_style_sheet();
 
     using PartElementMap = HashMap<Utf16FlyString, OrderedHashTable<AbstractElement>>;
     PartElementMap const& part_element_map() const;
@@ -187,6 +192,7 @@ private:
     IntrusiveListNode<ShadowRoot> m_counter_style_settle_list_node;
 
     CSS::StyleScope m_style_scope;
+    RefPtr<CSS::StyleSheetState> m_inspector_style_sheet;
 
     mutable PartElementMap m_part_element_map;
     mutable Optional<u64> m_dom_tree_version_when_calculated_part_element_map;

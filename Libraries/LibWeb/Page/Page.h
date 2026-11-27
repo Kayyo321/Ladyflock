@@ -470,6 +470,7 @@ public:
         };
         Kind kind { Kind::Page };
         GC::Ref<DOM::Node> target;
+        UniqueNodeID inspect_node_id { 0 };
         CSSPixelPoint position;
         Optional<Web::MediaContextMenu> media {};
         Optional<URL::URL> link_url {};
@@ -477,6 +478,7 @@ public:
     };
     void record_context_menu_request(Badge<EventHandler>, ContextMenuRequest);
     void clear_context_menu_request() { m_context_menu_request.clear(); }
+    UniqueNodeID last_context_menu_inspect_node_id() const { return m_context_menu_request.has_value() ? m_context_menu_request->inspect_node_id : 0; }
     void record_context_menu_misspelling(Badge<EventHandler>, Optional<Editing::ContextMenuMisspelling> misspelling) { m_context_menu_misspelling = move(misspelling); }
     void replace_context_menu_misspelling(Utf16String const& replacement);
     void accept_spelling_word(Utf16String const& word);

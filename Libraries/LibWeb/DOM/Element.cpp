@@ -938,7 +938,7 @@ bool is_valid_namespace_prefix(Utf16View prefix)
 }
 
 // https://dom.spec.whatwg.org/#valid-attribute-local-name
-bool is_valid_attribute_local_name(Utf16View local_name)
+WEB_API bool is_valid_attribute_local_name(Utf16View local_name)
 {
     // A string is a valid attribute local name if its length is at least 1 and it does not contain ASCII whitespace, U+0000 NULL, U+002F (/), U+003D (=), or U+003E (>).
     constexpr Array<u32, 9> INVALID_ATTRIBUTE_LOCAL_NAME_CHARACTERS { '\t', '\n', '\f', '\r', ' ', '\0', '/', '=', '>' };
@@ -3317,6 +3317,85 @@ void Element::set_marks_on_focus_within_chain(Document const& document, bool mar
             const_cast<Element*>(element)->m_is_marked_on_focus_within_chain = marked;
         return IterationDecision::Continue;
     });
+}
+
+static Optional<u32> forced_pseudo_state_bit(CSS::PseudoClass pseudo_class)
+{
+    switch (pseudo_class) {
+    case CSS::PseudoClass::Hover:
+        return 1u << 0;
+    case CSS::PseudoClass::Active:
+        return 1u << 1;
+    case CSS::PseudoClass::Focus:
+        return 1u << 2;
+    case CSS::PseudoClass::FocusVisible:
+        return 1u << 3;
+    case CSS::PseudoClass::FocusWithin:
+        return 1u << 4;
+    case CSS::PseudoClass::Target:
+        return 1u << 5;
+    case CSS::PseudoClass::Visited:
+        return 1u << 6;
+    case CSS::PseudoClass::Buffering:
+        return 1u << 7;
+    case CSS::PseudoClass::Stalled:
+        return 1u << 8;
+    default:
+        return {};
+    }
+}
+
+bool Element::has_forced_pseudo_state(CSS::PseudoClass pseudo_class) const
+{
+    auto bit = forced_pseudo_state_bit(pseudo_class);
+    return bit.has_value() && (m_forced_pseudo_states & *bit) != 0;
+}
+
+bool Element::set_forced_pseudo_state(CSS::PseudoClass pseudo_class, bool enabled)
+{
+    auto bit = forced_pseudo_state_bit(pseudo_class);
+    if (!bit.has_value())
+        return false;
+
+    auto new_mask = enabled ? (m_forced_pseudo_states | *bit) : (m_forced_pseudo_states & ~*bit);
+    if (new_mask == m_forced_pseudo_states)
+        return true;
+
+    m_forced_pseudo_states = new_mask;
+    document().note_element_forced_pseudo_state(*this, m_forced_pseudo_states != 0);
+
+    bool effective_value = SelectorMatching::element_matches_state(*this, pseudo_class);
+    CSS::record_element_state_changed(*this, pseudo_class, effective_value);
+    if (pseudo_class == CSS::PseudoClass::Visited)
+        CSS::record_element_state_changed(*this, CSS::PseudoClass::AnyLink, SelectorMatching::element_matches_state(*this, CSS::PseudoClass::AnyLink));
+
+    return true;
+}
+
+void Element::clear_forced_pseudo_states()
+{
+    if (m_forced_pseudo_states == 0)
+        return;
+
+    auto old_mask = exchange(m_forced_pseudo_states, 0u);
+    static constexpr Array<CSS::PseudoClass, 9> supported_states {
+        CSS::PseudoClass::Hover,
+        CSS::PseudoClass::Active,
+        CSS::PseudoClass::Focus,
+        CSS::PseudoClass::FocusVisible,
+        CSS::PseudoClass::FocusWithin,
+        CSS::PseudoClass::Target,
+        CSS::PseudoClass::Visited,
+        CSS::PseudoClass::Buffering,
+        CSS::PseudoClass::Stalled,
+    };
+    for (auto pseudo_class : supported_states) {
+        auto bit = forced_pseudo_state_bit(pseudo_class);
+        if (bit.has_value() && (old_mask & *bit) != 0)
+            CSS::record_element_state_changed(*this, pseudo_class, SelectorMatching::element_matches_state(*this, pseudo_class));
+    }
+    if (old_mask & *forced_pseudo_state_bit(CSS::PseudoClass::Visited))
+        CSS::record_element_state_changed(*this, CSS::PseudoClass::AnyLink, SelectorMatching::element_matches_state(*this, CSS::PseudoClass::AnyLink));
 }
 
 bool Element::has_synthetic_pseudo_elements(Layout::BegunRead const& read) const

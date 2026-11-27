@@ -24,6 +24,7 @@
 #include <UI/Qt/DevToolsBanner.h>
 #include <UI/Qt/HubConnection.h>
 #include <UI/Qt/Icon.h>
+#include <UI/Qt/InspectorHost.h>
 #include <UI/Qt/LadybirdButton.h>
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
@@ -527,6 +528,9 @@ void BrowserWindow::initialize_application_actions()
     addAction(application.open_file_action());
     addAction(application.open_settings_action());
     addAction(application.open_downloads_action());
+    addAction(application.toggle_inspector_action());
+    addAction(application.toggle_inspector_picker_action());
+    addAction(application.open_inspector_console_action());
     addAction(application.toggle_bookmark_bar_action());
     addAction(application.toggle_sidebar_action());
     addAction(application.open_location_action());
@@ -1317,7 +1321,7 @@ void BrowserWindow::discard_tab(Tab& tab)
     //     address would lose the edit.
     auto index = tab_index(&tab);
     // NB: A page on display, such as the other side of a shown pair, is in use even when its tab isn't current.
-    if (index < 0 || &tab == m_current_tab || m_tabs_container->page_area().is_displayed(&tab) || tab.is_pinned() || tab.is_in_report_review() || tab.location_edit_with_parked_editing()) {
+    if (index < 0 || &tab == m_current_tab || m_tabs_container->page_area().is_displayed(&tab) || tab.is_pinned() || tab.is_in_report_review() || tab.has_open_inspector() || tab.location_edit_with_parked_editing()) {
         tab.view().decline_discard();
         return;
     }
@@ -1808,41 +1812,51 @@ void BrowserWindow::move_focus_between_chrome_and_page()
 {
     if (!m_current_tab)
         return;
-    // F6 goes from the chrome to the focused side, then to the other side of a shown pair, then back to the chrome.
-    // Shift+F6 goes the other way.
-    auto backward = QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
-    Tab* other_side = nullptr;
-    if (auto const* pair = m_tabs_container->split_pair_of(m_current_tab); pair && m_tabs_container->page_area().shows_side_by_side())
-        other_side = pair->partner_of(m_current_tab);
+    // Keep the focus order stable when moving through a split changes the current tab.
+    struct FocusRegion {
+        Tab* tab;
+        QWidget* widget;
+        InspectorHost* inspector;
+    };
+    Vector<FocusRegion, 5> regions;
+    regions.append({ nullptr, nullptr, nullptr });
 
-    auto* focus = QApplication::focusWidget();
-    auto focus_is_in_page = [&](Tab* tab) { return tab && tab->is_loaded() && focus && (focus == &tab->view() || tab->view().isAncestorOf(focus)); };
-
-    if (other_side) {
-        auto in_current_page = focus_is_in_page(m_current_tab);
-        auto in_chrome = !in_current_page;
-        if (!backward) {
-            if (in_chrome) {
-                m_current_tab->view().setFocus(Qt::ShortcutFocusReason);
-            } else {
-                focus_split_view_side(*other_side, SideFocus::Page);
-                m_is_switching_split_view_side = false;
-            }
-            return;
-        }
-        // NB: Going backward from the chrome lands on the side the person last left, which is the other side.
-        if (in_current_page) {
-            m_current_tab->focus_location_editor();
-        } else {
-            focus_split_view_side(*other_side, SideFocus::Page);
-        }
-        return;
+    auto const* pair = m_tabs_container->split_pair_of(m_current_tab);
+    auto showing_split = pair && m_tabs_container->page_area().shows_side_by_side();
+    auto append_regions = [&](Tab& tab) {
+        regions.append({ &tab, &tab.view(), nullptr });
+        if (auto* inspector = tab.inspector_host(); tab.has_open_inspector() && (!showing_split || inspector->dock_mode() != InspectorHost::DockMode::Window))
+            regions.append({ &tab, inspector->inspector_view(), inspector });
+    };
+    if (showing_split) {
+        append_regions(*pair->start);
+        append_regions(*pair->end);
+    } else {
+        append_regions(*m_current_tab);
     }
 
-    if (m_current_tab->view().hasFocus())
+    size_t current_region = 0;
+    auto* focused = QApplication::focusWidget();
+    for (size_t i = 1; i < regions.size(); ++i) {
+        auto* widget = regions[i].widget;
+        if (focused && (widget == focused || widget->isAncestorOf(focused))) {
+            current_region = i;
+            break;
+        }
+    }
+
+    auto backward = QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+    auto const& next = regions[(current_region + (backward ? regions.size() - 1 : 1)) % regions.size()];
+    if (!next.tab) {
         m_current_tab->focus_location_editor();
+        return;
+    }
+    if (next.tab != m_current_tab)
+        focus_split_view_side(*next.tab, SideFocus::Page);
+    if (next.inspector)
+        next.inspector->focus_inspector();
     else
-        m_current_tab->view().setFocus(Qt::ShortcutFocusReason);
+        next.widget->setFocus(Qt::ShortcutFocusReason);
 }
 
 void BrowserWindow::open_next_tab()

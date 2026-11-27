@@ -135,11 +135,11 @@ endpoint WebContentClient routed by Web::PageId page_id
     did_click_link(Web::PageId page_id, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers) =|
     did_middle_click_link(Web::PageId page_id, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers) =|
     did_request_external_url(Web::PageId page_id, URL::URL url, URL::Origin initiator_origin, bool has_transient_activation) =|
-    did_request_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id) =|
-    did_request_link_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers, Optional<u64> text_fragment_generation_id) =|
+    did_request_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id) =|
+    did_request_link_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers, Optional<u64> text_fragment_generation_id) =|
     did_generate_text_fragment_url(Web::PageId page_id, u64 request_id, Optional<URL::URL> url) =|
-    did_request_image_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type) =|
-    did_request_media_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, ByteString target, unsigned modifiers, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation) =|
+    did_request_image_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString target, unsigned modifiers, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type) =|
+    did_request_media_context_menu(Web::PageId page_id, Web::HTML::CrossProcessId local_root_id, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, ByteString target, unsigned modifiers, Web::MediaContextMenu menu, Optional<Web::HTML::PreparedNavigationDescriptor> navigation) =|
     did_request_alert(Web::PageId page_id, Utf16String message) =|
     did_request_before_unload(Web::PageId page_id, String source) =|
     did_request_confirm(Web::PageId page_id, Utf16String message) =|
@@ -151,23 +151,23 @@ endpoint WebContentClient routed by Web::PageId page_id
 
     did_inspect_dom_tree(Web::PageId page_id, String dom_tree) =|
     did_inspect_storage(Web::PageId page_id, u64 request_id, String storage_items) =|
-    did_inspect_dom_node(Web::PageId page_id, WebView::DOMNodeProperties properties) =|
-    did_inspect_grid_layouts(Web::PageId page_id, String grid_layouts) =|
-    did_inspect_current_grid(Web::PageId page_id, String grid_layout) =|
-    did_inspect_current_flexbox(Web::PageId page_id, String flexbox_layout) =|
+    did_inspect_dom_node(Web::PageId page_id, u64 request_id, WebView::DOMNodeProperties properties) =|
+    did_inspect_grid_layouts(Web::PageId page_id, u64 request_id, String grid_layouts) =|
+    did_inspect_current_grid(Web::PageId page_id, u64 request_id, String grid_layout) =|
+    did_inspect_current_flexbox(Web::PageId page_id, u64 request_id, String flexbox_layout) =|
     did_inspect_indexed_database(Web::PageId page_id, u64 request_id, String result) =|
-    did_inspect_accessibility_tree(Web::PageId page_id, String accessibility_tree) =|
+    did_inspect_accessibility_tree(Web::PageId page_id, u64 request_id, Optional<String> accessibility_tree) =|
     did_get_accessibility_tree(Web::PageId page_id, u64 sequence, Vector<WebView::AccessibilityNodeData> nodes) =|
     did_change_accessibility_tree(Web::PageId page_id, u64 base_sequence, u64 sequence, WebView::AccessibilityTreeDelta delta) =|
     did_accessibility_focus_change(Web::PageId page_id, i64 focused_node_id) =|
     did_get_hovered_node_id(Web::PageId page_id, Web::UniqueNodeID node_id) =|
     did_get_node_id_at_position(Web::PageId page_id, u64 request_id, Web::UniqueNodeID node_id) =|
-    did_finish_editing_dom_node(Web::PageId page_id, Optional<Web::UniqueNodeID> node_id) =|
+    did_finish_editing_dom_node(Web::PageId page_id, u64 request_id, Optional<Web::UniqueNodeID> node_id) =|
     did_mutate_dom(Web::PageId page_id, WebView::Mutation mutation) =|
-    did_get_dom_node_html(Web::PageId page_id, String html) =|
+    did_get_dom_node_html(Web::PageId page_id, u64 request_id, Optional<String> html) =|
 
-    did_list_style_sheets(Web::PageId page_id, Vector<Web::CSS::StyleSheetIdentifier> style_sheets) =|
-    did_get_style_sheet_source(Web::PageId page_id, Web::CSS::StyleSheetIdentifier identifier, URL::URL base_url, Utf16String source) =|
+    did_list_style_sheets(Web::PageId page_id, u64 request_id, Vector<Web::CSS::StyleSheetIdentifier> style_sheets) =|
+    did_get_style_sheet_source(Web::PageId page_id, u64 request_id, Web::CSS::StyleSheetIdentifier identifier, Optional<URL::URL> base_url, Optional<Utf16String> source) =|
     did_list_devtools_sources(Web::PageId page_id, u64 request_id, Vector<Web::HTML::ScriptRegistryDescription> sources) =|
     did_get_devtools_source(Web::PageId page_id, Web::HTML::ScriptRegistryIdentifier source_id, Optional<Web::HTML::ScriptRegistryContent> source) =|
     did_add_devtools_source(Web::PageId page_id, Web::HTML::ScriptRegistryDescription source) =|
@@ -183,6 +183,7 @@ endpoint WebContentClient routed by Web::PageId page_id
     did_take_screenshot(Web::PageId page_id, Gfx::ShareableBitmap screenshot) =|
 
     did_get_internal_page_info(Web::PageId page_id, WebView::PageInfoType type, Optional<Core::AnonymousBuffer> info) =|
+    did_complete_inspector_engine_command(Web::PageId page_id, u64 request_id, bool ok, JsonValue result, Optional<String> error) =|
     did_describe_owners_of_visual_context_nodes(Web::PageId page_id, u64 structural_epoch, Vector<u32> spatial_node_indices, Vector<u32> effect_node_indices, Vector<String> owners) =|
 
     did_get_selected_text(Web::PageId page_id, u64 request_id, ByteString selection) =|
@@ -322,7 +323,7 @@ endpoint WebContentClient routed by Web::PageId page_id
     gamepad_play_effect(Web::Gamepad::GamepadHandle handle, Web::Gamepad::GamepadEffect effect) =|
     gamepad_stop_effects(Web::Gamepad::GamepadHandle handle) =|
 
-    did_execute_js_console_input(Web::PageId page_id, WebView::DebuggerValue result) =|
+    did_execute_js_console_input(Web::PageId page_id, u64 request_id, WebView::DebuggerValue result, bool thrown) =|
     did_complete_js_console_input(Web::PageId page_id, u64 request_id, Optional<Vector<String>> matches, String match_prop) =|
     did_output_js_console_message(Web::PageId page_id, WebView::ConsoleOutput console_output) =|
 

@@ -440,6 +440,10 @@ public:
     decltype(Hub::View::on_web_content_crashed) on_web_content_crashed;
     decltype(Hub::View::on_crash_overlay_state_change) on_crash_overlay_state_change;
     decltype(Hub::View::on_crash_report_saved) on_crash_report_saved;
+    Function<void(String const& panel, Optional<i64> node_id, u64 menu_generation)> on_inspector_open_requested;
+    Function<void()> on_inspector_close_requested;
+    Function<void(String const& dock_mode)> on_inspector_dock_mode_changed;
+    Function<void(bool picker_active)> on_inspector_picker_state_changed;
 };
 
 }

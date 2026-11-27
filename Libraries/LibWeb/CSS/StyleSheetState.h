@@ -70,6 +70,14 @@ public:
         Error,
     };
 
+    enum class AttributionKind : u8 {
+        None,
+        UserStyle,
+        ContentBlocker,
+        Extension,
+        Inspector,
+    };
+
     [[nodiscard]] static NonnullRefPtr<StyleSheetState> create(RustRuleList, GC::Ptr<DOM::Document>, RustMediaList, Optional<::URL::URL> location, Optional<ReferrerPolicy::ReferrerPolicy> fetched_referrer_policy = {}, StyleSheetImport const* import = nullptr);
     static WebIDL::ExceptionOr<NonnullRefPtr<StyleSheetState>> create_constructed(DOM::Document const&, CSSStyleSheetOptions const& options = {});
 
@@ -205,6 +213,19 @@ public:
     StyleSheetState const* parent_style_sheet() const { return m_parent_style_sheet.ptr(); }
     void set_parent_css_style_sheet(StyleSheetState*);
 
+    u64 edit_revision() const { return m_edit_revision; }
+    void bump_edit_revision() { ++m_edit_revision; }
+
+    AttributionKind attribution_kind() const { return m_attribution_kind; }
+    Optional<String> const& attribution_id() const { return m_attribution_id; }
+    Optional<String> const& attribution_label() const { return m_attribution_label; }
+    void set_attribution(AttributionKind kind, Optional<String> id = {}, Optional<String> label = {})
+    {
+        m_attribution_kind = kind;
+        m_attribution_id = move(id);
+        m_attribution_label = move(label);
+    }
+
 private:
     StyleSheetState(RustRuleList, GC::Ptr<DOM::Document>, RustMediaList, Optional<::URL::URL> location, Optional<ReferrerPolicy::ReferrerPolicy> fetched_referrer_policy, StyleSheetImport const* import);
 
@@ -254,6 +275,10 @@ private:
 
     SheetID m_style_engine_sheet_id;
     RefPtr<SharedCompiledStyleSheet> m_shared_compiled_style_sheet;
+    u64 m_edit_revision { 1 };
+    AttributionKind m_attribution_kind { AttributionKind::None };
+    Optional<String> m_attribution_id;
+    Optional<String> m_attribution_label;
     bool m_compiled_style_sheet_is_unshareable { false };
     bool m_visiting_edges { false };
 };

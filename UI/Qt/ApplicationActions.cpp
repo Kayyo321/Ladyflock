@@ -238,12 +238,32 @@ ApplicationActions::ApplicationActions(PageOptions const& options)
 
     m_inspect_menu = Menu::create("Inspect"sv);
 
+    m_toggle_inspector_action = Action::create("Open Inspector"sv, ActionID::ToggleInspector, [] {
+        if (auto* tab = Application::the().active_tab())
+            tab->toggle_inspector();
+    });
+    m_inspect_menu->add_action(*m_toggle_inspector_action);
+
+    m_toggle_inspector_picker_action = Action::create("Pick Element"sv, ActionID::ToggleInspectorPicker, [] {
+        if (auto* tab = Application::the().active_tab())
+            tab->toggle_inspector_picker();
+    });
+    m_inspect_menu->add_action(*m_toggle_inspector_picker_action);
+
+    m_open_inspector_console_action = Action::create("Open Console"sv, ActionID::OpenInspectorConsole, [] {
+        if (auto* tab = Application::the().active_tab())
+            tab->open_inspector("console"_string);
+    });
+    m_inspect_menu->add_action(*m_open_inspector_console_action);
+
+    m_inspect_menu->add_separator();
+
     m_view_source_action = Action::create("View Page Source"sv, ActionID::ViewSource, on_active_view([](RemoteView& view) {
         HubConnection::the().async_view_get_source(view.view_id());
     }));
     m_inspect_menu->add_action(*m_view_source_action);
 
-    m_toggle_devtools_action = Action::create("Enable DevTools"sv, ActionID::ToggleDevTools, [] {
+    m_toggle_devtools_action = Action::create("Enable Remote DevTools"sv, ActionID::ToggleDevTools, [] {
         HubConnection::the().async_toggle_devtools_enabled();
     });
     m_inspect_menu->add_action(*m_toggle_devtools_action);
@@ -390,7 +410,7 @@ void ApplicationActions::update_force_dark_action()
 
 void ApplicationActions::devtools_enabled_changed(bool enabled)
 {
-    m_toggle_devtools_action->set_text(enabled ? "Disable DevTools"sv : "Enable DevTools"sv);
+    m_toggle_devtools_action->set_text(enabled ? "Disable Remote DevTools"sv : "Enable Remote DevTools"sv);
 }
 
 void ApplicationActions::update_website_color_scheme_actions()

@@ -25,7 +25,12 @@ static HashMap<String, ExtensionContentScriptHost::ExtensionMetadata>& extension
 
 void ExtensionContentScriptHost::set_extension_metadata(String extension_id, String manifest_json, String locale_messages_json)
 {
-    extension_metadata_by_id().set(move(extension_id), { move(manifest_json), move(locale_messages_json) });
+    String display_name;
+    if (auto parsed = JsonValue::from_string(manifest_json); !parsed.is_error() && parsed.value().is_object()) {
+        if (auto name = parsed.value().as_object().get_string("name"sv); name.has_value() && !name->starts_with_bytes("__MSG_"sv))
+            display_name = *name;
+    }
+    extension_metadata_by_id().set(move(extension_id), { move(manifest_json), move(locale_messages_json), move(display_name) });
 }
 
 Optional<ExtensionContentScriptHost::ExtensionMetadata const&> ExtensionContentScriptHost::extension_metadata(StringView extension_id)

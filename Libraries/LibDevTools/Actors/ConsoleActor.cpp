@@ -16,16 +16,22 @@
 
 namespace DevTools {
 
-static void received_console_result(JsonObject& response, String result_id, String input, JsonValue result)
+static void received_console_result(JsonObject& response, String result_id, String input, JsonValue result, bool is_throw)
 {
     response.set("type"sv, "evaluationResult"_string);
     response.set("timestamp"sv, AK::UnixDateTime::now().milliseconds_since_epoch());
     response.set("resultID"sv, move(result_id));
     response.set("input"sv, move(input));
-    response.set("result"sv, move(result));
-    response.set("exception"sv, JsonValue {});
+    if (is_throw) {
+        response.set("result"sv, JsonValue {});
+        response.set("exception"sv, move(result));
+        response.set("hasException"sv, true);
+    } else {
+        response.set("result"sv, move(result));
+        response.set("exception"sv, JsonValue {});
+        response.set("hasException"sv, false);
+    }
     response.set("exceptionMessage"sv, JsonValue {});
-    response.set("hasException"sv, false);
     response.set("helperResult"sv, JsonValue {});
 }
 
@@ -197,8 +203,8 @@ void ConsoleActor::handle_message(Message const& message)
                 async_handler<ConsoleActor>({}, [result_id, input = *text](auto& self, auto result, auto& response) {
                     // The console holds the objects of its results, so they stay expandable after the debugger resumes.
                     auto thread = self.m_thread.strong_ref();
-                    auto serialized = thread ? thread->serialize_debugger_value(result, WebView::DebuggerObjectScope::Console) : JsonValue {};
-                    received_console_result(response, move(result_id), move(input), move(serialized));
+                    auto serialized = thread ? thread->serialize_debugger_value(result.value, WebView::DebuggerObjectScope::Console) : JsonValue {};
+                    received_console_result(response, move(result_id), move(input), move(serialized), result.is_throw);
                 }));
         }
 

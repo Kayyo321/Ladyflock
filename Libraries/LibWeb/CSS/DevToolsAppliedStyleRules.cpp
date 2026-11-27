@@ -41,6 +41,7 @@
 #include <LibWeb/CSS/Parser/SyntaxParsing.h>
 #include <LibWeb/CSS/PropertyNameAndID.h>
 #include <LibWeb/CSS/SelectorMatching.h>
+#include <LibWeb/CSS/SharedCompiledStyleSheet.h>
 #include <LibWeb/CSS/StyleComputeFFI.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleEngineInput.h>
@@ -362,13 +363,145 @@ static JsonObject serialize_devtools_style_sheet_identifier(StyleSheetIdentifier
     return serialized_identifier;
 }
 
+static StringView attribution_kind_to_string(StyleSheetState::AttributionKind kind)
+{
+    switch (kind) {
+    case StyleSheetState::AttributionKind::UserStyle:
+        return "user-style"sv;
+    case StyleSheetState::AttributionKind::ContentBlocker:
+        return "content-blocker"sv;
+    case StyleSheetState::AttributionKind::Extension:
+        return "extension"sv;
+    case StyleSheetState::AttributionKind::Inspector:
+        return "inspector"sv;
+    case StyleSheetState::AttributionKind::None:
+        return ""sv;
+    }
+    return ""sv;
+}
+
+static StringView cascade_origin_to_string(CascadeOrigin origin)
+{
+    switch (origin) {
+    case CascadeOrigin::UserAgent:
+        return "user-agent"sv;
+    case CascadeOrigin::User:
+        return "user"sv;
+    case CascadeOrigin::Author:
+        return "author"sv;
+    default:
+        return "author"sv;
+    }
+}
+
+struct InactiveCssDiagnostic {
+    String reason;
+    String hint;
+};
+
+static Optional<InactiveCssDiagnostic> check_inactive_css_property(
+    Layout::BegunRead const& read,
+    StringView property_name,
+    DOM::AbstractElement const& abstract_element)
+{
+    auto computed = abstract_element.element().computed_style(abstract_element.pseudo_element());
+    if (!computed)
+        return {};
+
+    auto display = computed->display();
+    auto position = computed->position();
+
+    auto const* box = abstract_element.layout_node(read);
+    if (!box)
+        return {};
+    auto const* parent = box->parent();
+    bool is_flex_container = display.is_flex_inside();
+    bool is_grid_container = display.is_grid_inside();
+    bool parent_is_flex = parent && parent->display().is_flex_inside();
+    bool parent_is_grid = parent && parent->display().is_grid_inside();
+    bool is_inline = display.is_inline_outside() && display.is_flow_inside() && !box->is_replaced_box();
+
+    if (property_name == "z-index"sv) {
+        if (position == Positioning::Static && !parent_is_flex && !parent_is_grid) {
+            return InactiveCssDiagnostic {
+                "z-index has no effect on a statically positioned element outside a flex or grid container."_string,
+                "Set position (e.g. relative) or place inside a flex/grid container."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("top"sv, "right"sv, "bottom"sv, "left"sv, "inset"sv, "inset-block"sv, "inset-inline"sv, "inset-block-start"sv, "inset-block-end"sv, "inset-inline-start"sv, "inset-inline-end"sv)) {
+        if (position == Positioning::Static) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} has no effect on a statically positioned element.", property_name)),
+                "Set position to relative, absolute, fixed, or sticky."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("width"sv, "height"sv, "min-width"sv, "max-width"sv, "min-height"sv, "max-height"sv)) {
+        if (is_inline) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} has no effect on a non-replaced inline element.", property_name)),
+                "Try display: inline-block or display: block."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("flex-direction"sv, "flex-wrap"sv, "flex-flow"sv)) {
+        if (!is_flex_container) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} only applies to flex containers.", property_name)),
+                "Add display: flex or display: inline-flex."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("grid-template-columns"sv, "grid-template-rows"sv, "grid-template-areas"sv, "grid-auto-flow"sv, "grid-auto-columns"sv, "grid-auto-rows"sv)) {
+        if (!is_grid_container) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} only applies to grid containers.", property_name)),
+                "Add display: grid or display: inline-grid."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("flex"sv, "flex-grow"sv, "flex-shrink"sv, "flex-basis"sv)) {
+        if (!parent_is_flex) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} only applies to flex items (children of a flex container).", property_name)),
+                "Set display: flex on the parent element."_string,
+            };
+        }
+        return {};
+    }
+
+    if (property_name.is_one_of("grid-column"sv, "grid-row"sv, "grid-area"sv, "grid-column-start"sv, "grid-column-end"sv, "grid-row-start"sv, "grid-row-end"sv)) {
+        if (!parent_is_grid) {
+            return InactiveCssDiagnostic {
+                MUST(String::formatted("{} only applies to grid items (children of a grid container).", property_name)),
+                "Set display: grid on the parent element."_string,
+            };
+        }
+        return {};
+    }
+
+    return {};
+}
+
 // What DevTools shows for one rule the engine says decides for this element. Which of the rule's
 // selectors matched is asked with a selector query, because the engine reports the rule rather than
 // the entry, and a panel can afford to match each selector again.
-static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRule const& rule, DOM::AbstractElement const& element)
+static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRule const& rule, DOM::AbstractElement const& element, StyleEngineRuleTarget const& target)
 {
     auto declaration = declaration_of_rule(rule);
-    auto authored_text = extract_css_declaration_block_from_source(rule);
+    // CSSOM edits modify the declaration block while the source still describes the original sheet.
+    auto authored_text = declaration.revision() == 0 ? extract_css_declaration_block_from_source(rule) : Optional<String> {};
     SelectorList selectors;
     if (auto const* style_rule = as_if<CSSStyleRule>(rule))
         selectors = style_rule->absolutized_selectors();
@@ -378,15 +511,20 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
     JsonArray serialized_selectors;
     JsonArray specificities;
     JsonArray matched_selector_indexes;
+    u32 max_matched_specificity = 0;
     for (size_t index = 0; index < selectors.size(); ++index) {
         auto const& selector = selectors[index];
+        auto specificity = selector->specificity();
         serialized_selectors.must_append(selector->serialize().to_utf8());
-        specificities.must_append(selector->specificity());
+        specificities.must_append(specificity);
         SelectorList selector_query_list;
         selector_query_list.append(selector);
         auto selector_query = DOM::SelectorQuery::create(move(selector_query_list));
-        if (selector_query->matches(element.element(), document))
+        if (selector_query->matches(element.element(), document)) {
             matched_selector_indexes.must_append(index);
+            if (specificity > max_matched_specificity)
+                max_matched_specificity = specificity;
+        }
     }
 
     JsonObject serialized_rule;
@@ -395,7 +533,16 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
     serialized_rule.set("selectors"sv, move(serialized_selectors));
     serialized_rule.set("selectorsSpecificity"sv, move(specificities));
     serialized_rule.set("matchedSelectorIndexes"sv, move(matched_selector_indexes));
+    serialized_rule.set("maxSpecificity"sv, max_matched_specificity);
     serialized_rule.set("cssText"sv, rule.serialized().to_utf8());
+    serialized_rule.set("ruleIdentity"sv, String::number(rule.native_rule().identity()));
+    serialized_rule.set("origin"sv, cascade_origin_to_string(target.cascade_origin));
+    serialized_rule.set("isSystem"sv, target.cascade_origin == CascadeOrigin::UserAgent);
+    if (!target.qualified_layer_name.is_empty())
+        serialized_rule.set("layerName"sv, target.qualified_layer_name.to_utf16_string().to_utf8());
+    if (auto const& loc = rule.source_location(); loc.has_value())
+        serialized_rule.set("sourceLine"sv, static_cast<u64>(loc->line + 1));
+
     if (authored_text.has_value()) {
         serialized_rule.set("authoredText"sv, *authored_text);
         serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, parse_devtools_style_declarations(document, authored_text->bytes_as_string_view())));
@@ -403,12 +550,31 @@ static JsonObject serialize_devtools_applied_rule(DOM::Document& document, CSSRu
         auto style = rule.type() == CSSRule::Type::Style
             ? static_cast<CSSStyleRule const&>(rule).style()
             : static_cast<CSSNestedDeclarations const&>(rule).style();
-        serialized_rule.set("authoredText"sv, style->serialized().to_utf8());
-        serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, declaration));
+        // The block stores longhands once the CSSOM has edited it. Its serialization folds them back into the
+        // shorthands they came from, so list what that says rather than every longhand.
+        auto serialized = style->serialized();
+        serialized_rule.set("authoredText"sv, serialized.to_utf8());
+        serialized_rule.set("declarations"sv, serialize_devtools_style_declarations(document, parse_devtools_style_declarations(document, serialized.utf16_view())));
     }
     if (auto* sheet = rule.parent_style_sheet()) {
-        if (auto identifier = style_sheet_identifier_for(*sheet); identifier.has_value())
-            serialized_rule.set("ruleId"sv, serialize_devtools_style_sheet_identifier(*identifier));
+        if (sheet->owner_node() || sheet->owner_import() || sheet->constructed()) {
+            serialized_rule.set("sheetId"sv, String::number(sheet->style_engine_occurrence_id()));
+            serialized_rule.set("sheetRevision"sv, sheet->edit_revision() + declaration.revision());
+        }
+        if (sheet->attribution_kind() != StyleSheetState::AttributionKind::None) {
+            JsonObject attribution;
+            attribution.set("kind"sv, attribution_kind_to_string(sheet->attribution_kind()));
+            if (sheet->attribution_id().has_value())
+                attribution.set("id"sv, *sheet->attribution_id());
+            if (sheet->attribution_label().has_value())
+                attribution.set("label"sv, *sheet->attribution_label());
+            serialized_rule.set("attribution"sv, move(attribution));
+        }
+        // NB: Only a sheet with an owner has an identifier; asking for the user-agent's or a constructed one's logs.
+        if (sheet->owner_node() || sheet->owner_import()) {
+            if (auto identifier = style_sheet_identifier_for(*sheet); identifier.has_value())
+                serialized_rule.set("ruleId"sv, serialize_devtools_style_sheet_identifier(*identifier));
+        }
     }
     return serialized_rule;
 }
@@ -459,6 +625,87 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
 {
     JsonArray entries;
 
+    // A compiled stylesheet can be shared by the document and any connected shadow root.
+    // The matched rule identifies its compiled source without naming the occurrence.
+    // Within one scope, the engine applies a sheet included several times at its last place whose conditions hold,
+    // so that copy is the one whose rules style the page.
+    auto for_each_applied_copy = [](StyleScope const& scope, auto&& callback) {
+        HashMap<StyleSheetState const*, StyleSheetState const*> applied_copy_by_snapshot;
+        Vector<StyleSheetState const*> snapshots;
+        scope.for_each_stylesheet(CascadeOrigin::Author, [&](StyleSheetState& sheet) {
+            auto* compiled = sheet.shared_compiled_style_sheet();
+            if (!compiled || sheet.disabled() || !sheet.native_media_list().matches())
+                return;
+            if (applied_copy_by_snapshot.set(&compiled->contents(), &sheet) == HashSetResult::InsertedNewEntry)
+                snapshots.append(&compiled->contents());
+        });
+        for (auto const* snapshot : snapshots)
+            callback(*snapshot, *applied_copy_by_snapshot.get(snapshot).value());
+    };
+
+    HashMap<StyleSheetState const*, StyleSheetState const*> live_sheet_by_snapshot;
+    auto add_occurrences = [&](StyleScope const& scope) {
+        for_each_applied_copy(scope, [&](StyleSheetState const& snapshot, StyleSheetState const& sheet) {
+            auto existing = live_sheet_by_snapshot.get(&snapshot);
+            if (!existing.has_value())
+                live_sheet_by_snapshot.set(&snapshot, &sheet);
+            else if (*existing != &sheet)
+                live_sheet_by_snapshot.set(&snapshot, nullptr);
+        });
+    };
+    add_occurrences(m_document->style_scope());
+    m_document->for_each_shadow_root([&](DOM::ShadowRoot const& root) {
+        if (root.is_connected())
+            add_occurrences(root.style_scope());
+    });
+
+    // Two scopes with the same sheet, such as two instances of a component, share its compiled form, so the
+    // document-wide map cannot tell which one a rule came from. How a rule's selectors can reach the element names
+    // the scopes it can have come from: a selector reaches the host of its tree only through :host, an element
+    // slotted into its tree only through ::slotted(), and a part of a shadow tree inside its tree only through
+    // ::part(); any other only an element of its own tree. A sheet found once in those scopes is the copy.
+    auto occurrence_styling = [&](DOM::Element const& element, StyleSheetState const& snapshot, CSSRule const& rule) -> Optional<StyleSheetState const*> {
+        SelectorList selectors;
+        if (auto const* style_rule = as_if<CSSStyleRule>(rule))
+            selectors = style_rule->absolutized_selectors();
+        else if (auto const* nested = as_if<CSSNestedDeclarations>(rule))
+            selectors = nested->absolutized_selectors();
+        Vector<StyleScope const*, 4> scopes;
+        auto add_scope = [&](StyleScope const& scope) {
+            if (!scopes.contains_slow(&scope))
+                scopes.append(&scope);
+        };
+        for (auto const& selector : selectors) {
+            switch (selector->shadow_reach()) {
+            case Selector::ShadowReach::OwnTree:
+                add_scope(element.style_scope());
+                break;
+            case Selector::ShadowReach::Host:
+                if (auto shadow_root = element.shadow_root())
+                    add_scope(shadow_root->style_scope());
+                break;
+            case Selector::ShadowReach::SlottedElement:
+                for (auto slot = element.assigned_slot_internal(); slot; slot = slot->assigned_slot_internal())
+                    add_scope(slot->style_scope());
+                break;
+            case Selector::ShadowReach::Part:
+                for (auto root = element.containing_shadow_root(); root && root->host(); root = root->host()->containing_shadow_root())
+                    add_scope(root->host()->style_scope());
+                break;
+            }
+        }
+        Optional<StyleSheetState const*> found;
+        for (auto const* scope : scopes) {
+            for_each_applied_copy(*scope, [&](StyleSheetState const& candidate_snapshot, StyleSheetState const& sheet) {
+                if (&candidate_snapshot != &snapshot)
+                    return;
+                found = found.has_value() && *found != &sheet ? nullptr : &sheet;
+            });
+        }
+        return found;
+    };
+
+    HashTable<size_t> hidden_entry_indexes;
     auto append_rules_for_abstract_element = [&](DOM::AbstractElement current_element, Optional<UniqueNodeID> inherited_node_id) {
         if (auto inline_style = current_element.inline_style()) {
             if (!inherited_node_id.has_value() || has_inherited_declaration(m_document, inline_style->properties(), inline_style->custom_properties()))
@@ -474,14 +721,17 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
 
         // The engine reports the rules in the order the cascade applies them, and the panel lists
         // the winning one first.
+        u32 expected_pseudo = current_element.pseudo_element().has_value()
+            ? to_underlying(*current_element.pseudo_element())
+            : NumericLimits<u32>::max();
         for (auto const& match : matches.in_reverse()) {
-            if (match.pseudo_element != NumericLimits<u32>::max())
+            if (match.pseudo_element != expected_pseudo)
                 continue;
             auto target = style_engine_rule_target(read, StyleEngineRuleID { match.rule });
             if (!target.has_value() || !target->source_style_sheet)
                 continue;
-            if (target->cascade_origin == CascadeOrigin::UserAgent && !include_user_agent_styles)
-                continue;
+            // NB: User-agent rules that the panel hides still compete in the cascade annotation below.
+            auto is_hidden = target->cascade_origin == CascadeOrigin::UserAgent && !include_user_agent_styles;
             if (inherited_node_id.has_value()) {
                 struct Context {
                     GC::Ref<DOM::Document const> document;
@@ -499,22 +749,283 @@ JsonArray StyleComputer::collect_devtools_applied_style_rules(Layout::BegunRead 
                 if (!context.has_inherited_declaration)
                     continue;
             }
-            auto* rule = target->source_style_sheet->rules().rule_for_identity(target->rule_identity);
+            auto const& source_sheet = *target->source_style_sheet;
+            CSSRule* rule = nullptr;
+            Optional<StyleSheetState const*> occurrence;
+            if (auto const* snapshot_rule = source_sheet.rules().rule_for_identity(target->rule_identity))
+                occurrence = occurrence_styling(current_element.element(), source_sheet, *snapshot_rule);
+            if (!occurrence.has_value())
+                occurrence = live_sheet_by_snapshot.get(&source_sheet);
+            if (occurrence.has_value() && *occurrence) {
+                auto path = source_sheet.native_rules().path_to_rule(target->rule_identity);
+                auto const* rules = &(*occurrence)->rules();
+                for (auto index : path) {
+                    rule = rules ? rules->item(index) : nullptr;
+                    auto const* grouping_rule = as_if<CSSGroupingRule>(rule);
+                    rules = grouping_rule ? &grouping_rule->css_rules() : nullptr;
+                }
+            } else {
+                rule = source_sheet.rules().rule_for_identity(target->rule_identity);
+            }
             if (!rule)
                 continue;
-            append_devtools_applied_style_entry(entries, serialize_devtools_applied_rule(m_document, *rule, current_element), inherited_node_id);
+            if (is_hidden)
+                hidden_entry_indexes.set(entries.size());
+            append_devtools_applied_style_entry(entries, serialize_devtools_applied_rule(m_document, *rule, current_element, *target), inherited_node_id);
         }
     };
 
     append_rules_for_abstract_element(abstract_element, {});
 
-    if (!include_inherited)
+    if (include_inherited) {
+        for (auto current_element = abstract_element.element_to_inherit_style_from(); current_element.has_value(); current_element = current_element->element_to_inherit_style_from())
+            append_rules_for_abstract_element(*current_element, current_element->element().unique_id());
+    }
+
+    // Annotate Cascade Story ("Why this value won") and layout-aware Inactive CSS diagnostics
+    // directly on each declaration in the serialized rules.
+    // A shorthand competes through each longhand it sets, and is overridden only when all of them lose, so the
+    // candidates are keyed by longhand. A custom property is its own longhand.
+    struct CascadeCandidate {
+        size_t entry_index { 0 };
+        size_t decl_index { 0 };
+        String selector_label;
+        String value;
+        String origin;
+        String layer_name;
+        bool is_inline { false };
+        bool is_important { false };
+        bool is_inherited { false };
+        Optional<u64> ancestor_id;
+        u32 specificity { 0 };
+    };
+    HashMap<String, Vector<CascadeCandidate>> candidates_by_property;
+
+    for (size_t entry_idx = 0; entry_idx < entries.size(); ++entry_idx) {
+        auto& entry = entries.at(entry_idx).as_object();
+        bool is_inherited = entry.has("inheritedNodeId"sv);
+        auto* rule = entry.get_object("rule"sv).has_value() ? &entry.get_object("rule"sv).value() : nullptr;
+        if (!rule)
+            continue;
+        bool is_inline = rule->get_integer<int>("type"sv).value_or(0) == 100;
+        auto origin = rule->get_string("origin"sv).value_or("author"_string);
+        auto layer_name = rule->get_string("layerName"sv).value_or(String {});
+        u32 specificity = rule->get_integer<u32>("maxSpecificity"sv).value_or(0);
+        String selector_label = is_inline ? "element.style"_string : ""_string;
+        if (!is_inline) {
+            if (auto selectors = rule->get_array("selectors"sv); selectors.has_value() && !selectors->is_empty())
+                selector_label = selectors->at(0).as_string();
+        }
+        auto decls = rule->get_array("declarations"sv);
+        if (!decls.has_value())
+            continue;
+        for (size_t remaining = decls->size(); remaining > 0; --remaining) {
+            auto decl_idx = remaining - 1;
+            auto& decl = decls->at(decl_idx).as_object();
+            if (!decl.get_bool("isValid"sv).value_or(true))
+                continue;
+            auto name = decl.get_string("name"sv).value_or(String {});
+            if (name.is_empty())
+                continue;
+            Vector<String, 4> longhands;
+            if (decl.get_bool("isCustomProperty"sv).value_or(false)) {
+                if (!is_inherited || decl.get_bool("inherits"sv).value_or(false))
+                    longhands.append(name);
+            } else if (auto property_id = property_id_from_string(name); property_id.has_value()) {
+                auto append_longhand = [&](PropertyID longhand) {
+                    // Only what a longhand inherits comes from an ancestor; `font` passes on its family but no
+                    // other element's `font-variant-position` is ever overridden by it.
+                    if (!is_inherited || is_inherited_property(longhand))
+                        longhands.append(MUST(String::formatted("{}", string_from_property_id(longhand))));
+                };
+                if (property_is_shorthand(*property_id)) {
+                    for (auto longhand : expanded_longhands_for_shorthand(*property_id))
+                        append_longhand(longhand);
+                } else {
+                    append_longhand(*property_id);
+                }
+            }
+            if (longhands.is_empty())
+                continue;
+            auto value = decl.get_string("value"sv).value_or(String {});
+            bool is_important = decl.get_string("priority"sv).value_or(String {}) == "important"sv;
+            for (auto& longhand : longhands) {
+                candidates_by_property.ensure(longhand).append(CascadeCandidate {
+                    .entry_index = entry_idx,
+                    .decl_index = decl_idx,
+                    .selector_label = selector_label,
+                    .value = value,
+                    .origin = origin,
+                    .layer_name = layer_name,
+                    .is_inline = is_inline,
+                    .is_important = is_important,
+                    .is_inherited = is_inherited,
+                    .ancestor_id = entry.get_u64("inheritedNodeId"sv),
+                    .specificity = specificity,
+                });
+            }
+        }
+    }
+
+    auto origin_weight = [](StringView origin, bool important) -> int {
+        // Normal: UA(0) < User(1) < Author(2). Important reverses: Author(3) < User(4) < UA(5).
+        if (!important) {
+            if (origin == "user-agent"sv)
+                return 0;
+            if (origin == "user"sv)
+                return 1;
+            return 2;
+        }
+        if (origin == "user-agent"sv)
+            return 5;
+        if (origin == "user"sv)
+            return 4;
+        return 3;
+    };
+
+    struct DeclarationOutcome {
+        size_t longhands_won { 0 };
+        String reason;
+        bool is_inherited { false };
+        Optional<JsonObject> story;
+    };
+    // Keyed by entry index in the high half and declaration index in the low one.
+    HashMap<u64, DeclarationOutcome> outcomes;
+
+    for (auto& [prop_name, candidates] : candidates_by_property) {
+        if (candidates.is_empty())
+            continue;
+
+        // Winner selection mirrors CSS Cascade Level 5:
+        // Direct rules beat inherited rules; higher origin+importance wins; inline beats stylesheet
+        // within same importance; for !important rules, earlier @layer beats later @layer (reversed!).
+        size_t winner_idx = 0;
+        for (size_t i = 1; i < candidates.size(); ++i) {
+            auto const& best = candidates[winner_idx];
+            auto const& cur = candidates[i];
+            if (best.is_inherited != cur.is_inherited) {
+                if (!cur.is_inherited)
+                    winner_idx = i;
+                continue;
+            }
+            if (best.is_inherited && cur.is_inherited && best.ancestor_id != cur.ancestor_id)
+                continue; // First ancestor in entries is closest ancestor.
+
+            int best_ow = origin_weight(best.origin, best.is_important);
+            int cur_ow = origin_weight(cur.origin, cur.is_important);
+            if (cur_ow != best_ow) {
+                if (cur_ow > best_ow)
+                    winner_idx = i;
+                continue;
+            }
+            if (cur.is_inline != best.is_inline) {
+                if (cur.is_inline)
+                    winner_idx = i;
+                continue;
+            }
+            if (cur.is_important && best.is_important && !cur.layer_name.is_empty() && !best.layer_name.is_empty() && cur.layer_name != best.layer_name) {
+                // Entries are listed in reverse normal cascade order; for !important, earlier layer wins (later index in entries).
+                winner_idx = i;
+                continue;
+            }
+            if (cur.is_important && best.is_important && !cur.layer_name.is_empty() && best.layer_name.is_empty()) {
+                // Layered !important beats unlayered !important.
+                winner_idx = i;
+                continue;
+            }
+            // Otherwise entries are already ordered in winning-first normal cascade order from StyleEngine.
+        }
+
+        auto const& winner = candidates[winner_idx];
+        String reason = "Declared on this element"_string;
+        if (winner.is_inherited) {
+            reason = "Inherited from nearest matching ancestor"_string;
+        } else if (candidates.size() > 1) {
+            auto const& runner_up = candidates[winner_idx == 0 ? 1 : 0];
+            if (runner_up.is_inherited && !winner.is_inherited)
+                reason = "Directly declared on element (overrides inherited value)"_string;
+            else if (winner.is_important && !runner_up.is_important)
+                reason = "!important beats normal declaration"_string;
+            else if (winner.origin != runner_up.origin)
+                reason = MUST(String::formatted("Cascade origin ({} beats {})", winner.origin, runner_up.origin));
+            else if (winner.is_inline && !runner_up.is_inline)
+                reason = "Inline style beats stylesheet rules"_string;
+            else if (winner.is_important && !winner.layer_name.is_empty() && winner.layer_name != runner_up.layer_name)
+                reason = MUST(String::formatted("!important reverses @layer order (@layer {} wins)", winner.layer_name));
+            else if (winner.layer_name != runner_up.layer_name)
+                reason = winner.layer_name.is_empty()
+                    ? "Unlayered author rule beats @layer rule"_string
+                    : MUST(String::formatted("@layer {} takes precedence in cascade layer order", winner.layer_name));
+            else if (winner.specificity != runner_up.specificity)
+                reason = "Higher selector specificity"_string;
+            else
+                reason = "Appears later in stylesheet source order"_string;
+        }
+
+        JsonArray competitors;
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            auto const& c = candidates[i];
+            JsonObject comp;
+            comp.set("selector"sv, c.selector_label);
+            comp.set("value"sv, c.value);
+            comp.set("important"sv, c.is_important);
+            comp.set("origin"sv, c.origin);
+            if (!c.layer_name.is_empty())
+                comp.set("layer"sv, c.layer_name);
+            comp.set("inherited"sv, c.is_inherited);
+            comp.set("won"sv, i == winner_idx);
+            competitors.must_append(move(comp));
+        }
+
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            auto const& c = candidates[i];
+            auto& outcome = outcomes.ensure((static_cast<u64>(c.entry_index) << 32) | c.decl_index);
+            bool won = i == winner_idx;
+            if (won)
+                ++outcome.longhands_won;
+            // The first longhand the declaration wins tells its story, or the first it loses if it wins none.
+            if (outcome.reason.is_empty() || (won && outcome.longhands_won == 1)) {
+                outcome.reason = reason;
+                outcome.is_inherited = winner.is_inherited;
+                if (won) {
+                    JsonObject story;
+                    story.set("winner"sv, winner.selector_label);
+                    story.set("reason"sv, reason);
+                    story.set("competitors"sv, competitors);
+                    outcome.story = move(story);
+                }
+            }
+        }
+    }
+
+    for (auto& [key, outcome] : outcomes) {
+        auto& entry = entries.values().at(key >> 32).as_object();
+        auto& decl = entry.get_object("rule"sv)->get_array("declarations"sv)->values().at(key & 0xffffffff).as_object();
+        bool won = outcome.longhands_won > 0;
+        decl.set("overridden"sv, !won);
+        decl.set("cascadeWinner"sv, won);
+        decl.set("cascadeReason"sv, outcome.reason);
+        if (!won)
+            continue;
+        if (outcome.story.has_value())
+            decl.set("cascadeStory"sv, outcome.story.release_value());
+        if (outcome.is_inherited)
+            continue;
+        auto name = decl.get_string("name"sv).value_or(String {});
+        if (auto inactive_diag = check_inactive_css_property(read, name, abstract_element); inactive_diag.has_value()) {
+            decl.set("inactiveReason"sv, inactive_diag->reason);
+            decl.set("inactiveHint"sv, inactive_diag->hint);
+        }
+    }
+
+    if (hidden_entry_indexes.is_empty())
         return entries;
-
-    for (auto current_element = abstract_element.element_to_inherit_style_from(); current_element.has_value(); current_element = current_element->element_to_inherit_style_from())
-        append_rules_for_abstract_element(*current_element, current_element->element().unique_id());
-
-    return entries;
+    JsonArray visible_entries;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!hidden_entry_indexes.contains(i))
+            visible_entries.must_append(entries.at(i));
+    }
+    return visible_entries;
 }
 
 }

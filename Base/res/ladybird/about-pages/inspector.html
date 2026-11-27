@@ -1,0 +1,314 @@
+<!doctype html>
+<!--
+Copyright (c) 2026, the Ladyflock developers.
+SPDX-License-Identifier: BSD-2-Clause
+-->
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'none'; script-src resource:; style-src resource:; img-src resource: data:; font-src resource:;"
+        />
+        <title>Inspector</title>
+        <link rel="icon" type="image/png" href="resource://icons/48x48/app-browser.png" />
+        <link rel="stylesheet" href="resource://ladybird/ladybird.css" />
+        <link rel="stylesheet" href="resource://ladybird/about-pages/webui.css" />
+        <link rel="stylesheet" href="resource://ladybird/about-pages/inspector/inspector.css" />
+        <script type="module" src="resource://ladybird/about-pages/inspector/app.js"></script>
+    </head>
+    <body class="inspector-shell" data-panel="elements">
+        <div id="live-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+        <header class="inspector-topbar" role="toolbar" aria-label="Inspector toolbar">
+            <div class="topbar-left">
+                <button
+                    id="btn-pick"
+                    class="icon-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="Pick element on page"
+                    title="Pick element (Cmd+Option+C / Ctrl+Shift+C)"
+                >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M2.5 2.5h4M2.5 2.5v4M13.5 2.5h-4M13.5 2.5v4M2.5 13.5h4M2.5 13.5v-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                        <path d="M8.5 8.5l5 1.8-2.1.8-.8 2.1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                    </svg>
+                    <span class="btn-label">Pick</span>
+                </button>
+                <button
+                    id="btn-device-mode"
+                    class="icon-btn"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="Toggle Device Mode"
+                    title="Toggle Device Mode (Cmd/Ctrl+Shift+M)"
+                >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <rect x="2" y="3" width="8.5" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+                        <rect x="9.5" y="6" width="4.5" height="7" rx="1" fill="var(--page)" stroke="currentColor" stroke-width="1.4" />
+                    </svg>
+                </button>
+                <span class="topbar-sep" aria-hidden="true"></span>
+                <nav class="panel-tabs" role="tablist" aria-label="Inspector panels" id="panel-tabs">
+                    <button role="tab" aria-selected="true" data-panel="elements" id="tab-elements">Elements</button>
+                    <button role="tab" aria-selected="false" data-panel="console" id="tab-console">Console</button>
+                    <button role="tab" aria-selected="false" data-panel="sources" id="tab-sources">Sources</button>
+                    <button role="tab" aria-selected="false" data-panel="network" id="tab-network">Network</button>
+                    <button role="tab" aria-selected="false" data-panel="application" id="tab-application">Application</button>
+                    <button role="tab" aria-selected="false" data-panel="performance" id="tab-performance">Performance</button>
+                    <button role="tab" aria-selected="false" data-panel="memory" id="tab-memory">Memory</button>
+                    <button role="tab" aria-selected="false" data-panel="issues" id="tab-issues">Issues</button>
+                    <button role="tab" aria-selected="false" data-panel="audits" id="tab-audits">Audits</button>
+                </nav>
+            </div>
+            <div class="topbar-right">
+                <span id="status-pill" class="status-pill hidden" role="status"></span>
+                <button
+                    id="btn-drawer-toggle"
+                    class="icon-btn"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="inspector-drawer"
+                    aria-label="Toggle drawer"
+                    title="Toggle Drawer (Escape)"
+                >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+                        <path d="M2 9.5h12" stroke="currentColor" stroke-width="1.4" />
+                    </svg>
+                </button>
+                <div class="menu-anchor">
+                    <button
+                        id="btn-dock"
+                        class="icon-btn"
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        aria-label="Dock position"
+                        title="Dock side"
+                    >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+                            <path d="M10 2.5v11" stroke="currentColor" stroke-width="1.4" />
+                        </svg>
+                        <span class="btn-label">Dock</span>
+                    </button>
+                    <div id="dock-menu" class="menu-dropdown hidden" role="menu" aria-label="Dock position">
+                        <button class="menu-item" role="menuitemradio" data-dock="right">Dock to Right</button>
+                        <button class="menu-item" role="menuitemradio" data-dock="bottom">Dock to Bottom</button>
+                        <button class="menu-item" role="menuitemradio" data-dock="left">Dock to Left</button>
+                        <button class="menu-item" role="menuitemradio" data-dock="window">Undock into Separate Window</button>
+                    </div>
+                </div>
+                <div class="menu-anchor">
+                    <button
+                        id="btn-more"
+                        class="icon-btn"
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        aria-label="More Inspector actions"
+                        title="More actions"
+                    >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <circle cx="3.5" cy="8" r="1.2" fill="currentColor" />
+                            <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                            <circle cx="12.5" cy="8" r="1.2" fill="currentColor" />
+                        </svg>
+                    </button>
+                    <div id="more-menu" class="menu-dropdown hidden" role="menu" aria-label="More Inspector actions">
+                        <button class="menu-item" role="menuitem" data-cmd="open-command-menu">Command Menu… <span class="shortcut">⇧⌘P</span></button>
+                        <button class="menu-item" role="menuitem" data-cmd="open-drawer:changes">Changes / Flight Recorder</button>
+                        <button class="menu-item" role="menuitem" data-cmd="open-drawer:engine-lens">Engine Lens</button>
+                        <button class="menu-item" role="menuitem" data-cmd="open-drawer:animations">Animations</button>
+                        <button class="menu-item" role="menuitem" data-cmd="open-drawer:rendering">Rendering</button>
+                        <button class="menu-item" role="menuitem" data-cmd="open-drawer:sensors">Sensors</button>
+                        <hr class="menu-sep" />
+                        <button class="menu-item" role="menuitem" data-cmd="open-settings">Inspector Settings…</button>
+                        <button class="menu-item" role="menuitem" data-cmd="close-inspector">Close Inspector</button>
+                    </div>
+                </div>
+                <button id="btn-close" class="icon-btn" type="button" aria-label="Close Inspector" title="Close Inspector">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <section id="device-toolbar" class="device-toolbar hidden" aria-label="Device Mode controls">
+            <label class="inline-field">
+                <span>Preset</span>
+                <select id="device-preset">
+                    <option value="responsive">Responsive</option>
+                    <option value="390x844@3">Phone (390 × 844 · 3×)</option>
+                    <option value="768x1024@2">Tablet (768 × 1024 · 2×)</option>
+                    <option value="1280x800@2">Laptop (1280 × 800 · 2×)</option>
+                    <option value="1440x900@1">Desktop (1440 × 900 · 1×)</option>
+                </select>
+            </label>
+            <label class="inline-field">
+                <span>W</span>
+                <input id="device-width" type="number" min="200" max="4096" value="390" />
+            </label>
+            <span class="muted">×</span>
+            <label class="inline-field">
+                <span>H</span>
+                <input id="device-height" type="number" min="200" max="4096" value="844" />
+            </label>
+            <label class="inline-field">
+                <span>DPR</span>
+                <select id="device-dpr">
+                    <option value="1">1×</option>
+                    <option value="2" selected>2×</option>
+                    <option value="3">3×</option>
+                </select>
+            </label>
+            <button id="btn-device-rotate" class="chip-btn" type="button">Rotate</button>
+            <button id="btn-device-apply" class="chip-btn primary" type="button">Apply</button>
+            <button id="btn-device-reset" class="chip-btn" type="button">Reset</button>
+        </section>
+
+        <section id="banner-host" class="banner-host hidden" role="status"></section>
+
+        <main id="unbound-state" class="unbound-state hidden">
+            <div class="unbound-card">
+                <h1>Inspector is not attached</h1>
+                <p id="unbound-reason" class="description">
+                    Open Inspect Element from a page context menu or press F12 on a tab to inspect it.
+                </p>
+            </div>
+        </main>
+
+        <div id="workspace" class="inspector-workspace">
+            <!-- Primary Panel Area -->
+            <section id="panel-host" class="panel-host">
+                <!-- Elements Panel -->
+                <div id="panel-elements" class="panel-view active" role="tabpanel" aria-labelledby="tab-elements">
+                    <div class="elements-split" id="elements-split">
+                        <div class="elements-tree-pane" id="elements-tree-pane">
+                            <div id="dom-search-bar" class="dom-search-bar hidden" role="search">
+                                <input
+                                    id="dom-search-input"
+                                    type="search"
+                                    placeholder="Find by text, CSS selector, or XPath"
+                                    aria-label="Search DOM tree"
+                                />
+                                <span id="dom-search-count" class="tabular muted">0 / 0</span>
+                                <button id="dom-search-prev" class="icon-btn small" type="button" aria-label="Previous match">↑</button>
+                                <button id="dom-search-next" class="icon-btn small" type="button" aria-label="Next match">↓</button>
+                                <button id="dom-search-close" class="icon-btn small" type="button" aria-label="Close search">×</button>
+                            </div>
+
+                            <div id="ghost-banner" class="ghost-banner hidden" role="status">
+                                <details id="ghost-capture">
+                                    <summary>Detached from document</summary>
+                                    <pre id="ghost-markup" class="monospace"></pre>
+                                </details>
+                                <button id="btn-ghost-jump-parent" class="chip-btn" type="button">Jump to parent</button>
+                            </div>
+
+                            <div
+                                id="dom-tree"
+                                class="dom-tree monospace"
+                                role="tree"
+                                tabindex="0"
+                                aria-label="DOM tree"
+                            ></div>
+
+                            <nav id="dom-breadcrumbs" class="dom-breadcrumbs monospace" aria-label="Selected element path"></nav>
+                        </div>
+
+                        <div
+                            id="elements-splitter"
+                            class="pane-splitter"
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-label="Resize DOM tree and sidebar"
+                            tabindex="0"
+                        ></div>
+
+                        <aside class="elements-sidebar-pane" id="elements-sidebar-pane" aria-label="Element details">
+                            <div class="sidebar-tabs" role="tablist" aria-label="Element sidebar panes" id="sidebar-tabs">
+                                <button role="tab" aria-selected="true" data-sidebar="styles">Styles</button>
+                                <button role="tab" aria-selected="false" data-sidebar="computed">Computed</button>
+                                <button role="tab" aria-selected="false" data-sidebar="layout">Layout</button>
+                                <button role="tab" aria-selected="false" data-sidebar="listeners">Event Listeners</button>
+                                <button role="tab" aria-selected="false" data-sidebar="breakpoints">DOM Breakpoints</button>
+                                <button role="tab" aria-selected="false" data-sidebar="properties">Properties</button>
+                                <button role="tab" aria-selected="false" data-sidebar="accessibility">Accessibility</button>
+                            </div>
+                            <div id="sidebar-content" class="sidebar-content">
+                                <div id="sidebar-styles" class="sidebar-view active" role="tabpanel"></div>
+                                <div id="sidebar-computed" class="sidebar-view" role="tabpanel"></div>
+                                <div id="sidebar-layout" class="sidebar-view" role="tabpanel"></div>
+                                <div id="sidebar-listeners" class="sidebar-view" role="tabpanel"></div>
+                                <div id="sidebar-breakpoints" class="sidebar-view" role="tabpanel"></div>
+                                <div id="sidebar-properties" class="sidebar-view" role="tabpanel"></div>
+                                <div id="sidebar-accessibility" class="sidebar-view" role="tabpanel"></div>
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+
+                <!-- Wider Toolbox Panels -->
+                <div id="panel-console" class="panel-view" role="tabpanel" aria-labelledby="tab-console"></div>
+                <div id="panel-sources" class="panel-view" role="tabpanel" aria-labelledby="tab-sources"></div>
+                <div id="panel-network" class="panel-view" role="tabpanel" aria-labelledby="tab-network"></div>
+                <div id="panel-application" class="panel-view" role="tabpanel" aria-labelledby="tab-application"></div>
+                <div id="panel-performance" class="panel-view" role="tabpanel" aria-labelledby="tab-performance"></div>
+                <div id="panel-memory" class="panel-view" role="tabpanel" aria-labelledby="tab-memory"></div>
+                <div id="panel-issues" class="panel-view" role="tabpanel" aria-labelledby="tab-issues"></div>
+                <div id="panel-audits" class="panel-view" role="tabpanel" aria-labelledby="tab-audits"></div>
+            </section>
+
+            <!-- Escape-toggled Bottom Drawer -->
+            <div
+                id="drawer-splitter"
+                class="pane-splitter horizontal hidden"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize Inspector drawer"
+                tabindex="0"
+            ></div>
+            <section id="inspector-drawer" class="inspector-drawer hidden" aria-label="Inspector drawer">
+                <div class="drawer-header">
+                    <div class="drawer-tabs" role="tablist" id="drawer-tabs">
+                        <button role="tab" aria-selected="true" data-drawer="console">Console</button>
+                        <button role="tab" aria-selected="false" data-drawer="changes">Changes</button>
+                        <button role="tab" aria-selected="false" data-drawer="engine-lens">Engine Lens</button>
+                        <button role="tab" aria-selected="false" data-drawer="quick-source">Quick Source</button>
+                        <button role="tab" aria-selected="false" data-drawer="animations">Animations</button>
+                        <button role="tab" aria-selected="false" data-drawer="rendering">Rendering</button>
+                        <button role="tab" aria-selected="false" data-drawer="sensors">Sensors</button>
+                    </div>
+                    <button id="btn-drawer-close" class="icon-btn small" type="button" aria-label="Close drawer">×</button>
+                </div>
+                <div id="drawer-body" class="drawer-body"></div>
+            </section>
+        </div>
+
+        <!-- Floating Context Menu -->
+        <div id="context-menu" class="context-menu hidden" role="menu"></div>
+
+        <!-- Command Menu (Cmd/Ctrl+Shift+P) -->
+        <dialog id="command-menu-dialog" class="command-dialog" aria-label="Command menu">
+            <div class="command-input-row">
+                <span class="muted monospace">&gt;</span>
+                <input id="command-menu-input" type="search" placeholder="Run command, switch panel, or toggle overlay" autocomplete="off" />
+            </div>
+            <div id="command-menu-list" class="command-list" role="listbox"></div>
+        </dialog>
+
+        <!-- Settings Dialog -->
+        <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-dialog-title">
+            <div class="dialog-header">
+                <h2 id="settings-dialog-title">Inspector Settings</h2>
+                <button id="btn-settings-close" class="icon-btn small" type="button" aria-label="Close settings">×</button>
+            </div>
+            <div id="settings-dialog-body" class="settings-body"></div>
+        </dialog>
+    </body>
+</html>

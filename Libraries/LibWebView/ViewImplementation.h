@@ -490,7 +490,18 @@ public:
 
     void inspect_dom_tree();
     void inspect_storage(Web::StorageAPI::StorageEndpointType, u64 request_id);
-    void inspect_accessibility_tree();
+    // Each of these requests gets its own answer, so the Inspector and remote DevTools can both have one waiting. A
+    // request that the page displaying the tab can no longer answer, because another page has taken its place, gets
+    // an empty one.
+    using OnAccessibilityTreeInspected = Function<void(Optional<JsonObject>)>;
+    using OnGridLayoutsInspected = Function<void(JsonArray)>;
+    using OnLayoutInspected = Function<void(Optional<JsonObject>)>;
+    using OnDOMNodeHTMLReceived = Function<void(Optional<String>)>;
+    using OnDOMNodeEdited = Function<void(Optional<Web::UniqueNodeID>)>;
+    using OnStyleSheetListReceived = Function<void(Vector<Web::CSS::StyleSheetIdentifier>)>;
+    using OnStyleSheetSourceReceived = Function<void(Optional<Utf16String>, URL::URL const& base_url)>;
+
+    void inspect_accessibility_tree(OnAccessibilityTreeInspected);
     void request_accessibility_tree();
     void perform_accessibility_action(i64 node_id, String action);
     void perform_accessibility_text_action(i64 node_id, String action, i32 offset_start, i32 offset_end, String text);
@@ -504,12 +515,37 @@ public:
     void node_picker_preview(Web::DevicePixelPoint);
     void node_picker_cancel();
 
-    void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {});
-    void inspect_grid_layouts(Web::UniqueNodeID root_node_id);
-    void inspect_current_grid(Web::UniqueNodeID node_id);
-    void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents);
+    enum class InteractiveOwner : u8 {
+        None,
+        LocalInspector,
+        RemoteDevTools,
+    };
+    InteractiveOwner node_picker_owner() const { return m_node_picker_owner; }
+    InteractiveOwner debugger_owner() const { return m_debugger_owner; }
+    void start_node_picker_for_owner(InteractiveOwner, DevTools::DevToolsDelegate::OnNodePickerEvent);
+    void stop_node_picker_for_owner(InteractiveOwner);
+    bool attach_debugger_for_owner(InteractiveOwner);
+    void detach_debugger_for_owner(InteractiveOwner);
+    void add_dom_mutation_listener_ref();
+    void remove_dom_mutation_listener_ref();
+
+    InspectorSession* inspector_session() const;
+    void set_inspector_session(Badge<InspectorSession>, WeakPtr<InspectorSession>);
+
+    using InspectorEngineReplyCallback = Function<void(bool ok, JsonValue result, Optional<String> error)>;
+    u64 allocate_inspector_request_id() { return m_next_inspector_request_id++; }
+    void dispatch_inspector_engine_command(u64 request_id, String const& action, JsonObject const& params, InspectorEngineReplyCallback);
+    void did_complete_inspector_engine_command(WebContentPage const& sender, u64 request_id, bool ok, JsonValue result, Optional<String> error);
+    void cancel_pending_inspector_engine_commands();
+
+    void inspect_dom_node(Web::UniqueNodeID node_id, DOMNodeProperties::Type, Optional<Web::CSS::PseudoElement> pseudo_element, JsonValue options = {}, u64 request_id = 0);
+    void inspect_grid_layouts(Web::UniqueNodeID root_node_id, OnGridLayoutsInspected);
+    void inspect_current_grid(Web::UniqueNodeID node_id, OnLayoutInspected);
+    void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents, OnLayoutInspected);
     void retrieve_devtools_sources(DevTools::DevToolsDelegate::OnSourcesReceived);
-    void request_devtools_source(Web::HTML::ScriptRegistryIdentifier const&);
+    // The Inspector and remote DevTools may both ask for one script's source; each answer goes to everyone waiting.
+    using OnDevToolsSourceReceived = Function<void(Optional<Web::HTML::ScriptRegistryContent>)>;
+    void request_devtools_source(Web::HTML::ScriptRegistryIdentifier const&, OnDevToolsSourceReceived);
     void attach_debugger(DevTools::DevToolsDelegate::OnDebuggerPaused, DevTools::DevToolsDelegate::OnDebuggerResumed);
     void configure_debugger(DebuggerConfiguration);
     void detach_debugger();
@@ -540,21 +576,22 @@ public:
     void did_connect_devtools_client();
     void did_disconnect_devtools_client();
     void start_sending_console_output(bool messages, bool errors);
-    void get_dom_node_inner_html(Web::UniqueNodeID node_id);
-    void get_dom_node_outer_html(Web::UniqueNodeID node_id);
-    void set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html);
-    void set_dom_node_text(Web::UniqueNodeID node_id, String const& text);
-    void set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name);
-    void add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes);
-    void replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes);
-    void create_child_element(Web::UniqueNodeID node_id);
-    void create_child_text_node(Web::UniqueNodeID node_id);
-    void insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id);
-    void clone_dom_node(Web::UniqueNodeID node_id);
-    void remove_dom_node(Web::UniqueNodeID node_id);
+    void get_dom_node_inner_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived);
+    void get_dom_node_outer_html(Web::UniqueNodeID node_id, OnDOMNodeHTMLReceived);
+    void set_dom_node_outer_html(Web::UniqueNodeID node_id, String const& html, OnDOMNodeEdited);
+    void set_dom_node_text(Web::UniqueNodeID node_id, String const& text, OnDOMNodeEdited);
+    void set_dom_node_tag(Web::UniqueNodeID node_id, Utf16FlyString const& name, OnDOMNodeEdited);
+    void add_dom_node_attributes(Web::UniqueNodeID node_id, ReadonlySpan<Attribute> attributes, OnDOMNodeEdited);
+    void replace_dom_node_attribute(Web::UniqueNodeID node_id, Utf16FlyString const& name, ReadonlySpan<Attribute> replacement_attributes, OnDOMNodeEdited);
+    void create_child_element(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void create_child_text_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void insert_dom_node_before(Web::UniqueNodeID node_id, Web::UniqueNodeID parent_node_id, Optional<Web::UniqueNodeID> sibling_node_id, OnDOMNodeEdited);
+    void clone_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
+    void remove_dom_node(Web::UniqueNodeID node_id, OnDOMNodeEdited);
 
-    void list_style_sheets();
-    void request_style_sheet_source(Web::CSS::StyleSheetIdentifier const&);
+    void list_style_sheets(OnStyleSheetListReceived);
+    // The source also goes to on_received_style_sheet_source, which remote DevTools listens to.
+    void request_style_sheet_source(Web::CSS::StyleSheetIdentifier const&, OnStyleSheetSourceReceived = {});
 
     void did_block_resource(Badge<WebContentPage>, URL::URL const&, StringView kind);
     void reset_blocked_resources();
@@ -564,7 +601,8 @@ public:
     void debug_request(ByteString const& request, ByteString const& argument = {});
 
     void run_javascript(String const&);
-    void js_console_input(String const&);
+    // Each input gets its own answer, so input from the Inspector and from remote DevTools can run at once.
+    void js_console_input(String const&, DevTools::DevToolsDelegate::OnScriptEvaluationComplete);
     void exit_fullscreen();
     void deny_fullscreen_window();
 
@@ -687,6 +725,9 @@ public:
     struct NavigationListener {
         Function<void(URL::URL const&)> on_load_start;
         Function<void(URL::URL const&)> on_load_finish;
+        // The top-level traversable's active document was replaced: a load committed, or a traversal or reload
+        // brought in another document. A load that starts can still be cancelled or become a download.
+        Function<void(URL::URL const&)> on_active_document_change;
     };
     u64 add_navigation_listener(NavigationListener);
     void remove_navigation_listener(u64 listener_id);
@@ -731,27 +772,20 @@ public:
     Function<void(JsonObject)> on_received_dom_tree;
     Function<void(DOMNodeProperties)> on_received_dom_node_properties;
     HashMap<u64, Function<void(ErrorOr<Vector<DevTools::DevToolsDelegate::StorageItem>>)>> on_received_storage_items;
-    Function<void(JsonArray)> on_received_grid_layouts;
-    Function<void(Optional<JsonObject>)> on_received_current_grid;
-    Function<void(Optional<JsonObject>)> on_received_current_flexbox;
-    Function<void(JsonObject)> on_received_accessibility_tree;
     Function<void(u64 sequence, Vector<AccessibilityNodeData>)> on_accessibility_tree_received;
     Function<void(u64 base_sequence, u64 sequence, AccessibilityTreeDelta)> on_accessibility_tree_changed;
     Function<void(i64)> on_accessibility_focus_changed;
     Function<void(Web::UniqueNodeID)> on_received_hovered_node_id;
     Function<void(Mutation)> on_dom_mutation_received;
-    Function<void(Optional<Web::UniqueNodeID> const& node_id)> on_finished_editing_dom_node;
-    Function<void(String)> on_received_dom_node_html;
-    Function<void(Vector<Web::CSS::StyleSheetIdentifier>)> on_received_style_sheet_list;
     Function<void(Web::CSS::StyleSheetIdentifier const&, URL::URL const&, Utf16String const&)> on_received_style_sheet_source;
     HashMap<u64, DevTools::DevToolsDelegate::OnSourcesReceived> on_received_devtools_sources;
-    HashMap<Web::HTML::ScriptRegistryIdentifier, Function<void(Optional<Web::HTML::ScriptRegistryContent>)>> on_received_devtools_source;
+    HashMap<Web::HTML::ScriptRegistryIdentifier, Vector<OnDevToolsSourceReceived>> on_received_devtools_source;
     HashMap<u64, DevTools::DevToolsDelegate::OnResolvedURLReceived> on_resolved_dom_node_url;
     HashMap<u64, DevTools::DevToolsDelegate::OnConsoleInputCompleted> on_completed_js_console_input;
     Function<void(Web::HTML::ScriptRegistryDescription)> on_devtools_source_available;
     DevTools::DevToolsDelegate::OnDebuggerPaused on_debugger_paused;
     DevTools::DevToolsDelegate::OnDebuggerResumed on_debugger_resumed;
-    Function<void(DebuggerValue)> on_received_js_console_result;
+    HashMap<u64, DevTools::DevToolsDelegate::OnScriptEvaluationComplete> on_executed_js_console_input;
     Function<void(ConsoleOutput)> on_console_message;
     Function<void(Web::UniqueNodeID)> on_inspect_element_request;
     Function<void(u64 request_id, URL::URL const&, ByteString const&, Vector<HTTP::Header> const&, ByteBuffer, Optional<String>, String, bool, Web::Fetch::Infrastructure::RequestPriority)> on_network_request_started;
@@ -800,16 +834,16 @@ public:
     Function<void()> on_crash_report_saved;
     Function<void()> on_web_content_process_change_for_cross_site_navigation;
 
-    void did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id);
+    void did_request_page_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Web::HTML::CrossProcessId document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::ContextMenuForInputEventsTarget for_input_events_target, Optional<Utf16String> misspelled_word, Optional<u64> text_fragment_generation_id);
     void activate_spelling_menu_action_for_testing(Badge<WebContentPage>, WebContentPage& requesting_page, Web::SpellingMenuActionForTesting, u32 guess_index);
 
     void did_request_spell_check(Badge<WebContentPage>, WebContentPage& requesting_page, u64 request_id, Utf16String text);
     void did_request_writing_suggestion(Badge<WebContentPage>, WebContentPage& requesting_page, u64 request_id, Utf16String text, u32 caret_offset);
     void reset_spell_checking();
-    void did_request_link_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<u64> text_fragment_generation_id);
+    void did_request_link_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<u64> text_fragment_generation_id);
     void did_generate_text_fragment_url(u64 request_id, Optional<URL::URL>);
-    void did_request_image_context_menu(Badge<WebContentPage>, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type);
-    void did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Gfx::IntPoint content_position, Web::MediaContextMenu, Optional<Web::HTML::PreparedNavigationDescriptor>);
+    void did_request_image_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::HTML::PreparedNavigationDescriptor, Optional<Gfx::ShareableBitmap> bitmap, Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation, Optional<String> image_mime_type);
+    void did_request_media_context_menu(Badge<WebContentPage>, WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id, Gfx::IntPoint content_position, Web::MediaContextMenu, Optional<Web::HTML::PreparedNavigationDescriptor>);
 
     void did_request_color_picker(Badge<WebContentPage>, WebContentPage& requesting_page, Color current_color);
     void did_request_date_picker(Badge<WebContentPage>, WebContentPage& requesting_page, Utf16String input_type, Utf16String value, Utf16String minimum, Utf16String maximum);
@@ -833,7 +867,8 @@ public:
     bool can_navigate_forward() const { return m_can_navigate_forward; }
 
     // What the application offers in a context menu, it asks the view to do.
-    void inspect_context_menu_element();
+    bool is_current_context_menu(u64 generation) const { return generation && generation == m_context_menu_request_id; }
+    void inspect_context_menu_element(u64 menu_generation);
     void replace_context_menu_misspelling(Utf16String const&);
     void ignore_misspelling(Utf16String const&);
     void learn_misspelling(Utf16String const&);
@@ -1068,10 +1103,10 @@ protected:
     HashMap<u64, NonnullRefPtr<Core::Promise<bool>>> m_pending_select_word_for_dictionary_lookup_requests;
     HashMap<u64, NonnullRefPtr<Core::Promise<ByteString>>> m_pending_cut_selected_text_requests;
 
-    void prepare_inspect_element(Gfx::IntPoint content_position);
-    Optional<u64> m_inspect_element_hit_test_request_id;
-    Optional<Web::UniqueNodeID> m_inspect_element_node_id;
-    bool m_inspect_element_activated_before_hit_test { false };
+    void prepare_inspect_element(WebContentPage& requesting_page, Optional<Web::HTML::CrossProcessId> document_id, Web::UniqueNodeID inspect_node_id);
+    Web::UniqueNodeID m_inspect_element_node_id { 0 };
+    RefPtr<WebContentPage> m_inspect_element_page;
+    Optional<Web::HTML::CrossProcessId> m_inspect_element_document_id;
 
     struct PendingInputEvent {
         Web::InputEvent event;
@@ -1346,6 +1381,17 @@ protected:
     u64 m_next_resolve_dom_node_url_request_id { 1 };
     void answer_pending_console_input_completions();
     u64 m_next_js_console_completion_request_id { 1 };
+    u64 m_next_js_console_input_request_id { 1 };
+
+    void answer_pending_inspection_requests();
+    u64 m_next_inspection_request_id { 1 };
+    HashMap<u64, OnAccessibilityTreeInspected> m_pending_accessibility_tree_inspections;
+    HashMap<u64, OnGridLayoutsInspected> m_pending_grid_layouts_inspections;
+    HashMap<u64, OnLayoutInspected> m_pending_layout_inspections;
+    HashMap<u64, OnDOMNodeHTMLReceived> m_pending_dom_node_html_requests;
+    HashMap<u64, OnDOMNodeEdited> m_pending_dom_node_edits;
+    HashMap<u64, OnStyleSheetListReceived> m_pending_style_sheet_list_requests;
+    HashMap<u64, OnStyleSheetSourceReceived> m_pending_style_sheet_source_requests;
 
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerBreakpointOperationComplete> m_pending_debugger_breakpoint_requests;
     HashMap<u64, DevTools::DevToolsDelegate::OnDebuggerEnvironmentsReceived> m_pending_debugger_environments_requests;
@@ -1381,19 +1427,31 @@ protected:
         Previewed,
     };
     void request_node_picker_hit_test(NodePickerRequestType, Web::DevicePixelPoint);
-    void did_receive_node_hit_test(u64 request_id, Web::UniqueNodeID);
     void did_receive_node_picker_hit_test(u64 request_id, Web::UniqueNodeID);
     void did_receive_indexed_database_inspection(u64 request_id, JsonObject);
 
     bool m_node_picker_active { false };
+    InteractiveOwner m_node_picker_owner { InteractiveOwner::None };
+    InteractiveOwner m_debugger_owner { InteractiveOwner::None };
+    bool m_local_debugger_attached { false };
     Optional<Web::UniqueNodeID> m_node_picker_hovered_node_id;
     u64 m_next_node_hit_test_request_id { 1 };
     HashMap<u64, NodePickerRequestType> m_pending_node_picker_requests;
     DevTools::DevToolsDelegate::OnNodePickerEvent m_on_node_picker_event;
 
     bool m_devtools_connected { false };
+    size_t m_devtools_client_count { 0 };
+    size_t m_dom_mutation_listener_count { 0 };
+    bool m_remote_dom_mutation_listening { false };
     bool m_devtools_takes_console_messages { false };
     bool m_devtools_takes_console_errors { false };
+    WeakPtr<InspectorSession> m_inspector_session;
+    struct PendingInspectorEngineCommand {
+        Web::HTML::CrossProcessId document_id;
+        InspectorEngineReplyCallback callback;
+    };
+    HashMap<u64, PendingInspectorEngineCommand> m_pending_inspector_engine_commands;
+    u64 m_next_inspector_request_id { 1 };
 
     // NB: A view starts out hidden, until the UI shows it.
     Optional<MonotonicTime> m_hidden_since { MonotonicTime::now() };

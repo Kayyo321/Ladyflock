@@ -18,9 +18,9 @@ class CSSNestedDeclarations final : public CSSRule {
 
 public:
     SelectorList absolutized_selectors() const;
-    RustDeclarationBlock declaration() const;
+    WEB_API RustDeclarationBlock declaration() const;
 
-    GC::Ref<CSSStyleProperties> style() const;
+    WEB_API GC::Ref<CSSStyleProperties> style() const;
 
     CSSStyleRule const& parent_style_rule() const;
 };

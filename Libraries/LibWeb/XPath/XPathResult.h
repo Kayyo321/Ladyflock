@@ -43,10 +43,10 @@ public:
     WebIDL::ExceptionOr<WebIDL::Boolean> boolean_value() const;
     WebIDL::ExceptionOr<GC::Ptr<DOM::Node>> single_node_value() const;
     WebIDL::Boolean invalid_iterator_state() const;
-    WebIDL::ExceptionOr<WebIDL::UnsignedLong> snapshot_length() const;
+    WEB_API WebIDL::ExceptionOr<WebIDL::UnsignedLong> snapshot_length() const;
 
     WebIDL::ExceptionOr<GC::Ptr<DOM::Node>> iterate_next();
-    WebIDL::ExceptionOr<GC::Ptr<DOM::Node>> snapshot_item(WebIDL::UnsignedLong index) const;
+    WEB_API WebIDL::ExceptionOr<GC::Ptr<DOM::Node>> snapshot_item(WebIDL::UnsignedLong index) const;
 
     // The nodes of a result that has nodes, in document order.
     ReadonlySpan<GC::Ptr<DOM::Node>> nodes() const { return m_node_set; }

@@ -946,6 +946,28 @@ void EventTarget::deactivate_event_handler(Utf16FlyString const& name)
     handler_map.remove(event_handler_iterator);
 }
 
+Optional<Utf16FlyString> EventTarget::event_handler_name_for_listener(DOMEventListener const& listener) const
+{
+    if (!m_data)
+        return {};
+    for (auto const& entry : m_data->event_handler_map) {
+        if (entry.value->listener.ptr() == &listener)
+            return entry.key;
+    }
+    return {};
+}
+
+bool EventTarget::deactivate_event_handler_for_listener(DOMEventListener const& listener)
+{
+    // Removing the handler's listener alone would leave the handler pointing at a removed listener, and
+    // activating it again returns early while the listener is not null, so a later assignment would never run.
+    auto name = event_handler_name_for_listener(listener);
+    if (!name.has_value())
+        return false;
+    deactivate_event_handler(*name);
+    return true;
+}
+
 // https://dom.spec.whatwg.org/#remove-all-event-listeners
 void EventTarget::remove_all_event_listeners()
 {

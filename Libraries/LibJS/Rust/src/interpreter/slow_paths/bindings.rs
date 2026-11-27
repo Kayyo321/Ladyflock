@@ -943,7 +943,7 @@ fn global_variable_value(
             .map(Some);
     }
 
-    let identifier_key = PropertyKey::from(identifier);
+    let identifier_key = PropertyKey::from(identifier.clone());
     if binding_object.has_property(vm, &identifier_key)? {
         let shape_key = ShapeKey::of(shape);
         let mut cacheable_metadata = CacheableGetPropertyMetadata::default();
@@ -967,6 +967,33 @@ fn global_variable_value(
         return Ok(Some(value));
     }
 
+    binding_from_supplied_object_environment(vm, &identifier, strict)
+}
+
+/// Non-standard: An embedder can run a script under a lexical environment of its own (VM::run's
+/// lexical_environment_override), as a browser console does to offer helpers such as `$0` and `$()` through an object
+/// environment. The parser only sees global code, so it compiles the names it cannot bind into global reads, and those
+/// never look at that environment. When a global read finds no global variable, look for the name in the object
+/// environments between the running one and the global environment. There are none unless such an environment was
+/// supplied (a `with` statement in the source makes the parser read its names dynamically), and a global variable of
+/// the same name still wins, as page globals do over console helpers in other browsers.
+fn binding_from_supplied_object_environment(
+    vm: &Vm,
+    identifier: &Utf16FlyString,
+    strict: Strict,
+) -> ThrowCompletionOr<Option<Value>> {
+    let mut environment = vm.lexical_environment();
+    while let Some(current) = environment {
+        if current.is_global_environment() {
+            break;
+        }
+        if !current.is_declarative_environment() && current.has_binding(vm, identifier, None)? {
+            return current
+                .get_binding_value(vm, identifier, strict == Strict::Yes)
+                .map(Some);
+        }
+        environment = current.outer_environment();
+    }
     Ok(None)
 }
 

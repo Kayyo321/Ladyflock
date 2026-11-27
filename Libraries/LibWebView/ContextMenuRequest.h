@@ -61,6 +61,7 @@ struct ContextMenuRequest {
     // A link to the selected text is being made, and arrives later.
     bool makes_link_to_highlight { false };
     bool can_inspect_element { false };
+    u64 inspect_menu_generation { 0 };
 
     Optional<Web::HTML::PreparedNavigationDescriptor> link_navigation;
     Optional<Web::HTML::PreparedNavigationDescriptor> navigation;

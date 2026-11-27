@@ -35,7 +35,7 @@ public:
 private:
     DevToolsConsoleClient(JS::Console&, PageClient&, ConsoleGlobalEnvironmentExtensions&);
 
-    virtual void handle_result(JS::Value) override;
+    virtual void handle_result(u64 request_id, JS::Value, Thrown) override;
     virtual void report_exception(Utf16View name, Utf16View message, JS::ErrorData const&, bool) override;
     virtual void end_group() override;
     virtual void clear() override { }

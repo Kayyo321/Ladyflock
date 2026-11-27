@@ -1042,6 +1042,9 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_style_sheets);
     visitor.visit(m_hovered_node);
     visitor.visit(m_inspected_node);
+    visitor.visit(m_inspected_node_history);
+    if (m_inspector_style_sheet)
+        m_inspector_style_sheet->visit_edges(visitor);
     visitor.visit(m_highlighted_node);
     for (auto const& flexbox_highlight : m_flexbox_highlights)
         visitor.visit(flexbox_highlight.node);
@@ -3287,6 +3290,63 @@ bool Document::has_committed_viewport_box() const
 void Document::set_inspected_node(GC::Ptr<Node> node)
 {
     m_inspected_node = node;
+}
+
+void Document::set_inspector_selected_node(GC::Ptr<Node> node)
+{
+    if (!node) {
+        m_inspected_node_history.clear();
+        return;
+    }
+
+    m_inspected_node_history.remove_all_matching([&](GC::Ptr<Node> const& existing) {
+        return existing == node;
+    });
+    m_inspected_node_history.prepend(node);
+    if (m_inspected_node_history.size() > 5)
+        m_inspected_node_history.resize(5);
+}
+
+void Document::set_inspector_selected_node_out_of_reach()
+{
+    m_inspected_node_history.prepend(nullptr);
+    if (m_inspected_node_history.size() > 5)
+        m_inspected_node_history.resize(5);
+}
+
+GC::Ptr<Node const> Document::console_inspected_node(size_t index) const
+{
+    if (index == 0 && m_inspected_node_history.is_empty())
+        return m_inspected_node;
+    if (index < m_inspected_node_history.size())
+        return m_inspected_node_history[index];
+    return nullptr;
+}
+
+void Document::note_element_forced_pseudo_state(Element& element, bool has_any)
+{
+    if (has_any)
+        m_forced_pseudo_state_elements.set(element);
+    else
+        m_forced_pseudo_state_elements.remove(element);
+}
+
+void Document::clear_all_forced_pseudo_states()
+{
+    auto elements = move(m_forced_pseudo_state_elements);
+    for (auto& element : elements)
+        element.clear_forced_pseudo_states();
+}
+
+CSS::StyleSheetState& Document::ensure_inspector_style_sheet()
+{
+    if (!m_inspector_style_sheet) {
+        auto sheet = MUST(CSS::StyleSheetState::create_constructed(*this));
+        sheet->set_attribution(CSS::StyleSheetState::AttributionKind::Inspector, "inspector-stylesheet"_string, "inspector-stylesheet"_string);
+        style_scope().add_a_css_style_sheet(*sheet);
+        m_inspector_style_sheet = move(sheet);
+    }
+    return *m_inspector_style_sheet;
 }
 
 void Document::set_highlighted_node(GC::Ptr<Node> node, Optional<CSS::PseudoElement> pseudo_element)
@@ -10242,24 +10302,32 @@ Optional<Utf16String> Document::get_style_sheet_source(CSS::StyleSheetIdentifier
             return {};
         }
 
-        for (auto& style_sheet : m_style_scope.style_sheets()) {
+        // NB: A link names its element, which finds its sheet wherever the link is, including in a shadow tree.
+        if (identifier.type == CSS::StyleSheetIdentifier::Type::LinkElement && identifier.dom_element_unique_id.has_value()) {
+            if (auto* node = Node::from_unique_id(*identifier.dom_element_unique_id); node && node->is_html_link_element()) {
+                if (auto sheet = as<HTML::HTMLLinkElement>(*node).sheet())
+                    return sheet->source_text();
+            }
+        }
+
+        // An imported sheet is known only by its URL, and the sheet importing it can be in the document or in any
+        // shadow tree.
+        Optional<Utf16String> result;
+        auto search = [&](CSS::StyleSheetState& style_sheet) {
+            if (result.has_value())
+                return;
             if (auto match = find_style_sheet_with_url(identifier.url.value(), style_sheet); match.has_value())
-                return match->source_text();
-        }
-
-        if (m_adopted_style_sheets) {
-            Optional<Utf16String> result;
-            for_each_adopted_style_sheet(*m_adopted_style_sheets, [&](auto& style_sheet) {
-                if (result.has_value())
-                    return;
-
-                if (auto match = find_style_sheet_with_url(identifier.url.value(), style_sheet); match.has_value())
-                    result = match->source_text();
-            });
-            return result;
-        }
-
-        return {};
+                result = match->source_text();
+        };
+        for (auto& style_sheet : m_style_scope.style_sheets())
+            search(style_sheet);
+        if (m_adopted_style_sheets)
+            for_each_adopted_style_sheet(*m_adopted_style_sheets, [&](auto& style_sheet) { search(style_sheet); });
+        // NB: Only what applies in a shadow tree can have been shown, so its active sheets are the ones to search.
+        for_each_shadow_root([&](ShadowRoot const& shadow_root) {
+            shadow_root.for_each_active_css_style_sheet([&](auto& style_sheet) { search(style_sheet); });
+        });
+        return result;
     }
     case CSS::StyleSheetIdentifier::Type::UserAgent:
         return CSS::StyleComputer::user_agent_style_sheet_source(identifier.url->utf16_view());

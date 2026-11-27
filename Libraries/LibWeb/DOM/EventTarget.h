@@ -61,6 +61,12 @@ public:
     void remove_all_event_listeners();
     void erase_all_event_listeners_and_handlers();
 
+    // The name of the event handler (such as "click" for onclick) whose listener this is, if any.
+    Optional<Utf16FlyString> event_handler_name_for_listener(DOMEventListener const&) const;
+    // If the listener belongs to an event handler, deactivate that handler as setting it to null would, so that
+    // assigning the handler later adds a listener again. Returns whether it did.
+    bool deactivate_event_handler_for_listener(DOMEventListener const&);
+
     // A dispatch clones only the listeners it can run, and rarely more than a couple, so keep them inline.
     using ClonedEventListeners = GC::RootVector<GC::Ref<DOMEventListener>, 4>;
     ClonedEventListeners event_listener_list_matching(Utf16FlyString const& type, Optional<Utf16FlyString> const& legacy_type) const;
@@ -80,6 +86,11 @@ public:
     bool has_blocking_wheel_event_listener() const;
     bool has_blocking_keyboard_event_listener() const;
     bool has_event_listeners() const;
+
+    ReadonlySpan<GC::Ref<DOMEventListener>> event_listener_list() const
+    {
+        return m_data ? m_data->event_listener_list.span() : ReadonlySpan<GC::Ref<DOMEventListener>> {};
+    }
 
 protected:
     EventTarget();

@@ -352,6 +352,7 @@ TEST_CASE(all_web_ui_pages_are_suggested)
         "about:addons"sv,
         "about:certificate"sv,
         "about:crashes"sv,
+        "about:inspector"sv,
         "about:licenses"sv,
         "about:newtab"sv,
         "about:privacy"sv,

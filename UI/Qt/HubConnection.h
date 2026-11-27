@@ -242,6 +242,10 @@ private:
     virtual void view_crash_report_saved(u64 view_id) override;
     virtual void view_performance_stats(u64 view_id, WebView::TabPerformanceStats stats) override;
     virtual void view_compositor_layers_change(u64 view_id, Compositing::CompositorLayersDescription layers) override;
+    virtual void view_inspector_open_requested(u64 target_view_id, String panel, Optional<i64> node_id, u64 menu_generation) override;
+    virtual void view_inspector_close_requested(u64 target_view_id) override;
+    virtual void view_inspector_dock_mode_changed(u64 target_view_id, String dock_mode) override;
+    virtual void view_inspector_picker_state_changed(u64 target_view_id, bool picker_active) override;
 };
 
 }

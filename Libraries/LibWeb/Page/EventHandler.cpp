@@ -4152,6 +4152,14 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
         context_menu_node = *shadow_root->host();
     }
 
+    // Preserve the exact clicked box's node for Inspect Element independently of ancestor link/image/media retargeting.
+    auto inspect_node = context_menu_node;
+    if (!is<DOM::Element>(*inspect_node)) {
+        if (auto* parent_element = inspect_node->parent_or_shadow_host_element())
+            inspect_node = *parent_element;
+    }
+    auto inspect_node_id = inspect_node->unique_id();
+
     auto const* link = node_under_pointer->enclosing_link_element();
     Optional<URL::URL> link_url;
     if (link)
@@ -4187,7 +4195,7 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
             image_mime_type = request->image_mime_type();
 
         auto navigation = HTML::prepare_navigation_from_document(image_element->document(), image_url.release_value(), ReferrerPolicy::ReferrerPolicy::EmptyString);
-        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Image, .target = *image_element, .position = page_viewport_position, .link_url = move(link_url), .image_mime_type = image_mime_type });
+        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Image, .target = *image_element, .inspect_node_id = inspect_node_id, .position = page_viewport_position, .link_url = move(link_url), .image_mime_type = image_mime_type });
         m_navigable->page().client().page_did_request_image_context_menu(local_root_id, document->id(), page_viewport_position, move(navigation), "", modifiers, bitmap, move(link_navigation), move(image_mime_type));
     } else if (link) {
         // Right-clicking link text without an existing selection first selects the word under the pointer, as the
@@ -4196,7 +4204,7 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
         if (link_url.has_value()) {
             auto const& element = link->hyperlink_element_utils_element();
             auto navigation = HTML::prepare_navigation_from_document(*document, link_url.release_value(), element.hyperlink_referrer_policy());
-            m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Link, .target = const_cast<DOM::Element&>(element), .position = page_viewport_position });
+            m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Link, .target = const_cast<DOM::Element&>(element), .inspect_node_id = inspect_node_id, .position = page_viewport_position });
             m_navigable->page().client().page_did_request_link_context_menu(local_root_id, document->id(), page_viewport_position, move(navigation), link->target().to_byte_string(), modifiers, selected_text_range_at_context_menu_position());
         }
     } else if (is<HTML::HTMLMediaElement>(*context_menu_node)) {
@@ -4225,7 +4233,7 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
         auto navigation = menu.media_url.map([&](auto const& url) {
             return HTML::prepare_navigation_from_document(media_element.document(), url, ReferrerPolicy::ReferrerPolicy::EmptyString);
         });
-        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Media, .target = media_element, .position = page_viewport_position, .media = menu });
+        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Media, .target = media_element, .inspect_node_id = inspect_node_id, .position = page_viewport_position, .media = menu });
         m_navigable->page().did_request_media_context_menu(media_element.unique_id(), local_root_id, document->id(), page_viewport_position, "", modifiers, menu, move(navigation));
     } else {
         auto misspelling = select_context_menu_misspelling(read, document, coordinates);
@@ -4237,7 +4245,7 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
         m_navigable->page().record_context_menu_misspelling({}, move(misspelling));
 
         auto for_input_events_target = document->active_input_events_target() ? ContextMenuForInputEventsTarget::Yes : ContextMenuForInputEventsTarget::No;
-        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Page, .target = context_menu_node, .position = page_viewport_position });
+        m_navigable->page().record_context_menu_request({}, { .kind = Page::ContextMenuRequest::Kind::Page, .target = context_menu_node, .inspect_node_id = inspect_node_id, .position = page_viewport_position });
         m_navigable->page().client().page_did_request_context_menu(local_root_id, document->id(), page_viewport_position, for_input_events_target, move(misspelled_word), selected_text_range_at_context_menu_position());
     }
 }

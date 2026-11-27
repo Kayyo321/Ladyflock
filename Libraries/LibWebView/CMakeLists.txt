@@ -58,6 +58,7 @@ set(SOURCES
     IdentityPurge.cpp
     ImageDecoderControlClient.cpp
     ImageDecoderManager.cpp
+    InspectorSession.cpp
     LingeringIndicator.cpp
     MediaSessionCoordinator.cpp
     NavigationLoader.cpp
@@ -119,6 +120,7 @@ set(SOURCES
     WebUI/ApplicationWebUI.cpp
     WebUI/CertificateUI.cpp
     WebUI/CrashReportsUI.cpp
+    WebUI/InspectorUI.cpp
     WebUI/PrivacyUI.cpp
     WebUI/SupportUI.cpp
     WebUI/SettingsUI.cpp

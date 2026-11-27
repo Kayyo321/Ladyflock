@@ -55,6 +55,11 @@ bool Selector::contains_named_namespace() const
     return SelectorFFI::rust_selector_contains_named_namespace(m_rust_selector);
 }
 
+Selector::ShadowReach Selector::shadow_reach() const
+{
+    return static_cast<ShadowReach>(SelectorFFI::rust_selector_shadow_reach(m_rust_selector));
+}
+
 u32 Selector::specificity() const
 {
     return SelectorFFI::rust_selector_specificity(m_rust_selector);

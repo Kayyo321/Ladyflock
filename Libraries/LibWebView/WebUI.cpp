@@ -15,6 +15,7 @@
 #include <LibWebView/WebUI/ApplicationWebUI.h>
 #include <LibWebView/WebUI/CertificateUI.h>
 #include <LibWebView/WebUI/CrashReportsUI.h>
+#include <LibWebView/WebUI/InspectorUI.h>
 #include <LibWebView/WebUI/PrivacyUI.h>
 #include <LibWebView/WebUI/SettingsUI.h>
 #include <LibWebView/WebUI/SupportUI.h>
@@ -26,6 +27,7 @@ static constexpr auto s_pages = to_array<WebUI::Page>({
     { "addons"sv, "Add-ons"sv, WebUI::PageType::Dynamic },
     { "certificate"sv, "Certificate Warning"sv, WebUI::PageType::Dynamic },
     { "crashes"sv, "Crash Reports"sv, WebUI::PageType::Dynamic },
+    { "inspector"sv, "Inspector"sv, WebUI::PageType::Dynamic },
     { "licenses"sv, "Licenses"sv, WebUI::PageType::Static },
     { "newtab"sv, "New Tab"sv, WebUI::PageType::Static },
     { "privacy"sv, "Privacy"sv, WebUI::PageType::Dynamic },
@@ -107,6 +109,8 @@ ErrorOr<RefPtr<WebUI>> WebUI::create(WebContentClient& client, Web::PageId page_
         web_ui = TRY(create_web_ui<CertificateUI>(client, page_id, move(host)));
     else if (page->host == "crashes"sv)
         web_ui = TRY(create_web_ui<CrashReportsUI>(client, page_id, move(host)));
+    else if (page->host == "inspector"sv)
+        web_ui = TRY(create_web_ui<InspectorUI>(client, page_id, move(host)));
     else if (page->host == "privacy"sv)
         web_ui = TRY(create_web_ui<PrivacyUI>(client, page_id, move(host)));
     else if (page->host.is_one_of("settings"sv, "welcome"sv))

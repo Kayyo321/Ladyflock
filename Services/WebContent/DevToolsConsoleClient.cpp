@@ -131,11 +131,11 @@ void DevToolsConsoleClient::visit_edges(JS::Cell::Visitor& visitor)
     m_logged_objects.visit_edges(visitor);
 }
 
-void DevToolsConsoleClient::handle_result(JS::Value result)
+void DevToolsConsoleClient::handle_result(u64 request_id, JS::Value result, Thrown thrown)
 {
     auto& settings = Web::HTML::relevant_settings_object(m_console_global_environment_extensions->binding_object());
     Web::HTML::TemporaryExecutionContext execution_context { settings.realm() };
-    m_client->did_execute_js_console_input(m_object_table.serialize_value(result));
+    m_client->did_execute_js_console_input(request_id, m_object_table.serialize_value(result), thrown == Thrown::Yes);
 }
 
 bool DevToolsConsoleClient::has_object(u64 object_id) const
