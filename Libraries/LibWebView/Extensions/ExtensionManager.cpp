@@ -597,6 +597,7 @@ void ExtensionManager::shutdown()
     m_content_script_session_storage_access.clear();
     m_pending_event_replies.clear();
     m_pending_script_executions.clear();
+    m_script_execution_groups.clear();
 
     Vector<String> keys;
     for (auto const& [ext_id, _] : m_background_hosts)
@@ -2356,30 +2357,40 @@ void ExtensionManager::handle_script_execution_finished(WebContentClient& render
     auto expected = m_pending_script_executions.get(execution_id);
     if (!expected.has_value() || expected->renderer.ptr() != &renderer || expected->target_page_id != page_id)
         return;
-    auto pending = m_pending_script_executions.take(execution_id);
-    auto caller = pending->caller.strong_ref();
-    if (!caller)
+    auto pending = m_pending_script_executions.take(execution_id).release_value();
+    auto group_entry = m_script_execution_groups.find(pending.group_id);
+    if (group_entry == m_script_execution_groups.end())
         return;
+    auto& group = group_entry->value;
+    --group.remaining;
+    auto caller = group.caller.strong_ref();
 
-    if (!success) {
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, false, JsonValue(result_or_error_json).serialized());
+    // As in Firefox, the call fails with the first frame whose script fails, and otherwise has each frame's result.
+    if (!success && !group.failed) {
+        group.failed = true;
+        if (caller)
+            caller->async_extension_api_response(group.page_id, group.document_id, group.call_id, false, JsonValue(result_or_error_json).serialized());
+    } else if (success && !group.failed) {
+        auto parsed = JsonValue::from_string(result_or_error_json);
+        auto result = parsed.is_error() ? JsonValue {} : parsed.release_value();
+        if (group.expect_array_results) {
+            JsonObject wrapped;
+            wrapped.set("frameId"sv, pending.frame_id);
+            wrapped.set("result"sv, move(result));
+            group.results[pending.index] = move(wrapped);
+        } else {
+            group.results[pending.index] = move(result);
+        }
+    }
+    if (group.remaining > 0)
         return;
+    if (!group.failed && caller) {
+        JsonArray results;
+        for (auto& result : group.results)
+            results.must_append(move(result));
+        caller->async_extension_api_response(group.page_id, group.document_id, group.call_id, true, results.serialized());
     }
-
-    if (pending->expect_array_results) {
-        auto parsed = JsonValue::from_string(result_or_error_json);
-        JsonObject wrapped;
-        wrapped.set("frameId"sv, pending->frame_id);
-        wrapped.set("result"sv, parsed.is_error() ? JsonValue {} : parsed.release_value());
-        JsonArray arr;
-        arr.must_append(move(wrapped));
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, true, arr.serialized());
-    } else {
-        auto parsed = JsonValue::from_string(result_or_error_json);
-        JsonArray arr;
-        arr.must_append(parsed.is_error() ? JsonValue {} : parsed.release_value());
-        caller->async_extension_api_response(pending->page_id, pending->document_id, pending->call_id, true, arr.serialized());
-    }
+    m_script_execution_groups.remove(pending.group_id);
 }
 
 void ExtensionManager::handle_web_request_check(WebContentClient& caller, Web::PageId page_id, u64 check_id, Web::Extensions::WebRequestBeforeRequestDetails const& requested_details)
@@ -2437,13 +2448,18 @@ static Optional<ViewImplementation&> default_extension_target(ExtensionManager c
     return *views.first();
 }
 
+// The frame an injection names, or all_frames for each frame the extension may access.
+static constexpr i64 all_frames = -1;
+
 static ErrorOr<i64> requested_script_frame(JsonObject const& details)
 {
     if (details.get_bool("allFrames"sv) == true)
-        return Error::from_string_literal("Injection into all frames is unavailable");
+        return details.has("frameId"sv) ? ErrorOr<i64> { Error::from_string_literal("Injection names both a frame and all frames") } : all_frames;
     if (auto target = details.get_object("target"sv); target.has_value()) {
-        if (target->get_bool("allFrames"sv) == true || target->has("documentIds"sv))
-            return Error::from_string_literal("Injection requires a single frame");
+        if (target->has("documentIds"sv))
+            return Error::from_string_literal("Injection by document ID is unavailable");
+        if (target->get_bool("allFrames"sv) == true)
+            return target->has("frameIds"sv) ? ErrorOr<i64> { Error::from_string_literal("Injection names both frames and all frames") } : all_frames;
         if (target->has("frameIds"sv)) {
             auto ids = target->get_array("frameIds"sv);
             if (!ids.has_value() || ids->size() != 1)
@@ -2479,6 +2495,30 @@ static CanonicalNavigable const* scripting_target_frame(ViewImplementation const
     return result;
 }
 
+// The frames an injection reaches: the one it names, or with all_frames, the top-level frame and each other frame the
+// extension may access. The named or top-level frame must be one it may access.
+static Vector<CanonicalNavigable const*> scripting_target_frames(ExtensionManager const& manager, StringView extension_id, ViewImplementation const& view, i64 frame_id)
+{
+    auto may_access = [&](CanonicalNavigable const* frame) {
+        return frame && !frame->active_document().origin().is_opaque() && manager.has_host_permission(extension_id, frame->active_document_url(), view.view_id());
+    };
+    Vector<CanonicalNavigable const*> frames;
+    auto const* first = scripting_target_frame(view, frame_id == all_frames ? 0 : frame_id);
+    if (!may_access(first))
+        return frames;
+    frames.append(first);
+    if (frame_id != all_frames)
+        return frames;
+    view.traversable().for_each_in_inclusive_subtree([&](CanonicalNavigable const& frame) {
+        if (frame.extension_frame_id() == 0)
+            return IterationDecision::Continue;
+        if (auto const* target = scripting_target_frame(view, frame.extension_frame_id()); may_access(target))
+            frames.append(target);
+        return IterationDecision::Continue;
+    });
+    return frames;
+}
+
 void ExtensionManager::handle_scripting_execute_script(
     WebContentClient& caller,
     Web::PageId page_id,
@@ -2506,8 +2546,8 @@ void ExtensionManager::handle_scripting_execute_script(
         return;
     }
 
-    auto const* frame = scripting_target_frame(*target_view, frame_id.value());
-    if (!frame || frame->active_document().origin().is_opaque() || !has_host_permission(ext.extension_id, frame->active_document_url(), target_view->view_id())) {
+    auto frames = scripting_target_frames(*this, ext.extension_id, *target_view, frame_id.value());
+    if (frames.is_empty()) {
         send_err("Extension lacks host/activeTab permission for target tab");
         return;
     }
@@ -2546,34 +2586,42 @@ void ExtensionManager::handle_scripting_execute_script(
         return;
     }
 
-    auto& target_document = frame->active_document();
-    auto& target_page = *target_document.host();
-    auto target_doc_id = target_document.id();
-
-    u64 exec_id = m_next_execution_id++;
-    target_document.authorize_content_script(ext.extension_id, ext.grant_generation);
-    m_pending_script_executions.set(exec_id, PendingScriptExecution {
-                                                 .caller = caller.make_weak_ptr<WebContentClient>(),
-                                                 .page_id = page_id,
-                                                 .document_id = source_document_id,
-                                                 .call_id = call_id,
-                                                 .frame_id = frame_id.value(),
-                                                 .expect_array_results = modern_api,
-                                                 .renderer = target_page.client().make_weak_ptr<WebContentClient>(),
-                                                 .target_page_id = target_page.id(),
-                                             });
-
-    send_content_script_metadata(target_page.client(), ext);
-    target_page.client().async_execute_extension_script(
-        target_page.id(),
-        exec_id,
-        ext.extension_id,
-        ext.uuid,
-        ext.grant_generation,
-        sources,
-        func_source,
-        func_args,
-        target_doc_id);
+    auto group_id = m_next_execution_id++;
+    m_script_execution_groups.set(group_id, ScriptExecutionGroup {
+                                                .caller = caller.make_weak_ptr<WebContentClient>(),
+                                                .page_id = page_id,
+                                                .document_id = source_document_id,
+                                                .call_id = call_id,
+                                                .expect_array_results = modern_api,
+                                                .remaining = frames.size(),
+                                                .failed = false,
+                                                .results = Vector<JsonValue> {},
+                                            });
+    m_script_execution_groups.get(group_id)->results.resize(frames.size());
+    for (size_t index = 0; index < frames.size(); ++index) {
+        auto& target_document = frames[index]->active_document();
+        auto& target_page = *target_document.host();
+        u64 exec_id = m_next_execution_id++;
+        target_document.authorize_content_script(ext.extension_id, ext.grant_generation);
+        m_pending_script_executions.set(exec_id, PendingScriptExecution {
+                                                     .group_id = group_id,
+                                                     .index = index,
+                                                     .frame_id = frames[index]->extension_frame_id(),
+                                                     .renderer = target_page.client().make_weak_ptr<WebContentClient>(),
+                                                     .target_page_id = target_page.id(),
+                                                 });
+        send_content_script_metadata(target_page.client(), ext);
+        target_page.client().async_execute_extension_script(
+            target_page.id(),
+            exec_id,
+            ext.extension_id,
+            ext.uuid,
+            ext.grant_generation,
+            sources,
+            func_source,
+            func_args,
+            target_document.id());
+    }
 }
 
 void ExtensionManager::handle_scripting_css(
@@ -2602,17 +2650,27 @@ void ExtensionManager::handle_scripting_css(
         return;
     }
 
+    Vector<CanonicalDocument*> target_documents;
+    if (frame_id.value() == all_frames) {
+        for (auto const* frame : scripting_target_frames(*this, ext.extension_id, *target_view, all_frames))
+            target_documents.append(&frame->active_document());
+        if (target_documents.is_empty()) {
+            send_err("Extension lacks host/activeTab permission for target tab");
+            return;
+        }
+    }
+
     bool allow_pending_document = !remove && ext.manifest.manifest_version() == Web::Extensions::ManifestVersion::V2
         && details_obj.get_string("runAt"sv) == "document_start"sv;
-    auto const* frame = scripting_target_frame(*target_view, frame_id.value(), allow_pending_document);
-    if (!frame) {
+    auto const* frame = target_documents.is_empty() ? scripting_target_frame(*target_view, frame_id.value(), allow_pending_document) : nullptr;
+    if (target_documents.is_empty() && !frame) {
         send_err("Extension lacks host/activeTab permission for target tab");
         return;
     }
 
-    auto* target_document = &frame->active_document();
-    auto const* target_url = &frame->active_document_url();
-    if (allow_pending_document) {
+    auto* target_document = frame ? &frame->active_document() : nullptr;
+    auto const* target_url = frame ? &frame->active_document_url() : nullptr;
+    if (frame && allow_pending_document) {
         // A document_start content script can ask the background page to style its document
         // while the frame still reports the document being replaced as active.
         if (auto navigation_id = frame->ongoing_navigation_id(); navigation_id.has_value()) {
@@ -2626,11 +2684,14 @@ void ExtensionManager::handle_scripting_css(
             }
         }
     }
-    auto const& target_page = target_document->host();
-    if (!target_page || !target_page->is_open() || target_document->unload_counter() || target_document->origin().is_opaque()
-        || !has_host_permission(ext.extension_id, *target_url, target_view->view_id())) {
-        send_err("Extension lacks host/activeTab permission for target tab");
-        return;
+    if (frame) {
+        auto const& target_page = target_document->host();
+        if (!target_page || !target_page->is_open() || target_document->unload_counter() || target_document->origin().is_opaque()
+            || !has_host_permission(ext.extension_id, *target_url, target_view->view_id())) {
+            send_err("Extension lacks host/activeTab permission for target tab");
+            return;
+        }
+        target_documents.append(target_document);
     }
 
     String css_text;
@@ -2666,7 +2727,10 @@ void ExtensionManager::handle_scripting_css(
         css_text = MUST(sb.to_string());
     }
 
-    target_page->client().async_inject_extension_css(target_page->id(), ext.extension_id, css_key, css_text, remove, target_document->id());
+    for (auto* document : target_documents) {
+        if (auto const& target_page = document->host(); target_page && target_page->is_open())
+            target_page->client().async_inject_extension_css(target_page->id(), ext.extension_id, css_key, css_text, remove, document->id());
+    }
     caller.async_extension_api_response(page_id, source_document_id, call_id, true, "null"_string);
 }
 

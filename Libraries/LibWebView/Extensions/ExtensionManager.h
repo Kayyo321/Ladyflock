@@ -423,16 +423,25 @@ private:
     HashMap<u64, PendingEventReply> m_pending_event_replies;
     u64 m_next_reply_id { 1 };
 
-    struct PendingScriptExecution {
+    // One injection call, which runs in one frame or, with allFrames, in each frame the extension may access.
+    struct ScriptExecutionGroup {
         WeakPtr<WebContentClient> caller;
         Web::PageId page_id { 0 };
         Web::HTML::CrossProcessId document_id;
         u64 call_id { 0 };
-        i64 frame_id { 0 };
         bool expect_array_results { false };
+        size_t remaining { 0 };
+        bool failed { false };
+        Vector<JsonValue> results;
+    };
+    struct PendingScriptExecution {
+        u64 group_id { 0 };
+        size_t index { 0 };
+        i64 frame_id { 0 };
         WeakPtr<WebContentClient> renderer;
         Web::PageId target_page_id { 0 };
     };
+    HashMap<u64, ScriptExecutionGroup> m_script_execution_groups;
     HashMap<u64, PendingScriptExecution> m_pending_script_executions;
     u64 m_next_execution_id { 1 };
 };

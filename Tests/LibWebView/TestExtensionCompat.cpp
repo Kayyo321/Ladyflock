@@ -757,3 +757,58 @@ TEST_CASE(extension_pages_read_the_hosts_they_may_access_and_nothing_else)
     TRY_OR_FAIL(manager.set_site_access(installed.extension_id, true, "127.0.0.1"_string, false));
     wait_for_results(manager, installed.extension_id, "withdrawn"sv);
 }
+
+TEST_CASE(all_frames_injection_reaches_each_frame_the_extension_may_access)
+{
+    using Server = PrivacyTest::IndependentHTTPServer;
+    auto respond = [](StringView body) {
+        return ByteString::formatted("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.length(), body);
+    };
+    Server unpermitted(Server::Protocol::HTTP, Server::Family::IPv6, [&](ByteString const&) { return respond("<!DOCTYPE html><body>other"sv); });
+    auto page = ByteString::formatted("<!DOCTYPE html><body>top<iframe src=\"/frame\"></iframe><iframe src=\"http://[::1]:{}/\"></iframe>", unpermitted.port());
+    Server site(Server::Protocol::HTTP, Server::Family::IPv4, [&](ByteString const& request_head) {
+        return request_head.starts_with("GET /frame "sv) ? respond("<!DOCTYPE html><body>frame"sv) : respond(page);
+    });
+
+    Test::HeadlessTestEnvironment env { "TestExtCompatAllFrames"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "frames"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Frames", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "frames@example.test"}},
+        "permissions": ["storage", "tabs", "http://127.0.0.1/*"],
+        "background": {"scripts": ["background.js"]},
+        "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"]}]
+    })"sv);
+    write_file(directory, "content.js"sv, "browser.runtime.sendMessage('loaded');"sv);
+    write_file(directory, "background.js"sv, R"(
+        // The top frame's content script says when the page has loaded.
+        browser.runtime.onMessage.addListener(async (message, sender) => {
+            const tabId = sender.tab.id;
+            try {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const names = await browser.tabs.executeScript(tabId, { code: 'document.body.firstChild.textContent', allFrames: true });
+                await browser.tabs.insertCSS(tabId, { code: 'body { color: rgb(1, 2, 3) }', allFrames: true });
+                const colors = await browser.tabs.executeScript(tabId, { code: 'getComputedStyle(document.body).color', allFrames: true });
+                const top = await browser.tabs.executeScript(tabId, { code: '1' });
+                const both = await browser.tabs.executeScript(tabId, { code: '1', allFrames: true, frameId: 0 }).then(() => 'ran', error => error.message);
+                await browser.storage.local.set({ names: names.join(','), colors: colors.join(','), top: top.length, both, done: true });
+            } catch (error) {
+                await browser.storage.local.set({ error: String(error), done: true });
+            }
+        });
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+
+    app->open_url_in_new_window(URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/page", site.port())).release_value(), WebView::IsPrivate::No);
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT_EQ(results.get_string("names"sv).value_or({}), "top,frame"sv);
+    EXPECT_EQ(results.get_string("colors"sv).value_or({}), "rgb(1, 2, 3),rgb(1, 2, 3)"sv);
+    EXPECT_EQ(results.get_u32("top"sv).value_or(0), 1u);
+    EXPECT_EQ(results.get_string("both"sv).value_or({}), "Unsupported script injection target or world"sv);
+}
