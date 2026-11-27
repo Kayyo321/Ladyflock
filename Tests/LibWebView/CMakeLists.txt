@@ -174,6 +174,7 @@ if (NOT WIN32)
         TestInputMethodState.cpp
         TestInspectDOMTree.cpp
         TestInspectElement.cpp
+        TestInspectorFrontendLayout.cpp
         TestLinkHoverStatus.cpp
         TestLocalFileNavigation.cpp
         TestNavigationDownloads.cpp
