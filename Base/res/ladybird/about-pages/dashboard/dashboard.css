@@ -4,9 +4,11 @@
  *
  * about:dashboard — the pegboard, its tiles, and the controls for arranging them.
  *
- * Colors, focus rings and control shapes come from ladybird.css. What is added here is
- * the tile itself, a tint per catalog section, and the motion of picking a tile up and
- * putting it down. Shadows are kept for whatever is being held or floats above the board.
+ * Neutral colors and control shapes come from ladybird.css. Every colored thing on the
+ * board, from a tile's glyph to focus rings and primary buttons, takes the browser's
+ * accent, which the host sends as --page-accent-* on the root. What is added here is the
+ * tile itself and the motion of picking a tile up and putting it down. Shadows are kept
+ * for whatever is being held or floats above the board.
  */
 
 html {
@@ -21,11 +23,28 @@ body.dashboard-page {
     --well-edge: rgba(0, 0, 0, 0.07);
     --float: rgba(251, 251, 252, 0.86);
     --badge-fill: #dedee3;
-    --tint: var(--brand);
+
+    /* The accent clears 3:1 on a tile; its fill is deep enough for white text. Without a
+       host to send them, they are ladybird.css's blues. */
+    --dash-accent: var(--page-accent-light, #0a7aff);
+    --dash-accent-fill: var(--page-accent-light-fill, #0a66d0);
+    --dot-accent-rgb: var(--page-accent-light-rgb, 10, 122, 255);
+
+    --tint: var(--dash-accent);
+    --tint-fill: var(--dash-accent-fill);
+    --accent: var(--dash-accent);
+    --brand: var(--dash-accent);
+    --link: color-mix(in srgb, var(--dash-accent) 80%, var(--text));
+    --primary: var(--dash-accent-fill);
+    --primary-hover: color-mix(in srgb, var(--dash-accent-fill) 88%, #000000);
+    --primary-pressed: color-mix(in srgb, var(--dash-accent-fill) 78%, #000000);
+    --focus-edge: var(--dash-accent);
+    --focus-ring: color-mix(in srgb, var(--dash-accent) 16%, transparent);
+    --choice: var(--dash-accent);
+    --choice-fill: color-mix(in srgb, var(--dash-accent) 9%, transparent);
 
     --dot-rgb: 29, 29, 31;
     --dot-alpha: 0.26;
-    --dot-accent-rgb: 10, 122, 255;
     --dot-warn-rgb: 179, 38, 30;
 
     --ease-out: cubic-bezier(0.22, 0.8, 0.24, 1);
@@ -50,9 +69,13 @@ body.dashboard-page {
         --float: rgba(52, 52, 56, 0.82);
         --badge-fill: #55555b;
 
+        --dash-accent: var(--page-accent-dark, #4d96ff);
+        --dash-accent-fill: var(--page-accent-dark-fill, #0a66d0);
+        --dot-accent-rgb: var(--page-accent-dark-rgb, 77, 150, 255);
+        --focus-edge: color-mix(in srgb, var(--dash-accent) 75%, transparent);
+
         --dot-rgb: 242, 242, 245;
         --dot-alpha: 0.32;
-        --dot-accent-rgb: 77, 150, 255;
         --dot-warn-rgb: 255, 154, 143;
     }
 }
@@ -82,9 +105,13 @@ html.is-private body.dashboard-page {
     --well-edge: rgba(255, 255, 255, 0.04);
     --float: rgba(36, 25, 60, 0.86);
     --badge-fill: #4a3d6b;
+    --dash-accent: var(--page-accent-dark, #4d96ff);
+    --dash-accent-fill: var(--page-accent-dark-fill, #0a66d0);
+    --dot-accent-rgb: var(--page-accent-dark-rgb, 77, 150, 255);
+    --focus-edge: color-mix(in srgb, var(--dash-accent) 75%, transparent);
+
     --dot-rgb: 226, 215, 255;
     --dot-alpha: 0.34;
-    --dot-accent-rgb: 171, 142, 245;
     --dot-warn-rgb: 255, 154, 143;
 }
 
@@ -1228,7 +1255,7 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .picker-add:hover:not(:disabled) {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
 }
 
@@ -1774,7 +1801,7 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .dash-card input[type="checkbox"]:not([switch]):checked {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
 }
 
 @media (prefers-reduced-motion: reduce) {

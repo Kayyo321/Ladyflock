@@ -119,6 +119,15 @@ TextSelectionColors panel_text_selection(QPalette::ColorGroup, QColor const& tex
 // The accent, deep enough that white text on it stays clear.
 QColor accent_fill();
 
+// The accent as browser-owned pages show it on their tiles, in the light or dark appearance of the page: a color that
+// clears 3:1 on a tile, and a fill that white text on it stays clear on. It follows the color theme, then the desktop's
+// accent, then the system's.
+struct PageAccentColors {
+    QColor accent;
+    QColor fill;
+};
+PageAccentColors page_accent(bool dark);
+
 // The fill of a primary button, a blue that white text stays clear on.
 QColor primary();
 // The fill of the selected row of a menu or a list navigated with the keyboard.

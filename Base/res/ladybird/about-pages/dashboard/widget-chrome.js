@@ -8,7 +8,7 @@
 
 import { effectiveSizesForBreakpoint } from "./grid-engine.js";
 import { icon } from "./icons.js";
-import { SIZE_NAMES, getWidgetShortTitle, getWidgetTint } from "./widget-registry.js";
+import { SIZE_NAMES, getWidgetShortTitle } from "./widget-registry.js";
 
 const DRAG_THRESHOLD_PX = 4;
 
@@ -101,7 +101,6 @@ export function createCardElement({ instance, def, handlers }) {
     section.dataset.instanceId = id;
     section.dataset.widgetType = instance.widgetType;
     section.setAttribute("aria-label", fullTitle);
-    section.style.setProperty("--tint", getWidgetTint(def));
 
     const face = document.createElement("div");
     face.className = "dash-card-face";

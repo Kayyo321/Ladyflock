@@ -543,6 +543,23 @@ QColor accent_fill()
     return with_contrast(is_dark() ? accent.dark : accent.light, Qt::white, 4.5f, Adjustment::Darken);
 }
 
+PageAccentColors page_accent(bool dark)
+{
+    QColor base;
+    if (auto const& base_color = s_color_theme.accent.has_value() ? s_color_theme.accent : s_desktop_accent; base_color.has_value()) {
+        base = *base_color;
+    } else {
+        auto const& accent = system_accent_color();
+        base = dark ? accent.dark : accent.light;
+    }
+    // NB: These are the tile colors of ladybird.css, which the pages' tiles are filled with.
+    auto tile = dark ? rgb(0x2c2c2f) : rgb(0xf3f3f5);
+    return {
+        .accent = with_contrast(base, tile, 3, dark ? Adjustment::Lighten : Adjustment::Darken),
+        .fill = with_contrast(base, Qt::white, 4.5f, Adjustment::Darken),
+    };
+}
+
 QColor primary()
 {
     if (s_color_theme.accent.has_value())

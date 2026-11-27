@@ -5,18 +5,16 @@
  * Complete 30-widget catalog and presets matching TabsNSuch.md §5 & §7.
  */
 
-// `tint` gives every section a hue of its own. It colors a tile's glyph, rings and
-// tinted buttons, and is always paired with the glyph's shape, never used alone.
+// Every section, like everything else on the board, is colored by the browser's accent,
+// so sections are told apart by their glyphs and names rather than by hue.
 export const CATALOG_SECTIONS = [
-    { id: "navigation", title: "Navigation, tabs and sessions", short: "Navigate", tint: "#2f7df6" },
-    { id: "activity", title: "Activity and library", short: "Library", tint: "#e8862a" },
-    { id: "privacy", title: "Privacy and browser controls", short: "Privacy", tint: "#2aa65a" },
-    { id: "productivity", title: "Time and personal productivity", short: "Productivity", tint: "#8a64e5" },
-    { id: "media", title: "Media and weather", short: "Media", tint: "#e2528d" },
-    { id: "developer", title: "Developer tools and references", short: "Developer", tint: "#1b9fb0" },
+    { id: "navigation", title: "Navigation, tabs and sessions", short: "Navigate" },
+    { id: "activity", title: "Activity and library", short: "Library" },
+    { id: "privacy", title: "Privacy and browser controls", short: "Privacy" },
+    { id: "productivity", title: "Time and personal productivity", short: "Productivity" },
+    { id: "media", title: "Media and weather", short: "Media" },
+    { id: "developer", title: "Developer tools and references", short: "Developer" },
 ];
-
-const SECTION_MAP = new Map(CATALOG_SECTIONS.map(section => [section.id, section]));
 
 // Names shown on a tile's eyebrow where the catalog title is too long to sit beside the status text.
 const SHORT_TITLES = {
@@ -32,10 +30,6 @@ const SHORT_TITLES = {
 };
 
 export const SIZE_NAMES = { compact: "Small", default: "Medium", expanded: "Large" };
-
-export function getWidgetTint(def) {
-    return SECTION_MAP.get(def?.section)?.tint || "#8a64e5";
-}
 
 export function getWidgetShortTitle(def) {
     if (!def)

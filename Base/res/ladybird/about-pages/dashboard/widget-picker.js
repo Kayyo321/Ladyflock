@@ -16,7 +16,6 @@ import {
     SIZE_NAMES,
     WIDGET_CATALOG,
     getWidgetDef,
-    getWidgetTint,
     isWidgetAllowedInContext,
 } from "./widget-registry.js";
 
@@ -35,7 +34,6 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
         chip.className = "shelf-cat";
         chip.setAttribute("role", "tab");
         chip.dataset.section = section.id;
-        chip.style.setProperty("--tint", section.tint);
         const dot = document.createElement("span");
         dot.className = "shelf-cat-dot";
         dot.setAttribute("aria-hidden", "true");
@@ -91,7 +89,6 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
         for (const it of eligibleItems) {
             const cell = document.createElement("span");
             cell.className = "preset-map-tile";
-            cell.style.setProperty("--tint", getWidgetTint(getWidgetDef(it.widgetType)));
             cell.style.left = `${(it.col / 12) * 100}%`;
             cell.style.top = `${(it.row / rows) * 100}%`;
             cell.style.width = `${(it.w / 12) * 100}%`;
@@ -128,7 +125,6 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
         const card = document.createElement("div");
         card.className = "picker-item";
         card.dataset.widgetType = def.id;
-        card.style.setProperty("--tint", getWidgetTint(def));
         card.classList.toggle("is-placed", isSingletonPlaced);
 
         // First in the card: the button that puts it on the board.

@@ -119,6 +119,7 @@ void SystemAppearance::apply_color_theme(WebView::ColorTheme theme)
     m_color_theme = theme;
     Theme::set_color_theme(theme);
     notify_widgets_of_palette_change();
+    emit accent_changed();
 }
 
 #if !defined(AK_OS_MACOS)
@@ -220,6 +221,7 @@ void SystemAppearance::apply_portal_setting(StringView namespace_, StringView ke
             return;
         Theme::set_desktop_accent(move(accent));
         notify_widgets_of_palette_change();
+        emit accent_changed();
     } else if ((namespace_ == APPEARANCE_NAMESPACE && key == REDUCED_MOTION_KEY) || (namespace_ == GNOME_INTERFACE_NAMESPACE && key == ENABLE_ANIMATIONS_KEY) || (namespace_ == KDE_GLOBALS_NAMESPACE && key == ANIMATION_DURATION_FACTOR_KEY)) {
         auto prefers_reduced_motion = SystemAppearance::prefers_reduced_motion();
         if (key == REDUCED_MOTION_KEY) {

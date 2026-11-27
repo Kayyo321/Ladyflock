@@ -1063,6 +1063,10 @@ ErrorOr<void> Application::connect_to_hub(Main::Arguments const& arguments)
     QObject::connect(&SystemAppearance::the(), &SystemAppearance::interface_appearance_changed, send_ui_info);
     QObject::connect(&SystemAppearance::the(), &SystemAppearance::reduced_motion_changed, send_ui_info);
     QObject::connect(&SystemAppearance::the(), &SystemAppearance::contrast_changed, send_ui_info);
+    // Open dashboards take their colors from the accent.
+    QObject::connect(&SystemAppearance::the(), &SystemAppearance::accent_changed, [] {
+        DashboardPage::notify_accent_changed();
+    });
     // The Hub may have started with what we told it before a change that came in the meantime.
     send_ui_info();
     s_browser_has_started = true;

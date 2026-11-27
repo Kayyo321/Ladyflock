@@ -38,6 +38,7 @@ public:
     static void notify_history_cleared();
     static void notify_privacy_network_mode_changed();
     static void notify_recently_closed_changed();
+    static void notify_accent_changed();
     static void reset_for_testing();
 
     Hub::WebUIPageContext const& context() const { return m_context; }

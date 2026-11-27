@@ -372,7 +372,7 @@
 }
 
 .rq-entry-add:hover {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
 }
 

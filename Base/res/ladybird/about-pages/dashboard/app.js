@@ -33,7 +33,7 @@ import {
     renderCardError,
 } from "./widget-chrome.js";
 import { createPickerController } from "./widget-picker.js";
-import { SIZE_NAMES, getWidgetDef, getWidgetShortTitle, getWidgetTint, loadWidgetModule } from "./widget-registry.js";
+import { SIZE_NAMES, getWidgetDef, getWidgetShortTitle, loadWidgetModule } from "./widget-registry.js";
 
 const rootEl = document.documentElement;
 const gridWrapEl = document.getElementById("dashboard-grid-wrap");
@@ -489,7 +489,6 @@ function mountWidgetIntoCard(entry) {
                 config: instance.config || {},
                 context: ctx,
                 tier,
-                tint: getWidgetTint(def),
                 request,
                 onEvent: onDashboardEvent,
                 setMeta: text => {
@@ -1263,7 +1262,6 @@ function beginExternalDrag(def, tier, point) {
 
     const section = document.createElement("div");
     section.className = "dash-card is-dragging is-incoming";
-    section.style.setProperty("--tint", getWidgetTint(def));
     const face = document.createElement("div");
     face.className = "dash-card-face dash-incoming-face";
     const glyph = document.createElement("span");
@@ -1430,7 +1428,6 @@ function openConfigureDialog(instanceId) {
     const def = getWidgetDef(entry.instance.widgetType);
     configDialogTitle.textContent = `${def ? def.title : "Widget"} settings`;
     configDialogBody.replaceChildren();
-    configDialog.style.setProperty("--tint", getWidgetTint(def));
     entry.controller.renderConfig(configDialogBody, () => configDialog.close());
     showDialog(configDialog);
 }
@@ -1724,6 +1721,33 @@ onDashboardEvent("dataReset", freshLayout => {
     refreshShelf();
 });
 
+// The host sends the browser's accent for the page's light and dark appearances, and
+// dashboard.css derives every colored thing on the board from it.
+const ACCENT_KEYS = { light: "light", lightFill: "light-fill", dark: "dark", darkFill: "dark-fill" };
+
+function hexToTriplet(hex) {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+    return m ? `${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}` : null;
+}
+
+function applyAccent(accent) {
+    if (!accent || typeof accent !== "object")
+        return;
+    for (const [key, name] of Object.entries(ACCENT_KEYS)) {
+        const value = accent[key];
+        if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value))
+            rootEl.style.setProperty(`--page-accent-${name}`, value);
+    }
+    for (const key of ["light", "dark"]) {
+        const triplet = hexToTriplet(accent[key]);
+        if (triplet)
+            rootEl.style.setProperty(`--page-accent-${key}-rgb`, triplet);
+    }
+    dots.refreshColors();
+}
+
+onDashboardEvent("accentChanged", applyAccent);
+
 function showFallback() {
     fallbackEl.classList.remove("hidden");
     gridWrapEl.classList.add("hidden");
@@ -1744,10 +1768,10 @@ async function init() {
         layout = res.layout;
         setExpectedGeneration(ctx.documentGeneration);
 
-        if (ctx.isPrivate) {
+        if (ctx.isPrivate)
             rootEl.classList.add("is-private");
-            dots.refreshColors();
-        }
+        applyAccent(ctx.accent);
+        dots.refreshColors();
 
         currentBp = getBreakpointForWidth(gridWrapEl.clientWidth || (window.innerWidth - 56));
         updateBanner();

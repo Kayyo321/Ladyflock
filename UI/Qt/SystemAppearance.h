@@ -51,6 +51,8 @@ signals:
     // Our windows switched between the light and dark appearance, whether the system or the interface theme switched
     // them.
     void interface_appearance_changed();
+    // The accent changed, whether the color theme, the desktop's accent or the system's palette changed it.
+    void accent_changed();
 
 private:
     SystemAppearance();

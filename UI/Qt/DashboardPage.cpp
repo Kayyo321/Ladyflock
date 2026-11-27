@@ -24,6 +24,7 @@
 #include <UI/Qt/HubConnection.h>
 #include <UI/Qt/StringUtils.h>
 #include <UI/Qt/Tab.h>
+#include <UI/Qt/Theme.h>
 
 #include <QAction>
 #include <QApplication>
@@ -397,6 +398,29 @@ void DashboardPage::notify_recently_closed_changed()
     }
 }
 
+// Every tile, button and mark on the board is colored by the accent, in both of the page's appearances.
+static JsonObject accent_json()
+{
+    auto hex = [](QColor const& color) {
+        return MUST(String::formatted("#{:02x}{:02x}{:02x}", color.red(), color.green(), color.blue()));
+    };
+    auto light = Theme::page_accent(false);
+    auto dark = Theme::page_accent(true);
+    JsonObject accent;
+    accent.set("light"sv, hex(light.accent));
+    accent.set("lightFill"sv, hex(light.fill));
+    accent.set("dark"sv, hex(dark.accent));
+    accent.set("darkFill"sv, hex(dark.fill));
+    return accent;
+}
+
+void DashboardPage::notify_accent_changed()
+{
+    auto accent = accent_json();
+    for (auto* page : coordinator().live_pages)
+        page->push_event("accentChanged"sv, accent);
+}
+
 DashboardStore& DashboardPage::store()
 {
     return coordinator().store_for(m_context);
@@ -636,6 +660,7 @@ void DashboardPage::handle_init(i64 request_id)
     ctx.set("maxCards"sv, static_cast<i64>(DashboardStore::MAX_CARDS));
     ctx.set("maxGridRows"sv, DashboardStore::MAX_GRID_ROWS);
     ctx.set("maxNoteBytes"sv, static_cast<i64>(DashboardStore::MAX_NOTE_BYTES));
+    ctx.set("accent"sv, accent_json());
 
     JsonObject payload;
     payload.set("context"sv, move(ctx));

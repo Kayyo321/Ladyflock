@@ -106,7 +106,7 @@
     width: 15px;
     height: 15px;
     border-radius: 50%;
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     box-shadow: 0 0 0 2px var(--tile-bg);
     color: #ffffff;
 }
@@ -194,7 +194,7 @@
 }
 
 .sites-add-btn:hover {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
 }
 
@@ -309,7 +309,7 @@
     padding: 0;
     border: none;
     border-radius: 50%;
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
     cursor: pointer;
 }
@@ -392,7 +392,7 @@
 }
 
 .list-entry-add:hover {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
 }
 
@@ -493,7 +493,7 @@
 }
 
 .dash-list-item.is-current .tabs-mark {
-    background-color: var(--tint);
+    background-color: var(--tint-fill);
     color: #ffffff;
 }
 
