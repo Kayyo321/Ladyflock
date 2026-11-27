@@ -32,6 +32,7 @@ set(TEST_SOURCES
     TestDownloadPresentation.cpp
     TestExtensionButtons.cpp
     TestHiddenPageSizing.cpp
+    TestInspectorHost.cpp
     TestJavaScriptDialog.cpp
     TestLadybirdMenu.cpp
     TestLocationEdit.cpp

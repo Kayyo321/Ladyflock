@@ -173,6 +173,7 @@ if (NOT WIN32)
         TestImageDecoderIsolation.cpp
         TestInputMethodState.cpp
         TestInspectDOMTree.cpp
+        TestInspectElement.cpp
         TestLinkHoverStatus.cpp
         TestLocalFileNavigation.cpp
         TestNavigationDownloads.cpp
