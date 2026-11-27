@@ -50,6 +50,33 @@ public:
     {
     }
 
+    // The browser window every extension starts in, as in a running browser. Its tab gets the test page.
+    WebView::HeadlessWebView& open_first_window()
+    {
+        auto& tab = add_tab(1, true);
+        m_next_window_id = 2;
+        return tab;
+    }
+
+    // Tabs and windows the extensions open, which the UI would show.
+    virtual Optional<WebView::ViewImplementation&> open_blank_new_tab(Web::HTML::ActivateTab, WebView::ViewImplementation const* related_view) const override
+    {
+        return const_cast<CorpusApp&>(*this).add_tab(related_view ? related_view->extension_window_id() : 1, false);
+    }
+
+    virtual void open_url_in_new_tab(URL::URL const& url, Web::HTML::ActivateTab activate_tab, WebView::ViewImplementation const* source_view) const override
+    {
+        if (auto tab = open_blank_new_tab(activate_tab, source_view); tab.has_value())
+            tab->load_from_browser_ui(url);
+    }
+
+    virtual void open_url_in_new_window(URL::URL const& url, WebView::IsPrivate) override
+    {
+        add_tab(m_next_window_id++, true).load_from_browser_ui(url);
+    }
+
+    Vector<NonnullOwnPtr<WebView::HeadlessWebView>> opened_views;
+
     virtual void create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions& request_server_options, WebView::WebContentOptions&) override
     {
         browser_options.headless_mode = WebView::HeadlessMode::Test;
@@ -58,6 +85,22 @@ public:
         browser_options.enable_content_blocker = WebView::EnableContentBlocker::No;
         request_server_options.http_disk_cache_mode = WebView::HTTPDiskCacheMode::Testing;
     }
+
+private:
+    WebView::HeadlessWebView& add_tab(u64 window_id, bool current)
+    {
+        auto theme = MUST(Gfx::load_system_theme(LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv).string()));
+        auto view = WebView::HeadlessWebView::create(theme, { 1024, 768 }, WebView::IsPrivate::No);
+        view->set_extension_window_id(window_id);
+        view->set_current_tab_of_window(current);
+        auto& tab = *view;
+        opened_views.append(move(view));
+        if (auto& manager = default_session().extension_manager)
+            manager->notify_tab_created(tab);
+        return tab;
+    }
+
+    u64 m_next_window_id { 2 };
 };
 
 constexpr StringView test_page = R"html(<!DOCTYPE html>
@@ -248,6 +291,7 @@ TEST_CASE(real_extensions_start_and_report_their_errors)
         Test::HeadlessTestEnvironment env { ByteString::formatted("Corpus-{}", name), 120 };
         auto app = TRY_OR_FAIL(env.create_application<CorpusApp>(Array { "--temporary-profile"sv, "--privacy-network-mode=proxy-only"sv, proxy_argument.view() }.span()));
         auto& manager = *app->default_session().extension_manager;
+        auto& tab = app->open_first_window();
         auto installed = manager.load_unpacked(directory);
         if (installed.is_error()) {
             report.set("install_error"sv, MUST(String::formatted("{}", installed.error())));
@@ -274,11 +318,10 @@ TEST_CASE(real_extensions_start_and_report_their_errors)
 
         // A page with a sign-in form, for the content scripts.
         JsonArray content_errors;
-        auto tab = WebView::HeadlessWebView::create(theme, { 1024, 768 }, WebView::IsPrivate::No);
-        listen(*tab, content_errors);
-        tab->load_from_browser_ui(URL::Parser::basic_parse("http://login.test/"sv).release_value());
+        listen(tab, content_errors);
+        tab.load_from_browser_ui(URL::Parser::basic_parse("http://login.test/"sv).release_value());
         wait(3000);
-        auto const& document = tab->traversable().active_document();
+        auto const& document = tab.traversable().active_document();
         auto page_url = document.creation_url();
         report.set("page_loaded"sv, page_url.host().has_value() && page_url.serialized_host() == "login.test"sv && document.is_completely_loaded());
 
@@ -292,7 +335,7 @@ TEST_CASE(real_extensions_start_and_report_their_errors)
             popup->on_console_message = nullptr;
         }
         wait(500);
-        tab->on_console_message = nullptr;
+        tab.on_console_message = nullptr;
         if (auto* view = manager.background_view_for_testing(extension.extension_id))
             view->on_console_message = nullptr;
 
