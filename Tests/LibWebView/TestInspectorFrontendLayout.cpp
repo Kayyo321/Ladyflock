@@ -345,6 +345,47 @@ TEST_CASE(inspector_frontend_layout)
         return problem;
     )JS"sv);
 
+    // A vertical wheel or two-finger swipe over a strip of tabs scrolls it sideways, and nothing else.
+    expect_holds(frontend, "A vertical wheel scrolls a tab strip sideways"sv, R"JS(
+        const strip = document.getElementById("sidebar-tabs");
+        strip.scrollLeft = 0;
+        const wheel = new WheelEvent("wheel", { deltaY: 120, bubbles: true, cancelable: true });
+        strip.dispatchEvent(wheel);
+        await frames();
+        const result = strip.scrollLeft > 0 && wheel.defaultPrevented ? null : { scrollLeft: strip.scrollLeft, prevented: wheel.defaultPrevented };
+        strip.scrollLeft = 0;
+        return result;
+    )JS"sv);
+
+    expect_holds(frontend, "The Elements splitter resizes by keyboard and by dragging"sv, R"JS(
+        const splitter = document.getElementById("elements-splitter");
+        const tree = document.getElementById("elements-tree-pane");
+        const before = tree.getBoundingClientRect().width;
+        splitter.focus();
+        splitter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+        await frames();
+        const afterKey = tree.getBoundingClientRect().width;
+        const split = document.getElementById("elements-split").getBoundingClientRect();
+        splitter.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 7, button: 0, clientX: split.left + split.width * 0.3, bubbles: true }));
+        splitter.dispatchEvent(new PointerEvent("pointermove", { pointerId: 7, clientX: split.left + split.width * 0.3, bubbles: true }));
+        splitter.dispatchEvent(new PointerEvent("pointerup", { pointerId: 7, bubbles: true }));
+        await frames();
+        const afterDrag = tree.getBoundingClientRect().width;
+        const dragged = Math.abs(afterDrag - split.width * 0.3) < 3;
+        return afterKey < before && dragged && !document.body.classList.contains("splitter-dragging") ? null : { before, afterKey, afterDrag, expected: split.width * 0.3 };
+    )JS"sv);
+
+    frontend.reset_viewport_size({ 1200, 300 });
+    evaluate(frontend, "await new Promise(resolve => setTimeout(resolve, 300)); await frames();"sv);
+    expect_holds(frontend, "The drawer leaves the panel room in a short bottom dock"sv, R"JS(
+        app.drawers.open("console");
+        await frames();
+        const panel = document.getElementById("panel-host").getBoundingClientRect().height;
+        const drawer = document.getElementById("inspector-drawer").getBoundingClientRect().height;
+        app.drawers.close();
+        return panel >= 100 && drawer >= 100 ? null : { panel, drawer };
+    )JS"sv);
+
     frontend.reset_viewport_size({ 460, 700 });
     evaluate(frontend, "await new Promise(resolve => setTimeout(resolve, 300)); await frames();"sv);
     capture(frontend, "07-narrow"sv);
@@ -404,6 +445,62 @@ TEST_CASE(inspector_frontend_edits)
         await until(() => [...document.querySelectorAll("#dom-tree .dom-attr-val")].some(span => span.textContent === "checkout-form edited"));
         return survived && document.activeElement === document.getElementById("dom-tree") ? null : { survived, focus: document.activeElement?.id };
     )JS"sv);
+}
+
+// A page that keeps changing re-renders the tree many times a second; that must not move or interrupt anything.
+TEST_CASE(inspector_frontend_on_a_living_page)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorFrontendLivingPage"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 300 });
+    auto& frontend = *fixture.frontend;
+    evaluate(frontend, select_pay_button);
+    evaluate(frontend, R"JS(
+        for (const li of [...app.elementsTree.nodesById.values()].filter(n => n.name?.toLowerCase() === "ul"))
+            app.elementsTree.expanded.add(String(li.id));
+        app.elementsTree.render();
+        await frames();
+    )JS"sv);
+    fixture.target->run_javascript("setInterval(() => { document.getElementById('ticker').textContent = String(Date.now()); }, 40);"_string);
+
+    expect_holds(frontend, "The tree keeps its scroll position while the page mutates"sv, R"JS(
+        const tree = document.getElementById("dom-tree");
+        tree.scrollTop = 120;
+        await new Promise(resolve => setTimeout(resolve, 600));
+        return tree.scrollTop === 120 ? null : { scrollTop: tree.scrollTop, scrollHeight: tree.scrollHeight, clientHeight: tree.clientHeight };
+    )JS"sv);
+
+    expect_holds(frontend, "A context menu opened on another row stays open"sv, R"JS(
+        const styles = document.getElementById("sidebar-styles");
+        styles.scrollTop = styles.scrollHeight;
+        const rows = [...document.querySelectorAll("#dom-tree .dom-row")].filter(row => !row.classList.contains("selected") && row.getAttribute("role") === "treeitem");
+        const row = rows[rows.length - 1];
+        const r = row.getBoundingClientRect();
+        row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: r.x + 40, clientY: r.y + 5 }));
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const open = !document.getElementById("context-menu").classList.contains("hidden");
+        document.body.click();
+        return open ? null : "closed";
+    )JS"sv);
+}
+
+// Reloading the frontend keeps it bound to its tab.
+TEST_CASE(inspector_frontend_reload)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorFrontendReload"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 });
+    auto& frontend = *fixture.frontend;
+    bool reloaded = false;
+    frontend.on_load_finish = [&](auto const& url) { reloaded = url == URL::about_inspector(); };
+    frontend.reload();
+    wait_for([&] { return reloaded; });
+    frontend.on_load_finish = nullptr;
+    expect_holds(frontend, "A reloaded Inspector is still bound"sv, R"JS(
+        await until(() => app.state.bound && app.elementsTree.nodesById.size > 20);
+        return document.getElementById("workspace").classList.contains("hidden") ? "unbound" : null;
+    )JS"sv);
+    EXPECT(fixture.session->has_current_frontend());
 }
 
 TEST_CASE(inspector_console_helpers)
