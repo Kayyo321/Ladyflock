@@ -957,7 +957,8 @@ export class ElementsTreeController {
             { label: "Store as global variable", disabled: isDetached, run: () => this.storeAsGlobalVariable() },
             { label: "Capture node screenshot", disabled: !isElement || isDetached, run: () => this.captureNodeScreenshot(node) },
             { sep: true },
-            { label: "Copy outerHTML", disabled: !isElement, run: () => this.copyHtml(node, true) },
+            // The markup of a detached node is no longer in the page to read.
+            { label: "Copy outerHTML", disabled: !isElement || isDetached, run: () => this.copyHtml(node, true) },
             { label: "Copy selector", disabled: !isElement, run: () => sendCommand("copyText", { text: selector }) },
             { label: "Copy JS path", disabled: !isElement, run: () => sendCommand("copyText", { text: `document.querySelector(${JSON.stringify(selector)})` }) },
             { label: "Copy XPath", disabled: !isElement, run: () => sendCommand("copyText", { text: this.computeXPath(node.id, false) }) },

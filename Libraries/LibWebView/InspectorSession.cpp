@@ -1246,15 +1246,29 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         return;
     }
 
+    // WebContent does not answer some reads it cannot serve, such as the markup of a node that left the document, and
+    // the frontend gives up on a read after ten seconds. A read still waiting by then is abandoned, so that one
+    // unanswerable read does not block every later one of its kind until the page navigates.
+    auto take_read_slot = [&](Optional<u64>& slot, MonotonicTime& started) {
+        auto now = MonotonicTime::now_coarse();
+        if (slot.has_value()) {
+            if (now - started < AK::Duration::from_seconds(10)) {
+                send_reply(request_id, false, {}, "The previous request is still running."_string);
+                return false;
+            }
+            send_reply(*slot, false, {}, "The target did not answer in time."_string);
+        }
+        slot = request_id;
+        started = now;
+        return true;
+    };
+
     // DOM Editing (with Flight Recorder journal entries!)
     if (command == "getNodeHtml"sv) {
         auto node_id = Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0));
         auto outer = params.get_bool("outer"sv).value_or(true);
-        if (m_pending_html_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
+        if (!take_read_slot(m_pending_html_request_id, m_pending_html_request_started))
             return;
-        }
-        m_pending_html_request_id = request_id;
         if (outer)
             view->get_dom_node_outer_html(node_id);
         else
@@ -1382,11 +1396,8 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
 
     // Accessibility
     if (command == "getAccessibilityTree"sv) {
-        if (m_pending_a11y_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
+        if (!take_read_slot(m_pending_a11y_request_id, m_pending_a11y_request_started))
             return;
-        }
-        m_pending_a11y_request_id = request_id;
         view->inspect_accessibility_tree();
         return;
     }
@@ -1407,11 +1418,8 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
             send_reply(request_id, false, JsonValue {}, "Invalid stylesheet identifier."_string);
             return;
         }
-        if (m_pending_stylesheet_source_request_id.has_value()) {
-            send_reply(request_id, false, {}, "The previous request is still running."_string);
+        if (!take_read_slot(m_pending_stylesheet_source_request_id, m_pending_stylesheet_source_request_started))
             return;
-        }
-        m_pending_stylesheet_source_request_id = request_id;
         view->request_style_sheet_source(*id);
         return;
     }

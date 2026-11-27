@@ -15,6 +15,7 @@
 #include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/String.h>
+#include <AK/Time.h>
 #include <AK/Vector.h>
 #include <AK/WeakPtr.h>
 #include <AK/Weakable.h>
@@ -253,11 +254,14 @@ private:
     };
     HashMap<u64, NodePropertiesRequest> m_node_properties_requests;
     Optional<u64> m_pending_html_request_id;
+    MonotonicTime m_pending_html_request_started { MonotonicTime::now_coarse() };
     Optional<u64> m_pending_edit_request_id;
     Optional<EditJournalEntry> m_pending_edit_journal_entry;
     Optional<u64> m_pending_a11y_request_id;
+    MonotonicTime m_pending_a11y_request_started { MonotonicTime::now_coarse() };
     Optional<u64> m_pending_stylesheets_request_id;
     Optional<u64> m_pending_stylesheet_source_request_id;
+    MonotonicTime m_pending_stylesheet_source_request_started { MonotonicTime::now_coarse() };
     Optional<u64> m_pending_grid_layouts_request_id;
     Optional<u64> m_pending_current_grid_request_id;
     Optional<u64> m_pending_current_flexbox_request_id;
