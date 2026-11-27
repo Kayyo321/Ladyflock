@@ -217,38 +217,40 @@ TEST_CASE(purging_an_identity_removes_what_it_stored_and_nothing_else)
     auto cache_root = WebView::Application::request_server_options().cache_path;
     auto& identities = WebView::IdentityManager::the();
 
-    auto work = TRY_OR_FAIL(identities.create_identity(Privacy::IdentityDescriptor::persistent("work"_string, "Work"_string)));
     auto personal = TRY_OR_FAIL(identities.create_identity(Privacy::IdentityDescriptor::persistent("personal"_string, "Personal"_string)));
     auto work_markers = make_markers("work"sv);
     auto personal_markers = make_markers("personal"sv);
-
-    auto work_view = write_markers(*work, server.port(), work_markers);
     auto personal_view = write_markers(*personal, server.port(), personal_markers);
-    grant_geolocation(*work, server.port());
     grant_geolocation(*personal, server.port());
-
     auto history = UIHistory::open(paths.data);
-    history.record("work"sv, work_markers.storage);
     history.record("personal"sv, personal_markers.storage);
 
-    // Positive controls: each identity's data is on disk where the purge must find it.
-    EXPECT(database_files_contain(paths.data, "Ladybird"sv, work_markers.storage));
-    EXPECT(database_files_contain(paths.data, "Ladybird"sv, personal_markers.storage));
-    EXPECT(database_files_contain(paths.data, "History"sv, work_markers.storage));
-    EXPECT(history.has("work"sv, work_markers.storage));
-    EXPECT(FileSystem::exists(LexicalPath::join(identity_directory(paths.config, "work"sv), "Permissions.json"sv).string()));
-    EXPECT(FileSystem::exists(identity_directory(cache_root, "work"sv)));
-    EXPECT(read_markers(*work, server.port()).contains(work_markers.cookie));
+    {
+        auto work = TRY_OR_FAIL(identities.create_identity(Privacy::IdentityDescriptor::persistent("work"_string, "Work"_string)));
+        auto work_view = write_markers(*work, server.port(), work_markers);
+        grant_geolocation(*work, server.port());
+        history.record("work"sv, work_markers.storage);
 
-    auto report = TRY_OR_FAIL(identities.purge_identity("work"sv));
-    for (auto const& failure : report.failures)
-        warnln("unexpected failure: {} {}", WebView::identity_purge_step_name(failure.step), failure.reason);
-    EXPECT(report.is_complete());
-    EXPECT_EQ(report.completed_steps.size(), 8u);
-    EXPECT(!identities.find_session("work"sv));
-    EXPECT(!identities.has_pending_purge("work"sv));
+        // Positive controls: each identity's data is on disk where the purge must find it.
+        EXPECT(database_files_contain(paths.data, "Ladybird"sv, work_markers.storage));
+        EXPECT(database_files_contain(paths.data, "Ladybird"sv, personal_markers.storage));
+        EXPECT(database_files_contain(paths.data, "History"sv, work_markers.storage));
+        EXPECT(history.has("work"sv, work_markers.storage));
+        EXPECT(FileSystem::exists(LexicalPath::join(identity_directory(paths.config, "work"sv), "Permissions.json"sv).string()));
+        EXPECT(FileSystem::exists(identity_directory(cache_root, "work"sv)));
+        EXPECT(read_markers(*work, server.port()).contains(work_markers.cookie));
 
-    // Give anything still running in the closed identity time to write back, then look again.
+        auto report = TRY_OR_FAIL(identities.purge_identity("work"sv));
+        for (auto const& failure : report.failures)
+            warnln("unexpected failure: {} {}", WebView::identity_purge_step_name(failure.step), failure.reason);
+        EXPECT(report.is_complete());
+        EXPECT_EQ(report.completed_steps.size(), 8u);
+        EXPECT(!identities.find_session("work"sv));
+        EXPECT(!identities.has_pending_purge("work"sv));
+    }
+
+    // The purged identity's session and its last page are gone now. Had its stores still been attached to disk, this
+    // is when they would have written back what they held, so give them time to, then look.
     spin_for(AK::Duration::from_seconds(2));
 
     // Cookies are flushed from memory as the purge detaches the identity's cookie jar, so the deletion after it is
