@@ -6,7 +6,7 @@ This document covers the first increments of Ladyflock's **Milestone 4 (Site pro
 - turning JavaScript off per site;
 - a read-only `about:privacy` dashboard with an explicit, expiring tab capture.
 
-See [NetworkEnforcement.md](NetworkEnforcement.md), [IdentitiesAndStorage.md](IdentitiesAndStorage.md) and [ProxyRouting.md](ProxyRouting.md) for Milestones 0–3.
+See [NetworkEnforcement.md](NetworkEnforcement.md), [IdentitiesAndStorage.md](IdentitiesAndStorage.md) and [ProxyRouting.md](ProxyRouting.md) for Milestones 0–3, [Hardening.md](Hardening.md) for the first Milestone 5 increments, and [PlanStatus.md](PlanStatus.md) for how the whole plan compares with the code.
 
 **Milestone 4 is not complete.** Three of its six areas have shipped here. Native-blocking extensions, permission lifetimes and default-deny, and fingerprint profiles are still to do (section 5). Every control below is **off by default**.
 
