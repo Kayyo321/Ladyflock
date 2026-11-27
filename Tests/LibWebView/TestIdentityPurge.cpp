@@ -7,9 +7,11 @@
 #include "HeadlessTest.h"
 #include "PrivacyTestFixtures.h"
 #include <AK/LexicalPath.h>
+#include <LibCore/DirIterator.h>
 #include <LibCore/Directory.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
+#include <LibCore/System.h>
 #include <LibCore/Timer.h>
 #include <LibDatabase/Database.h>
 #include <LibFileSystem/FileSystem.h>
@@ -143,6 +145,32 @@ void verify_profile_is_inside(Test::HeadlessTestEnvironment const& environment)
     }
 }
 
+// Every file under a directory, whatever store wrote it: databases, logs, caches, settings and anything else.
+bool any_file_contains(ByteString const& root, StringView marker)
+{
+    Core::DirIterator iterator { root, Core::DirIterator::Flags::SkipParentAndBaseDir };
+    while (iterator.has_next()) {
+        auto path = iterator.next_full_path();
+        auto stat = Core::System::lstat(path);
+        if (stat.is_error())
+            continue;
+        if (S_ISDIR(stat.value().st_mode)) {
+            if (any_file_contains(path, marker))
+                return true;
+            continue;
+        }
+        if (!S_ISREG(stat.value().st_mode))
+            continue;
+        auto file = Core::File::open(path, Core::File::OpenMode::Read);
+        if (file.is_error())
+            continue;
+        auto bytes = file.value()->read_until_eof();
+        if (!bytes.is_error() && StringView { bytes.value() }.contains(marker))
+            return true;
+    }
+    return false;
+}
+
 ByteString identity_directory(ByteString const& root, StringView identity_id)
 {
     return LexicalPath::join(root, "Identities"sv, identity_id).string();
@@ -239,6 +267,7 @@ TEST_CASE(purging_an_identity_removes_what_it_stored_and_nothing_else)
         EXPECT(FileSystem::exists(LexicalPath::join(identity_directory(paths.config, "work"sv), "Permissions.json"sv).string()));
         EXPECT(FileSystem::exists(identity_directory(cache_root, "work"sv)));
         EXPECT(read_markers(*work, server.port()).contains(work_markers.cookie));
+        EXPECT(any_file_contains(environment.directory(), work_markers.storage));
 
         auto report = TRY_OR_FAIL(identities.purge_identity("work"sv));
         for (auto const& failure : report.failures)
@@ -262,6 +291,9 @@ TEST_CASE(purging_an_identity_removes_what_it_stored_and_nothing_else)
     EXPECT(!FileSystem::exists(identity_directory(paths.config, "work"sv)));
     EXPECT(!FileSystem::exists(identity_directory(cache_root, "work"sv)));
     EXPECT(!FileSystem::exists(LexicalPath::join(paths.data, "IdentityPurges.json"sv).string()));
+    // Nor is either marker anywhere else in the profile: not in another store, a cache, a log or a settings file.
+    EXPECT(!any_file_contains(environment.directory(), work_markers.cookie));
+    EXPECT(!any_file_contains(environment.directory(), work_markers.storage));
 
     // The other identity keeps everything.
     EXPECT(database_files_contain(paths.data, "Ladybird"sv, personal_markers.storage));
