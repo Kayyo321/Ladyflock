@@ -67,7 +67,12 @@ public:
 
     static int toolbar_height(bool window_controls_visible);
 
-    void bind(Tab*);
+    // Moving between the sides of a shown pair keeps the window's own panels, such as the extension sidebar, open.
+    enum class KeepWindowPanels : bool {
+        No,
+        Yes,
+    };
+    void bind(Tab*, KeepWindowPanels = KeepWindowPanels::No);
     QAction& zoom_level_action() const { return m_zoom_level_action.action(); }
     void release_location_edit(Tab&);
 

@@ -281,6 +281,8 @@ endpoint HubServer
     view_set_window_size(u64 view_id, Gfx::IntSize size) =|
     view_set_system_visibility_state(u64 view_id, Web::HTML::VisibilityState visibility_state) =|
     view_set_pinned(u64 view_id, bool pinned) =|
+    // The split view IDs of tabs whose membership changed, in strip order, as one batch.
+    view_set_split_view_ids(Vector<u64> view_ids, Vector<i64> split_view_ids) =|
     view_set_current_tab_of_window(u64 view_id, bool current_tab_of_window) =|
     view_set_presents_from_cpu_memory(u64 view_id, bool presents_from_cpu_memory) =|
     view_set_hosts_remote_layer(u64 view_id, bool hosts_remote_layer) =|

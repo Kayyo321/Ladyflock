@@ -19,6 +19,7 @@
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
 #include <UI/Qt/Popover.h>
+#include <UI/Qt/SplitView.h>
 #include <UI/Qt/StringUtils.h>
 #include <UI/Qt/SystemAppearance.h>
 #include <UI/Qt/Tab.h>
@@ -1646,10 +1647,28 @@ void BookmarksBarContainer::update_geometry()
     m_toolbar.set_bookmarks_bar_below(visible);
 }
 
+// NB: The bar slides over every page on display, which in a split view is both sides. Each side's page starts below
+//     its pane bar, so it is covered by as much of the bar as reaches past it.
 void BookmarksBarContainer::set_view_overlay_height(int height)
 {
-    if (m_tab && m_tab->is_loaded())
-        m_tab->view().set_bookmarks_bar_overlay_height(height);
+    Vector<QPointer<Tab>> overlaid_tabs;
+    if (auto* page_area = qobject_cast<PageArea*>(&m_page_stack)) {
+        for (auto* tab : page_area->displayed_tabs())
+            overlaid_tabs.append(tab);
+    } else if (m_tab) {
+        overlaid_tabs.append(m_tab);
+    }
+    for (auto& tab : m_overlaid_tabs) {
+        if (tab && tab->is_loaded() && !overlaid_tabs.contains_slow(tab))
+            tab->view().set_bookmarks_bar_overlay_height(0);
+    }
+    for (auto& tab : overlaid_tabs) {
+        if (!tab || !tab->is_loaded())
+            continue;
+        auto view_top = tab->view().mapTo(&m_page_stack, QPoint()).y();
+        tab->view().set_bookmarks_bar_overlay_height(height > 0 ? max(0, height - view_top) : 0);
+    }
+    m_overlaid_tabs = AK::move(overlaid_tabs);
 }
 
 bool BookmarksBarContainer::event(QEvent* event)

@@ -213,6 +213,7 @@ private:
     virtual void view_set_window_size(u64 view_id, Gfx::IntSize size) override;
     virtual void view_set_system_visibility_state(u64 view_id, Web::HTML::VisibilityState visibility_state) override;
     virtual void view_set_pinned(u64 view_id, bool pinned) override;
+    virtual void view_set_split_view_ids(Vector<u64> view_ids, Vector<i64> split_view_ids) override;
     virtual void view_set_current_tab_of_window(u64 view_id, bool current_tab_of_window) override;
     virtual void view_set_presents_from_cpu_memory(u64 view_id, bool presents_from_cpu_memory) override;
     virtual void view_set_hosts_remote_layer(u64 view_id, bool hosts_remote_layer) override;

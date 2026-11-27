@@ -12,6 +12,16 @@
 
 #include <QTemporaryDir>
 
+template<>
+struct AK::Formatter<Ladybird::SessionSplitMembership> : Formatter<FormatString> {
+    ErrorOr<void> format(FormatBuilder& builder, Ladybird::SessionSplitMembership const& membership)
+    {
+        if (membership.start_fraction.has_value())
+            return Formatter<FormatString>::format(builder, "split {} at {}"sv, membership.split_key, *membership.start_fraction);
+        return Formatter<FormatString>::format(builder, "split {}"sv, membership.split_key);
+    }
+};
+
 using namespace Ladybird;
 using namespace WebView;
 
@@ -76,9 +86,22 @@ static SessionTabId open_tab(SessionStore& store, SessionWindowId window, String
     return MUST(store.tab_opened({ .window_id = window, .initial_url = parse_url(url), .insertion_index = {}, .is_active = SessionStore::IsActive::No }));
 }
 
+// Takes the schema back to SESSIONS_SCHEMA_LOCAL_FILE_CONTENT_AGAIN_VERSION, so the split view migration runs again.
+static void rewind_sessions_schema_to_version_13(Database::Database& database)
+{
+    MUST(database.execute_raw("ALTER TABLE Sessions DROP COLUMN split_side_selected;"sv));
+    MUST(database.execute_raw("ALTER TABLE Sessions DROP COLUMN split_side_start_fraction;"sv));
+    MUST(database.execute_raw("ALTER TABLE Sessions DROP COLUMN split_side_closed_was_start;"sv));
+    MUST(database.execute_raw("ALTER TABLE Sessions DROP COLUMN split_side_survivor_tab_id;"sv));
+    MUST(database.execute_raw("ALTER TABLE SessionTabs DROP COLUMN split_start_fraction;"sv));
+    MUST(database.execute_raw("ALTER TABLE SessionTabs DROP COLUMN split_id;"sv));
+    MUST(database.execute_raw("UPDATE SchemaVersions SET version = 13 WHERE store = 'Sessions';"sv));
+}
+
 // Takes the schema back to SESSIONS_SCHEMA_DOCUMENT_POLICY_VERSION, so every migration after it runs again.
 static void rewind_sessions_schema_to_version_4(Database::Database& database)
 {
+    rewind_sessions_schema_to_version_13(database);
     MUST(database.execute_raw("ALTER TABLE SessionEntries DROP COLUMN held_local_file_content;"sv));
     MUST(database.execute_raw("DROP TABLE SessionUpgradeInsecureNavigations;"sv));
     MUST(database.execute_raw("ALTER TABLE SessionPolicyContainers DROP COLUMN insecure_requests_policy;"sv));
@@ -111,7 +134,7 @@ TEST_CASE(fresh_database_migrates_to_the_latest_schema)
     for (auto table : { "Sessions"sv, "SessionTabs"sv, "SessionUsedSteps"sv, "SessionHistories"sv, "SessionNestedHistories"sv, "SessionEntries"sv, "SessionUpgradeInsecureNavigations"sv })
         EXPECT(TRY_OR_FAIL(database->table_exists(table)));
 
-    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 13u });
+    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 14u });
 }
 
 TEST_CASE(deleting_a_session_cascades_through_its_tabs)
@@ -158,7 +181,7 @@ TEST_CASE(version_4_database_migrates_to_the_latest_schema)
     rewind_sessions_schema_to_version_4(*database);
 
     EXPECT_EQ(TRY_OR_FAIL(SessionStore::migrate_schema(*database)), Database::MigrationOutcome::Success);
-    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 13u });
+    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 14u });
     EXPECT(TRY_OR_FAIL(database->table_exists("SessionUpgradeInsecureNavigations"sv)));
     EXPECT_EQ(select_i64(*database, "SELECT pinned FROM SessionTabs WHERE id = 2;"_string), 0);
     EXPECT_EQ(select_i64(*database, "SELECT COUNT(*) FROM Sessions WHERE id = 1 AND width IS NULL;"_string), 1);
@@ -176,6 +199,7 @@ TEST_CASE(version_12_local_file_roots_migrate_to_held_local_file_content)
         store->update_tab_state({ .tab_id = tab, .history = snapshot, .url = parse_url("https://b.example/"sv) });
         store->flush_dirty_state();
     }
+    rewind_sessions_schema_to_version_13(*database);
     TRY_OR_FAIL(database->execute_raw("ALTER TABLE SessionEntries DROP COLUMN held_local_file_content;"sv));
     TRY_OR_FAIL(database->execute_raw("ALTER TABLE SessionEntries ADD COLUMN local_file_root_path TEXT;"sv));
     TRY_OR_FAIL(database->execute_raw("ALTER TABLE SessionEntries ADD COLUMN local_file_root_scope INTEGER;"sv));
@@ -183,7 +207,7 @@ TEST_CASE(version_12_local_file_roots_migrate_to_held_local_file_content)
     TRY_OR_FAIL(database->execute_raw("UPDATE SchemaVersions SET version = 12 WHERE store = 'Sessions';"sv));
 
     EXPECT_EQ(TRY_OR_FAIL(SessionStore::migrate_schema(*database)), Database::MigrationOutcome::Success);
-    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 13u });
+    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 14u });
     EXPECT_EQ(select_i64(*database, "SELECT held_local_file_content FROM SessionEntries WHERE url = 'file:///tmp/a.html';"_string), 1);
     EXPECT_EQ(select_i64(*database, "SELECT held_local_file_content FROM SessionEntries WHERE url = 'https://b.example/';"_string), 0);
 }
@@ -2653,4 +2677,555 @@ TEST_CASE(exhausted_id_close_queues_the_discard_when_the_write_fails)
     TRY_OR_FAIL(database->execute_raw("DROP TRIGGER InjectedFailure;"sv));
     store->flush_dirty_state();
     EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT COUNT(*) FROM SessionTabs WHERE id = {};", tab))), 0);
+}
+
+static SessionSplitMembership split_start(i64 key, float fraction)
+{
+    return { .split_key = key, .start_fraction = fraction };
+}
+
+static SessionSplitMembership split_end(i64 key)
+{
+    return { .split_key = key, .start_fraction = {} };
+}
+
+static void pair_tabs(SessionStore& store, SessionTabId start, SessionTabId end, i64 key, float fraction)
+{
+    MUST(store.tab_split_changed({ { .tab_id = start, .membership = split_start(key, fraction) }, { .tab_id = end, .membership = split_end(key) } }));
+}
+
+static ClosedSplitSide closed_end_side(SessionTabId survivor, float fraction, ClosedSplitSide::Selected selected)
+{
+    return { .survivor_tab_id = survivor, .closed_side_was_start = false, .start_fraction = fraction, .selected = selected };
+}
+
+static void insert_tabs_with_broken_memberships(Database::Database& database)
+{
+    MUST(database.execute_raw("INSERT INTO Sessions (id, kind, closed_time, active_tab_index) VALUES (1, 0, 0, 0);"sv));
+    // Members apart, a lone member, a pair with a pinned tab between them, and one valid pair.
+    MUST(database.execute_raw(R"#(INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index, pinned, split_id, split_start_fraction) VALUES
+        (2, 1, 0, 'https://a.example/', 0, 0, 40, 0.5),
+        (3, 1, 1, 'https://b.example/', 0, 0, NULL, NULL),
+        (4, 1, 2, 'https://c.example/', 0, 0, 40, NULL),
+        (5, 1, 3, 'https://d.example/', 0, 0, 41, 0.5),
+        (6, 1, 4, 'https://e.example/', 0, 0, 42, 0.5),
+        (7, 1, 5, 'https://f.example/', 0, 1, NULL, NULL),
+        (8, 1, 6, 'https://g.example/', 0, 0, 42, NULL),
+        (9, 1, 7, 'https://h.example/', 0, 0, 43, 0.25),
+        (10, 1, 8, 'https://i.example/', 0, 0, 43, NULL);)#"sv));
+}
+
+static bool split_is_null(Database::Database& database, SessionTabId tab)
+{
+    return select_i64(database, MUST(String::formatted("SELECT COUNT(*) FROM SessionTabs WHERE id = {} AND split_id IS NULL AND split_start_fraction IS NULL;", tab))) == 1;
+}
+
+TEST_CASE(version_13_database_migrates_to_the_split_view_schema)
+{
+    auto database = create_session_database();
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO Sessions (id, kind, closed_time, active_tab_index) VALUES (1, 0, 0, 0);"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index) VALUES (2, 1, 0, 'https://a.example/', 0);"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index) VALUES (3, 1, 1, 'https://b.example/', 0);"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO Sessions (id, kind, closed_time, close_sequence, active_tab_index) VALUES (4, 1, 1000, 1, 0);"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index) VALUES (5, 4, 0, 'https://c.example/', 0);"sv));
+    rewind_sessions_schema_to_version_13(*database);
+
+    EXPECT_EQ(TRY_OR_FAIL(SessionStore::migrate_schema(*database)), Database::MigrationOutcome::Success);
+    EXPECT_EQ(TRY_OR_FAIL(database->schema_version("Sessions"sv)), Optional<u32> { 14u });
+    EXPECT(split_is_null(*database, 2));
+    EXPECT(split_is_null(*database, 3));
+    EXPECT_EQ(select_i64(*database, "SELECT COUNT(*) FROM Sessions WHERE split_side_survivor_tab_id IS NULL;"_string), 2);
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::Everything));
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 2uz);
+    EXPECT(!plan[0].tabs[0].split.has_value());
+    EXPECT(!plan[0].tabs[1].split.has_value());
+    EXPECT(!store->split_membership_of(2).has_value());
+
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(!unit->split_side.has_value());
+    EXPECT(!unit->tabs[0].split.has_value());
+}
+
+TEST_CASE(a_pair_writes_through_and_survives_a_relaunch)
+{
+    auto database = create_session_database();
+    SessionTabId a = 0;
+    SessionTabId b = 0;
+    SessionTabId c = 0;
+    {
+        auto store = TRY_OR_FAIL(SessionStore::create(*database));
+        auto window = TRY_OR_FAIL(store->window_opened());
+        a = open_tab(*store, window, "https://a.example/"sv);
+        b = open_tab(*store, window, "https://b.example/"sv);
+        c = open_tab(*store, window, "https://c.example/"sv);
+        store->flush_dirty_state();
+
+        pair_tabs(*store, b, c, 77, 0.25f);
+
+        // No flush: The pair must already be in the rows, the fraction on the start row only.
+        EXPECT_EQ(select_tab_column(*database, "split_id"sv, b), 77);
+        EXPECT_EQ(select_tab_column(*database, "split_id"sv, c), 77);
+        EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT split_start_fraction = 0.25 FROM SessionTabs WHERE id = {};", b))), 1);
+        EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT split_start_fraction IS NULL FROM SessionTabs WHERE id = {};", c))), 1);
+        EXPECT(split_is_null(*database, a));
+        EXPECT_EQ(store->split_membership_of(b), Optional<SessionSplitMembership> { split_start(77, 0.25f) });
+        EXPECT_EQ(store->split_membership_of(c), Optional<SessionSplitMembership> { split_end(77) });
+        EXPECT(!store->split_membership_of(a).has_value());
+
+        // A flush of a navigated member keeps its membership.
+        store->update_tab_state({ .tab_id = c, .history = make_snapshot({ "https://d.example/"sv }), .url = parse_url("https://d.example/"sv) });
+        store->flush_dirty_state();
+        EXPECT_EQ(select_tab_column(*database, "split_id"sv, c), 77);
+
+        quit_cleanly(*store, { window });
+    }
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::Everything));
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 3uz);
+    EXPECT(!plan[0].tabs[0].split.has_value());
+    EXPECT_EQ(plan[0].tabs[1].tab_id, b);
+    EXPECT_EQ(plan[0].tabs[1].split, Optional<SessionSplitMembership> { split_start(77, 0.25f) });
+    EXPECT_EQ(plan[0].tabs[2].tab_id, c);
+    EXPECT_EQ(plan[0].tabs[2].split, Optional<SessionSplitMembership> { split_end(77) });
+    EXPECT_EQ(store->split_membership_of(b), Optional<SessionSplitMembership> { split_start(77, 0.25f) });
+}
+
+TEST_CASE(separating_a_pair_clears_both_rows)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 3, 0.5f);
+
+    TRY_OR_FAIL(store->tab_split_changed({ { .tab_id = a, .membership = {} }, { .tab_id = b, .membership = {} } }));
+    EXPECT(split_is_null(*database, a));
+    EXPECT(split_is_null(*database, b));
+    EXPECT(!store->split_membership_of(a).has_value());
+}
+
+TEST_CASE(swapping_sides_saves_memberships_with_the_new_order)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 3, 0.25f);
+
+    // The frontend reports the order first, as for a pin.
+    store->tab_order_changed({ .window_id = window, .ordered_tabs = { b, a } });
+    pair_tabs(*store, b, a, 3, 0.75f);
+
+    EXPECT_EQ(select_tab_column(*database, "tab_ordinal"sv, b), 0);
+    EXPECT_EQ(select_tab_column(*database, "tab_ordinal"sv, a), 1);
+    EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT split_start_fraction = 0.75 FROM SessionTabs WHERE id = {};", b))), 1);
+    EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT split_start_fraction IS NULL FROM SessionTabs WHERE id = {};", a))), 1);
+}
+
+TEST_CASE(a_failed_split_write_is_retried_by_the_next_flush)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    store->flush_dirty_state();
+
+    TRY_OR_FAIL(database->execute_raw("CREATE TRIGGER InjectedFailure BEFORE UPDATE OF split_id ON SessionTabs BEGIN SELECT RAISE(ABORT, 'injected'); END;"sv));
+    EXPECT(store->tab_split_changed({ { .tab_id = a, .membership = split_start(5, 0.5f) }, { .tab_id = b, .membership = split_end(5) } }).is_error());
+    EXPECT(split_is_null(*database, a));
+    EXPECT(split_is_null(*database, b));
+    EXPECT_EQ(store->split_membership_of(a), Optional<SessionSplitMembership> { split_start(5, 0.5f) });
+
+    TRY_OR_FAIL(database->execute_raw("DROP TRIGGER InjectedFailure;"sv));
+    store->flush_dirty_state();
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, a), 5);
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, b), 5);
+}
+
+TEST_CASE(a_moved_pair_keeps_its_memberships)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto first_window = TRY_OR_FAIL(store->window_opened());
+    auto second_window = TRY_OR_FAIL(store->window_opened());
+    (void)open_tab(*store, first_window, "https://a.example/"sv);
+    auto b = open_tab(*store, first_window, "https://b.example/"sv);
+    auto c = open_tab(*store, first_window, "https://c.example/"sv);
+    pair_tabs(*store, b, c, 9, 0.25f);
+
+    store->tab_moved({ .tab_id = b, .new_window_id = second_window, .ordinal = 0 });
+    store->tab_moved({ .tab_id = c, .new_window_id = second_window, .ordinal = 1 });
+
+    EXPECT_EQ(select_tab_column(*database, "session_id"sv, b), second_window);
+    EXPECT_EQ(select_tab_column(*database, "session_id"sv, c), second_window);
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, b), 9);
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, c), 9);
+    EXPECT_EQ(store->split_membership_of(b), Optional<SessionSplitMembership> { split_start(9, 0.25f) });
+}
+
+TEST_CASE(a_closed_window_keeps_its_pairs)
+{
+    auto database = create_session_database();
+    {
+        auto store = TRY_OR_FAIL(SessionStore::create(*database));
+        auto window = TRY_OR_FAIL(store->window_opened());
+        auto a = open_tab(*store, window, "https://a.example/"sv);
+        auto b = open_tab(*store, window, "https://b.example/"sv);
+        (void)open_tab(*store, window, "https://c.example/"sv);
+        pair_tabs(*store, a, b, 11, 0.25f);
+        TRY_OR_FAIL(store->window_closing({ .window_id = window, .active_tab_index = 1, .closed_at = UnixDateTime::now() }));
+
+        auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+        EXPECT(unit.has_value());
+        EXPECT(unit->was_window);
+        EXPECT_EQ(unit->tabs.size(), 3uz);
+        EXPECT_EQ(unit->tabs[0].split, Optional<SessionSplitMembership> { split_start(11, 0.25f) });
+        EXPECT_EQ(unit->tabs[1].split, Optional<SessionSplitMembership> { split_end(11) });
+        EXPECT(!unit->tabs[2].split.has_value());
+        EXPECT(!unit->split_side.has_value());
+
+        // Closed again, the unit waits for the next run.
+        auto other_window = TRY_OR_FAIL(store->window_opened());
+        auto d = open_tab(*store, other_window, "https://d.example/"sv);
+        auto e = open_tab(*store, other_window, "https://e.example/"sv);
+        pair_tabs(*store, d, e, 12, 0.75f);
+        TRY_OR_FAIL(store->window_closing({ .window_id = other_window, .active_tab_index = 0, .closed_at = UnixDateTime::now() }));
+        store->mark_clean_exit();
+    }
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->was_window);
+    EXPECT_EQ(unit->tabs.size(), 2uz);
+    EXPECT_EQ(unit->tabs[0].split, Optional<SessionSplitMembership> { split_start(12, 0.75f) });
+    EXPECT_EQ(unit->tabs[1].split, Optional<SessionSplitMembership> { split_end(12) });
+}
+
+TEST_CASE(closing_one_side_records_how_to_rejoin_and_clears_the_survivor)
+{
+    auto database = create_session_database();
+    SessionTabId b = 0;
+    SessionTabId c = 0;
+    SessionWindowId window = 0;
+    {
+        auto store = TRY_OR_FAIL(SessionStore::create(*database));
+        window = TRY_OR_FAIL(store->window_opened());
+        (void)open_tab(*store, window, "https://a.example/"sv);
+        b = open_tab(*store, window, "https://b.example/"sv);
+        c = open_tab(*store, window, "https://c.example/"sv);
+        pair_tabs(*store, b, c, 21, 0.25f);
+
+        TRY_OR_FAIL(store->tab_closed({ .tab_id = c, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = closed_end_side(b, 0.25f, ClosedSplitSide::Selected::ClosedSide) }));
+
+        EXPECT(!store->split_membership_of(b).has_value());
+        EXPECT(split_is_null(*database, b));
+        EXPECT(split_is_null(*database, c));
+        EXPECT_EQ(select_i64(*database, "SELECT split_side_survivor_tab_id FROM Sessions WHERE kind = 1;"_string), b);
+        quit_cleanly(*store, { window });
+    }
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::Everything));
+    // The survivor comes back under the same id, on its own, for the record to find it by.
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 2uz);
+    EXPECT_EQ(plan[0].tabs[1].tab_id, b);
+    EXPECT(!plan[0].tabs[1].split.has_value());
+
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(!unit->was_window);
+    EXPECT_EQ(unit->source_window_id, Optional<SessionWindowId> { window });
+    EXPECT_EQ(unit->source_tab_index, Optional<i64> { 2 });
+    EXPECT_EQ(unit->tabs.size(), 1uz);
+    EXPECT_EQ(unit->tabs[0].active_url.serialize(), "https://c.example/"sv);
+    EXPECT(!unit->tabs[0].split.has_value());
+    EXPECT(unit->split_side.has_value());
+    EXPECT_EQ(unit->split_side->survivor_tab_id, b);
+    EXPECT(!unit->split_side->closed_side_was_start);
+    EXPECT_EQ(unit->split_side->start_fraction, 0.25f);
+    EXPECT_EQ(unit->split_side->selected, ClosedSplitSide::Selected::ClosedSide);
+}
+
+TEST_CASE(closing_one_side_round_trips_through_take_most_recently_closed)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 22, 0.75f);
+
+    ClosedSplitSide split_side { .survivor_tab_id = b, .closed_side_was_start = true, .start_fraction = 0.75f, .selected = ClosedSplitSide::Selected::Survivor };
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = a, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = split_side }));
+
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->split_side.has_value());
+    EXPECT_EQ(unit->split_side->survivor_tab_id, b);
+    EXPECT(unit->split_side->closed_side_was_start);
+    EXPECT_EQ(unit->split_side->start_fraction, 0.75f);
+    EXPECT_EQ(unit->split_side->selected, ClosedSplitSide::Selected::Survivor);
+    EXPECT(!store->split_membership_of(b).has_value());
+}
+
+TEST_CASE(a_failed_close_of_one_side_retries_with_its_rejoin_record)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 23, 0.25f);
+
+    TRY_OR_FAIL(database->execute_raw("CREATE TRIGGER InjectedFailure BEFORE INSERT ON Sessions BEGIN SELECT RAISE(ABORT, 'injected'); END;"sv));
+    EXPECT(store->tab_closed({ .tab_id = b, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = closed_end_side(a, 0.25f, ClosedSplitSide::Selected::Neither) }).is_error());
+    EXPECT(!store->split_membership_of(a).has_value());
+    // Neither the record nor the cleared survivor is written without the other.
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, a), 23);
+
+    TRY_OR_FAIL(database->execute_raw("DROP TRIGGER InjectedFailure;"sv));
+    store->flush_dirty_state();
+    EXPECT(split_is_null(*database, a));
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->split_side.has_value());
+    EXPECT_EQ(unit->split_side->survivor_tab_id, a);
+    EXPECT_EQ(unit->split_side->selected, ClosedSplitSide::Selected::Neither);
+}
+
+TEST_CASE(a_survivors_id_is_not_reused_after_its_row_is_gone)
+{
+    auto database = create_session_database();
+    SessionTabId survivor = 0;
+    {
+        auto store = TRY_OR_FAIL(SessionStore::create(*database));
+        auto window = TRY_OR_FAIL(store->window_opened());
+        auto a = open_tab(*store, window, "https://a.example/"sv);
+        survivor = open_tab(*store, window, "https://b.example/"sv);
+        pair_tabs(*store, a, survivor, 24, 0.5f);
+        TRY_OR_FAIL(store->tab_closed({ .tab_id = a, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = ClosedSplitSide { .survivor_tab_id = survivor, .closed_side_was_start = true, .start_fraction = 0.5f, .selected = ClosedSplitSide::Selected::Neither } }));
+        TRY_OR_FAIL(store->tab_closed({ .tab_id = survivor, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::No }));
+        EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT COUNT(*) FROM SessionTabs WHERE id = {};", survivor))), 0);
+        TRY_OR_FAIL(store->window_closing({ .window_id = window, .active_tab_index = 0, .closed_at = UnixDateTime::now() }));
+        store->mark_clean_exit();
+    }
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto tab = open_tab(*store, window, "https://c.example/"sv);
+    EXPECT(tab > survivor);
+}
+
+TEST_CASE(a_paired_blank_tab_is_kept_for_reopening_while_a_single_one_is_not)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    (void)open_tab(*store, window, "https://a.example/"sv);
+    auto single = open_tab(*store, window, "about:blank"sv);
+    auto start = open_tab(*store, window, "about:newtab"sv);
+    auto end = open_tab(*store, window, "about:blank"sv);
+    pair_tabs(*store, start, end, 31, 0.5f);
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = single, .closed_at = UnixDateTime::now() }));
+    EXPECT(!store->has_closed_units());
+    EXPECT_EQ(select_i64(*database, MUST(String::formatted("SELECT COUNT(*) FROM SessionTabs WHERE id = {};", single))), 0);
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = end, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = closed_end_side(start, 0.5f, ClosedSplitSide::Selected::Neither) }));
+    EXPECT(store->has_closed_units());
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT_EQ(unit->tabs[0].active_url.serialize(), "about:blank"sv);
+    EXPECT(unit->split_side.has_value());
+
+    // Once single, the survivor is filtered as any other blank tab.
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = start, .closed_at = UnixDateTime::now() }));
+    EXPECT(!store->has_closed_units());
+}
+
+TEST_CASE(closing_one_side_without_undo_still_clears_the_survivor)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 32, 0.5f);
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = b, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::No, .split_side = closed_end_side(a, 0.5f, ClosedSplitSide::Selected::Neither) }));
+    EXPECT(!store->has_closed_units());
+    EXPECT(!store->split_membership_of(a).has_value());
+    EXPECT(split_is_null(*database, a));
+}
+
+TEST_CASE(a_window_of_only_a_blank_pair_is_kept_for_reopening)
+{
+    auto database = create_session_database();
+    auto store = TRY_OR_FAIL(SessionStore::create(*database));
+
+    auto single_window = TRY_OR_FAIL(store->window_opened());
+    (void)open_tab(*store, single_window, "about:dashboard"sv);
+    TRY_OR_FAIL(store->window_closing({ .window_id = single_window, .active_tab_index = 0, .closed_at = UnixDateTime::now() }));
+    EXPECT(!store->has_closed_units());
+
+    auto pair_window = TRY_OR_FAIL(store->window_opened());
+    auto start = open_tab(*store, pair_window, "about:dashboard"sv);
+    auto end = open_tab(*store, pair_window, "about:blank"sv);
+    pair_tabs(*store, start, end, 33, 0.5f);
+    TRY_OR_FAIL(store->window_closing({ .window_id = pair_window, .active_tab_index = 1, .closed_at = UnixDateTime::now() }));
+    EXPECT(store->has_closed_units());
+
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->was_window);
+    EXPECT_EQ(unit->tabs.size(), 2uz);
+    EXPECT_EQ(unit->active_tab_index, 1);
+    EXPECT_EQ(unit->tabs[0].split, Optional<SessionSplitMembership> { split_start(33, 0.5f) });
+    EXPECT_EQ(unit->tabs[1].split, Optional<SessionSplitMembership> { split_end(33) });
+}
+
+TEST_CASE(recovery_restores_only_pairs_of_two_adjacent_unpinned_tabs)
+{
+    auto database = create_session_database();
+    insert_tabs_with_broken_memberships(*database);
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::Everything));
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 9uz);
+    // The pinned tab leads, which puts e and g side by side, but they weren't a pair.
+    EXPECT_EQ(plan[0].tabs[0].tab_id, 7);
+    for (size_t i = 0; i < 7; ++i)
+        EXPECT(!plan[0].tabs[i].split.has_value());
+    EXPECT_EQ(plan[0].tabs[7].tab_id, 9);
+    EXPECT_EQ(plan[0].tabs[7].split, Optional<SessionSplitMembership> { split_start(43, 0.25f) });
+    EXPECT_EQ(plan[0].tabs[8].split, Optional<SessionSplitMembership> { split_end(43) });
+    EXPECT(!store->split_membership_of(2).has_value());
+    for (SessionTabId tab : { 2, 4, 5, 6, 8 })
+        EXPECT(split_is_null(*database, tab));
+    EXPECT_EQ(select_tab_column(*database, "split_id"sv, 9), 43);
+}
+
+TEST_CASE(pinned_only_sets_aside_no_broken_pairs)
+{
+    auto database = create_session_database();
+    insert_tabs_with_broken_memberships(*database);
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::PinnedOnly));
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs[0].tab_id, 7);
+
+    // Without the pinned tab between them, e and g are side by side in the remainder, but still not a pair.
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->was_window);
+    EXPECT_EQ(unit->tabs.size(), 8uz);
+    for (size_t i = 0; i < 6; ++i)
+        EXPECT(!unit->tabs[i].split.has_value());
+    EXPECT_EQ(unit->tabs[6].split, Optional<SessionSplitMembership> { split_start(43, 0.25f) });
+    EXPECT_EQ(unit->tabs[7].split, Optional<SessionSplitMembership> { split_end(43) });
+}
+
+TEST_CASE(a_damaged_membership_restores_a_single_tab_instead_of_failing_its_row)
+{
+    auto database = create_session_database();
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO Sessions (id, kind, closed_time, active_tab_index) VALUES (1, 0, 0, 0);"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index, split_id) VALUES (2, 1, 0, 'https://a.example/', 0, 'not a key');"sv));
+    TRY_OR_FAIL(database->execute_raw("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index, split_id) VALUES (3, 1, 1, 'https://b.example/', 0, 'not a key');"sv));
+
+    auto store = TRY_OR_FAIL(SessionStore::create(*database, SessionLaunchPolicy::Everything));
+    auto plan = store->take_launch_plan();
+    EXPECT_EQ(plan.size(), 1uz);
+    EXPECT_EQ(plan[0].tabs.size(), 2uz);
+    EXPECT(!plan[0].tabs[0].split.has_value());
+    EXPECT(!plan[0].tabs[1].split.has_value());
+}
+
+TEST_CASE(transient_store_keeps_split_memberships)
+{
+    auto store = SessionStore::create();
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    auto second_window = TRY_OR_FAIL(store->window_opened());
+
+    pair_tabs(*store, a, b, 51, 0.25f);
+    EXPECT_EQ(store->split_membership_of(a), Optional<SessionSplitMembership> { split_start(51, 0.25f) });
+    EXPECT_EQ(store->split_membership_of(b), Optional<SessionSplitMembership> { split_end(51) });
+
+    store->tab_moved({ .tab_id = a, .new_window_id = second_window, .ordinal = 0 });
+    store->tab_moved({ .tab_id = b, .new_window_id = second_window, .ordinal = 1 });
+    EXPECT_EQ(store->split_membership_of(a), Optional<SessionSplitMembership> { split_start(51, 0.25f) });
+
+    TRY_OR_FAIL(store->window_closing({ .window_id = second_window, .active_tab_index = 0, .closed_at = UnixDateTime::now() }));
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(unit->was_window);
+    EXPECT_EQ(unit->tabs.size(), 2uz);
+    EXPECT_EQ(unit->tabs[0].split, Optional<SessionSplitMembership> { split_start(51, 0.25f) });
+    EXPECT_EQ(unit->tabs[1].split, Optional<SessionSplitMembership> { split_end(51) });
+}
+
+TEST_CASE(transient_store_records_a_closed_side_and_clears_the_survivor)
+{
+    auto store = SessionStore::create();
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto a = open_tab(*store, window, "https://a.example/"sv);
+    auto b = open_tab(*store, window, "https://b.example/"sv);
+    pair_tabs(*store, a, b, 52, 0.75f);
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = b, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = closed_end_side(a, 0.75f, ClosedSplitSide::Selected::ClosedSide) }));
+    EXPECT(!store->split_membership_of(a).has_value());
+
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT(!unit->tabs[0].split.has_value());
+    EXPECT(unit->split_side.has_value());
+    EXPECT_EQ(unit->split_side->survivor_tab_id, a);
+    EXPECT(!unit->split_side->closed_side_was_start);
+    EXPECT_EQ(unit->split_side->start_fraction, 0.75f);
+    EXPECT_EQ(unit->split_side->selected, ClosedSplitSide::Selected::ClosedSide);
+}
+
+TEST_CASE(transient_store_keeps_a_paired_blank_tab_but_not_a_single_one)
+{
+    auto store = SessionStore::create();
+    auto window = TRY_OR_FAIL(store->window_opened());
+    auto single = open_tab(*store, window, "about:blank"sv);
+    auto start = open_tab(*store, window, "about:blank"sv);
+    auto end = open_tab(*store, window, "about:dashboard"sv);
+    pair_tabs(*store, start, end, 53, 0.5f);
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = single, .closed_at = UnixDateTime::now() }));
+    EXPECT(!store->has_closed_units());
+
+    TRY_OR_FAIL(store->tab_closed({ .tab_id = start, .closed_at = UnixDateTime::now(), .keep_for_reopening = SessionStore::KeepForReopening::Yes, .split_side = ClosedSplitSide { .survivor_tab_id = end, .closed_side_was_start = true, .start_fraction = 0.5f, .selected = ClosedSplitSide::Selected::Neither } }));
+    EXPECT(store->has_closed_units());
+    auto unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(unit.has_value());
+    EXPECT_EQ(unit->tabs[0].active_url.serialize(), "about:blank"sv);
+
+    // A window with only a blank pair is kept too.
+    auto pair_window = TRY_OR_FAIL(store->window_opened());
+    auto c = open_tab(*store, pair_window, "about:newtab"sv);
+    auto d = open_tab(*store, pair_window, "about:newtab"sv);
+    pair_tabs(*store, c, d, 54, 0.5f);
+    TRY_OR_FAIL(store->window_closing({ .window_id = pair_window, .active_tab_index = 0, .closed_at = UnixDateTime::now() }));
+    auto window_unit = TRY_OR_FAIL(store->take_most_recently_closed());
+    EXPECT(window_unit.has_value());
+    EXPECT(window_unit->was_window);
+    EXPECT_EQ(window_unit->tabs.size(), 2uz);
 }

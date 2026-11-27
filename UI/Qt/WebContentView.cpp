@@ -291,7 +291,8 @@ WebContentView::WebContentView(QWidget* window, Optional<u64> hub_view_id, WebCo
         // A hidden tab's element focus stays quiet too: its page can still call focus() (from a timer, e.g.), and
         // posting that would pull Orca into a tab the user isn't looking at, through an interface hideEvent() had
         // deregistered. The tree keeps the focus, and focusInEvent() re-announces it once the tab is back.
-        if (!isVisible())
+        // NB: Nor does the other side of a split view's, which is visible, but which the person isn't using.
+        if (!isVisible() || (may_take_page_focus && !may_take_page_focus() && !hasFocus()))
             return;
         auto* iface = accessibility_interface_for_node(node_id);
         if (iface) {
@@ -1025,6 +1026,26 @@ void WebContentView::wheelEvent(QWheelEvent* event)
         m_screenshot_selection_overlay->page_did_scroll();
 
 #ifdef AK_OS_MACOS
+    // A touchpad gesture, with the momentum after it, scrolls the page it began over, even once it crosses into the page
+    // beside it, such as the other side of a split view. The rest of the gesture goes where the page last saw it.
+    static QPointer<WebContentView> s_scroll_gesture_view;
+    static QPointF s_scroll_gesture_position;
+    if (event->phase() == Qt::ScrollBegin) {
+        s_scroll_gesture_view = this;
+        s_scroll_gesture_position = event->position();
+    } else if (first_is_one_of(event->phase(), Qt::ScrollUpdate, Qt::ScrollMomentum, Qt::ScrollEnd) && s_scroll_gesture_view) {
+        if (s_scroll_gesture_view != this && s_scroll_gesture_view->isVisible()) {
+            QWheelEvent forwarded(s_scroll_gesture_position, s_scroll_gesture_view->mapToGlobal(s_scroll_gesture_position), event->pixelDelta(), event->angleDelta(),
+                event->buttons(), event->modifiers(), event->phase(), event->inverted(), event->source());
+            forwarded.setTimestamp(event->timestamp());
+            s_scroll_gesture_view->wheelEvent(&forwarded);
+            event->accept();
+            return;
+        }
+        if (s_scroll_gesture_view == this)
+            s_scroll_gesture_position = event->position();
+    }
+
     // Qt makes a second wheel event of some scroll events, with no delta and the phase and time of the first, whose
     // phase would read as an end of the gesture, or a beginning of another, in its own right.
     bool repeats_last_wheel_event = event->phase() == m_last_wheel_event_phase && event->timestamp() == m_last_wheel_event_timestamp;
@@ -1617,10 +1638,15 @@ void WebContentView::set_crash_overlay_visible(bool visible)
     m_crash_overlay_reload_shortcut->setEnabled(true);
 
     m_crash_overlay_url->set_url_text(qstring_from_ak_string(crash_overlay_failed_url()));
+    // NB: Reload takes the focus only from the page that crashed. A page beside it, such as the other side of a split
+    //     view, keeps the keyboard, and the crashed side's pane bar says what happened.
+    auto* focus_widget = QApplication::focusWidget();
+    auto page_had_focus = focus_widget && (focus_widget == this || isAncestorOf(focus_widget));
     m_crash_overlay->setGeometry(rect());
     m_crash_overlay->show();
     m_crash_overlay->raise();
-    m_crash_overlay_reload_button->setFocus(Qt::OtherFocusReason);
+    if (page_had_focus || !may_take_page_focus || may_take_page_focus())
+        m_crash_overlay_reload_button->setFocus(Qt::OtherFocusReason);
 
     // The report is often written after the crash screen appears, in which case it is shown once it is saved.
     show_crash_report_review();
@@ -2071,7 +2097,10 @@ void WebContentView::update_zoom()
 void WebContentView::showEvent(QShowEvent* event)
 {
     WebContentViewBase::showEvent(event);
-    set_system_visibility_state(Web::HTML::VisibilityState::Visible);
+    if (on_visibility_inputs_changed)
+        on_visibility_inputs_changed();
+    else
+        set_system_visibility_state(Web::HTML::VisibilityState::Visible);
 #ifdef LADYBIRD_QT_USE_IOSURFACE_LAYER
     // A frame may have arrived before this view had a native view to attach its layer to.
     present_current_paintable_as_layer_contents();
@@ -2099,7 +2128,10 @@ void WebContentView::deregister_accessibility_interfaces()
 void WebContentView::hideEvent(QHideEvent* event)
 {
     WebContentViewBase::hideEvent(event);
-    set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
+    if (on_visibility_inputs_changed)
+        on_visibility_inputs_changed();
+    else
+        set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
 #ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
     if (m_page_surface)
         hide_page_surface();
@@ -2217,7 +2249,7 @@ void WebContentView::notify_accessibility_focus_on_document_root()
     // A background tab must not post document focus: the 1s singleShot timer that schedules this is not cancelled when
     // the tab is hidden, so a tab finishing its load after the user switched away would yank the screen reader to its
     // document root. The other caller, focusInEvent, only runs with Qt focus, so the widget is visible there anyway.
-    if (!isVisible())
+    if (!isVisible() || (may_take_page_focus && !may_take_page_focus() && !hasFocus()))
         return;
 
     if (m_accessibility_manager && !m_accessibility_manager->is_empty()) {

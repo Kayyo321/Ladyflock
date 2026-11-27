@@ -59,6 +59,12 @@ static void add_open_url_actions(Menu& menu, RemoteView& view, URL::URL const& u
 {
     auto view_id = view.view_id();
     add_open_in_new_tab_action(menu, view_id, "Open Link in New Tab"sv, url, navigation);
+    if (view.on_open_in_split_view) {
+        menu.add_action(Action::create("Open Link in Split View"sv, ActionID::OpenInSplitView, on_view(view_id, [url, navigation](RemoteView& view) {
+            if (view.on_open_in_split_view)
+                view.on_open_in_split_view(url, navigation);
+        })));
+    }
     if (view.is_private() == WebView::IsPrivate::No) {
         menu.add_action(Action::create("Open Link in New Window"sv, ActionID::OpenInNewWindow, on_view(view_id, [url, navigation](RemoteView& view) {
             if (navigation.has_value())

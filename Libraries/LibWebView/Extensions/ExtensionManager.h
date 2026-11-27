@@ -249,7 +249,8 @@ public:
         Complete,
         Title,
         URL,
-        Pinned };
+        Pinned,
+        SplitView };
     void notify_tab_updated(u64 tab_id, TabChange);
     void notify_tab_activated(u64 tab_id, u64 window_id);
     void notify_window_focus_changed(Optional<u64> window_id);

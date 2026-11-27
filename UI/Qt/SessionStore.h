@@ -36,10 +36,34 @@ struct SessionWindowGeometry {
     bool operator==(SessionWindowGeometry const&) const = default;
 };
 
+// A tab's membership of a split view pair, as saved: the key both tabs share, and, on the start tab only, the start side's
+// share of the width.
+struct SessionSplitMembership {
+    i64 split_key { 0 };
+    Optional<float> start_fraction {};
+
+    bool operator==(SessionSplitMembership const&) const = default;
+};
+
+// What closing one side of a pair leaves for Reopen Closed Tab to rejoin it with.
+struct ClosedSplitSide {
+    SessionTabId survivor_tab_id { 0 };
+    bool closed_side_was_start { false };
+    float start_fraction { 0.5f };
+    enum class Selected : u8 {
+        Neither,
+        ClosedSide,
+        Survivor,
+    };
+    Selected selected { Selected::Neither };
+};
+
 struct ClosedSessionTab {
     URL::URL active_url;
     Optional<WebView::SessionHistorySnapshot> history;
     bool pinned { false };
+    // As the tab had it when it closed. A tab closed on its own carries what rejoins it in its unit's split_side instead.
+    Optional<SessionSplitMembership> split {};
 };
 
 struct ClosedSessionUnit {
@@ -55,6 +79,8 @@ struct ClosedSessionUnit {
     Optional<i64> source_tab_index;
     Origin origin { Origin::CloseAction };
     Optional<SessionWindowGeometry> geometry;
+    // Only for a tab that closed out of a pair.
+    Optional<ClosedSplitSide> split_side {};
 };
 
 // A closed tab or window as a list of them shows it: the page its active tab was on, and when it closed.
@@ -82,6 +108,9 @@ struct RestoredSessionTab {
     SessionTabId tab_id { 0 };
     URL::URL url;
     bool pinned { false };
+    // NB: Recovery keeps only memberships of exactly two adjacent unpinned tabs, but the fraction is as saved, so it may
+    //     be missing or out of range.
+    Optional<SessionSplitMembership> split {};
 };
 
 // A window that startup recovery kept open for the frontend to show, with its tabs in order.
@@ -131,6 +160,9 @@ public:
         SessionTabId tab_id { 0 };
         UnixDateTime closed_at;
         KeepForReopening keep_for_reopening { KeepForReopening::Yes };
+        // For one side of a pair closing. The close clears the survivor's membership and is recorded with this, in one
+        // write unless that fails and the next flush retries it.
+        Optional<ClosedSplitSide> split_side {};
     };
 
     struct TabMoved {
@@ -148,6 +180,12 @@ public:
         SessionWindowId window_id { 0 };
         i64 active_tab_index { 0 };
         UnixDateTime closed_at;
+    };
+
+    // An empty membership takes the tab out of its pair.
+    struct SplitMembershipWrite {
+        SessionTabId tab_id { 0 };
+        Optional<SessionSplitMembership> membership {};
     };
 
     static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode = Database::MigrationMode::Apply);
@@ -173,6 +211,11 @@ public:
     // with the window's tab order: Launch restore depends on both. And a write that fails leaves the window's metadata
     // dirty, for the next flush to retry.
     ErrorOr<void> tab_pinned_changed(SessionTabId, bool pinned);
+    // Pairing, separating, swapping sides and moving a pair all change memberships and order together, so like a pin these
+    // are written at once with every affected window's order and active tab, and a write that fails is retried by the
+    // next flush from the same state.
+    ErrorOr<void> tab_split_changed(Vector<SplitMembershipWrite>);
+    Optional<SessionSplitMembership> split_membership_of(SessionTabId) const;
     void active_tab_changed(SessionTabId);
     void application_quitting();
     void application_quit_aborted();
@@ -242,6 +285,7 @@ private:
         Database::StatementID update_tab_row;
         Database::StatementID update_tab_placement;
         Database::StatementID update_tab_parent;
+        Database::StatementID clear_tab_split;
         Database::StatementID update_session_closed;
         Database::StatementID update_session_metadata;
         Database::StatementID update_session_geometry;
@@ -284,6 +328,7 @@ private:
         Optional<WebView::SessionHistorySnapshot> history;
         bool dirty { false };
         bool pinned { false };
+        Optional<SessionSplitMembership> split {};
     };
 
     struct OpenWindow {
@@ -301,6 +346,7 @@ private:
         // Transient mode captures the snapshot at demotion; persisted mode loads it on reopen.
         Optional<WebView::SessionHistorySnapshot> history;
         bool pinned { false };
+        Optional<SessionSplitMembership> split {};
     };
 
     struct ClosedUnit {
@@ -314,6 +360,7 @@ private:
         ClosedSessionUnit::Origin origin { ClosedSessionUnit::Origin::CloseAction };
         Vector<ClosedTab> tabs;
         Optional<SessionWindowGeometry> geometry;
+        Optional<ClosedSplitSide> split_side {};
     };
 
     enum class SnapshotDisposition {
@@ -331,6 +378,7 @@ private:
         SnapshotDisposition snapshot_disposition { SnapshotDisposition::Preserve };
         WebView::SessionHistorySnapshot const* snapshot { nullptr };
         bool pinned { false };
+        Optional<SessionSplitMembership> split {};
     };
 
     // Always the complete live-plus-pending order, so persisted units stay contiguous while failed
@@ -339,6 +387,7 @@ private:
         SessionWindowId id { 0 };
         Vector<SessionTabId> tabs_in_order;
         HashTable<SessionTabId> pinned_tabs;
+        HashMap<SessionTabId, SessionSplitMembership> split_memberships;
         i64 active_tab_index { 0 };
         i64 activation_sequence { 0 };
         Optional<SessionWindowGeometry> geometry;
@@ -359,6 +408,7 @@ private:
         ClosedSessionUnit::Origin origin { ClosedSessionUnit::Origin::CloseAction };
         i64 active_tab_index { 0 };
         bool restore_at_launch { false };
+        Optional<ClosedSplitSide> split_side {};
     };
 
     struct ClosedTabWrite {
@@ -406,6 +456,7 @@ private:
         URL::URL url;
         size_t current_used_step_index { 0 };
         bool pinned { false };
+        Optional<SessionSplitMembership> split {};
     };
 
     struct RecoveredWindow {
@@ -479,6 +530,7 @@ private:
         SessionCloseSequence close_sequence { 0 };
         Optional<i64> source_tab_index;
         bool discard { false };
+        Optional<ClosedSplitSide> split_side {};
     };
 
     struct PendingWindowClose {
@@ -505,6 +557,7 @@ private:
 
         void set_tab_state(SessionTabId, Optional<WebView::SessionHistorySnapshot>, URL::URL, bool dirty);
         bool set_tab_pinned(SessionTabId, bool pinned);
+        bool set_tab_split(SessionTabId, Optional<SessionSplitMembership>);
         void mark_tab_flushed(SessionTabId, size_t current_used_step_index);
         void set_active_tab(SessionTabId);
         void set_activation_sequence(SessionWindowId, i64);
@@ -559,6 +612,7 @@ private:
     ErrorOr<void> discard_pending_closes();
     ErrorOr<void> finish_tab_close(PendingTabClose const&);
     ErrorOr<void> finish_window_close(PendingWindowClose const&);
+    void clear_survivor_membership(Optional<ClosedSplitSide> const&);
     ErrorOr<void> retry_pending_clear_closed_units();
     void append_closed_tab_unit(PendingTabClose const&);
     void append_closed_window_unit(PendingWindowClose const&);

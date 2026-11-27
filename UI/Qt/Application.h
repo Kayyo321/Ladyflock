@@ -214,6 +214,7 @@ public:
     QAction* open_next_tab_action();
     QAction* open_previous_tab_action();
     QAction* search_tabs_action();
+    QAction* new_split_view_action();
     QAction* move_focus_action();
     QAction* open_file_action();
     QAction* open_settings_action();

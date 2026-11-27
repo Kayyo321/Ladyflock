@@ -30,6 +30,7 @@
 #include <UI/Qt/HiddenPageSizing.h>
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
+#include <UI/Qt/PaneBar.h>
 #include <UI/Qt/Popover.h>
 #include <UI/Qt/StringUtils.h>
 #include <UI/Qt/SystemAppearance.h>
@@ -266,6 +267,11 @@ static QPointer<TabWidget> s_pending_tab_drop_target;
 static int s_pending_tab_drop_index { -1 };
 // A tab dragged in a window of its own stays in that window's strip, rather than leaving a gap there.
 static bool s_dragged_tab_has_own_window { false };
+// A tab dropped at the edge of a window's page area joins that window's current tab in a split view.
+static QPointer<TabWidget> s_pending_split_drop_target;
+static bool s_pending_split_drop_on_start_side { false };
+// NB: A tab dropped on another tab of a strip with Shift held pairs with that tab rather than the current one.
+static QPointer<Tab> s_pending_split_drop_partner;
 
 static bool compositor_moves_dragged_windows()
 {
@@ -670,8 +676,9 @@ public:
     AK_ALLOC_WITH_KMALLOC;
 
     TabDragCancellationFilter() = default;
-    explicit TabDragCancellationFilter(Function<void()> on_cancel)
+    explicit TabDragCancellationFilter(Function<void()> on_cancel, Function<void(bool shift_held)> on_shift_change = {})
         : m_on_cancel(move(on_cancel))
+        , m_on_shift_change(move(on_shift_change))
     {
     }
 
@@ -680,6 +687,14 @@ public:
 private:
     virtual bool eventFilter(QObject*, QEvent* event) override
     {
+        // Pressing or letting go of Shift changes what the dragged tab would do, even while the pointer stays still.
+        if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) && m_on_shift_change) {
+            auto* key_event = static_cast<QKeyEvent*>(event);
+            if (key_event->key() == Qt::Key_Shift && !key_event->isAutoRepeat()) {
+                m_on_shift_change(event->type() == QEvent::KeyPress);
+                return false;
+            }
+        }
         // NB: Escape is also a shortcut, which would take the key before it is pressed in any widget.
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride)
             return false;
@@ -700,6 +715,7 @@ private:
     }
 
     Function<void()> m_on_cancel;
+    Function<void(bool)> m_on_shift_change;
     bool m_was_canceled { false };
 };
 
@@ -796,9 +812,40 @@ TabBar::TabBar(TabWidget* tab_widget)
             m_previously_selected_tab = nullptr;
         update();
     });
+    m_split_accent_animation = new QVariantAnimation(this);
+    m_split_accent_animation->setDuration(Motion::FAST);
+    m_split_accent_animation->setEasingCurve(Motion::move_easing());
+    m_split_accent_animation->setStartValue(0.0);
+    m_split_accent_animation->setEndValue(1.0);
+    connect(m_split_accent_animation, &QVariantAnimation::valueChanged, this, [this](QVariant const& value) {
+        m_split_accent_progress = value.toReal();
+        update();
+    });
+
     QPointer<Tab> selected_tab;
     connect(this, &QTabBar::currentChanged, this, [this, selected_tab](int index) mutable {
         auto* tab = m_tab_widget ? m_tab_widget->tab(index) : nullptr;
+        // Moving between the sides of a pair leaves the pair selected, and only its accent bar moves.
+        if (auto const* pair = m_tab_widget ? m_tab_widget->split_pair_of(tab) : nullptr; pair && selected_tab && pair->contains(selected_tab)) {
+            m_split_accent_from_tab = selected_tab;
+            selected_tab = tab;
+            m_selection_animation->stop();
+            m_selection_progress = 1.0;
+            m_previously_selected_tab = nullptr;
+            m_split_accent_animation->stop();
+            if (SystemAppearance::prefers_reduced_motion() || !isVisible()) {
+                m_split_accent_progress = 1.0;
+            } else {
+                m_split_accent_progress = 0.0;
+                m_split_accent_animation->start();
+            }
+            update_tab_button_geometry();
+            update();
+            return;
+        }
+        m_split_accent_animation->stop();
+        m_split_accent_progress = 1.0;
+        m_split_accent_from_tab = nullptr;
         // NB: A selection that moves because its tab closed fades from the picture of the closing tab, if there is one.
         m_previously_selected_tab = selected_tab;
         selected_tab = tab;
@@ -839,6 +886,16 @@ TabBar::TabBar(TabWidget* tab_widget)
         update_tab_button_geometry();
         if (m_selection_animation->state() != QAbstractAnimation::Running)
             m_previously_selected_tab = nullptr;
+        update();
+    });
+
+    m_split_drop_on_tab_animation = new QVariantAnimation(this);
+    m_split_drop_on_tab_animation->setDuration(Motion::FAST);
+    m_split_drop_on_tab_animation->setEasingCurve(Motion::enter_easing());
+    m_split_drop_on_tab_animation->setStartValue(0.0);
+    m_split_drop_on_tab_animation->setEndValue(1.0);
+    connect(m_split_drop_on_tab_animation, &QVariantAnimation::valueChanged, this, [this](QVariant const& value) {
+        m_split_drop_on_tab_progress = value.toReal();
         update();
     });
 
@@ -1181,6 +1238,9 @@ void TabBar::paintEvent(QPaintEvent*)
             auto hover_progress = hover_progress_of(index);
             if (hover_progress <= 0.0 || selection_of(index) >= 1.0)
                 return;
+            // NB: The halves of a pair are hovered as one, with the pair.
+            if (split_pair_at(index))
+                return;
             auto tab_rect = shifted_tab_rect(index);
             if (!tab_rect.isValid() || tab_rect.right() < 0 || tab_rect.left() > width())
                 return;
@@ -1194,12 +1254,19 @@ void TabBar::paintEvent(QPaintEvent*)
         paint_hover_shape(m_hover_animation_tab_index);
         if (m_hovered_tab_index != m_hover_animation_tab_index)
             paint_hover_shape(m_hovered_tab_index);
+        paint_horizontal_split_pairs(painter, dragged_index);
+    } else {
+        paint_vertical_split_pairs(painter, unpinned_clip, dragged_index);
     }
 
     auto previously_selected_index = m_previously_selected_tab && m_tab_widget ? m_tab_widget->index_of(m_previously_selected_tab) : -1;
+    // NB: A pair's halves leave the strip together, as one card.
+    Optional<int> dragged_partner_index;
+    if (auto const* dragged_pair = dragged_index.has_value() ? split_pair_at(*dragged_index) : nullptr)
+        dragged_partner_index = m_tab_widget->index_of(dragged_pair->partner_of(m_tab_widget->tab(*dragged_index)));
     for (int index = 0; index < count(); ++index) {
         // The tab being dragged follows the cursor as the drag's image, leaving a gap where it would be dropped.
-        if (index == dragged_index)
+        if (index == dragged_index || index == dragged_partner_index)
             continue;
 
         // Unpinned tabs scroll under the pinned ones, so they never paint over them. The clips that each tab's title sets
@@ -1242,6 +1309,9 @@ void TabBar::paintEvent(QPaintEvent*)
         // NB: A tab too narrow for the selected tab's rounded corners, such as one just opening, has no room for its shape.
         if (!is_vertical && selection > 0.0 && horizontal_body_rect.width() < 2 * HORIZONTAL_SELECTED_TAB_RADIUS)
             selection = 0.0;
+        auto const* split_pair = split_pair_at(index);
+        // NB: A pair's shape was painted for both its halves at once.
+        auto paints_own_shape = is_vertical || !split_pair;
         if (!is_vertical && selection > 0.0)
             tab_path = horizontal_selected_tab_path(horizontal_body_rect);
         auto vertical_tab_radius = is_collapsed_vertical ? COLLAPSED_VERTICAL_TAB_RADIUS : VERTICAL_TAB_RADIUS;
@@ -1258,7 +1328,8 @@ void TabBar::paintEvent(QPaintEvent*)
             auto selection_is_settling = m_selection_animation->state() == QAbstractAnimation::Running || m_layout_animation_progress < 1.0;
             auto beside_selection_change = selection > 0.0 || selection_of(next_index) > 0.0 || index == previously_selected_index || next_index == previously_selected_index;
             auto separator_opacity = selection_is_settling && beside_selection_change ? 0.0 : 1.0 - max(hover_progress, hover_progress_of(next_index));
-            if (next_index < count() && index != currentIndex() && next_index != currentIndex() && !next_is_pinned && separator_opacity > 0.0) {
+            auto next_is_partner = split_pair && split_pair->start == m_tab_widget->tab(index);
+            if (next_index < count() && index != currentIndex() && next_index != currentIndex() && !next_is_pinned && !next_is_partner && separator_opacity > 0.0) {
                 auto separator_center_y = shape_rect.center().y();
                 // NB: The separator sits just inside the edge between two tabs. This keeps it on whole device pixels.
                 auto separator_x = horizontal_body_rect.right() - 1;
@@ -1282,7 +1353,7 @@ void TabBar::paintEvent(QPaintEvent*)
             painter.setPen(Qt::NoPen);
             painter.drawPath(tab_path);
         }
-        if (selection > 0.0) {
+        if (selection > 0.0 && paints_own_shape) {
             painter.save();
             painter.setOpacity(selection);
             if (is_vertical) {
@@ -1449,7 +1520,9 @@ void TabBar::paintEvent(QPaintEvent*)
             QPointF title_position(contents_rect.left(), contents_rect.top() + ((contents_rect.height() - title_line_height) / 2));
 
             painter.save();
-            painter.setPen(tab_text_color);
+            // NB: Of the two halves of a shown pair, the one that isn't focused has its title in the muted color.
+            auto is_unfocused_half = split_pair && !is_selected && split_pair->contains(m_tab_widget->tab(currentIndex()));
+            painter.setPen(is_unfocused_half ? chrome.muted : tab_text_color);
             painter.setOpacity(is_vertical && m_tab_widget ? m_tab_widget->vertical_tab_title_opacity() : 1.0);
 
             // A title too long for its tab fades out toward the tab's end, rather than being cut short with an ellipsis.
@@ -1499,6 +1572,7 @@ void TabBar::paintEvent(QPaintEvent*)
     m_tabs_with_cut_titles = AK::move(tabs_with_cut_titles);
 
     painter.setClipping(false);
+    paint_split_drop_on_tab(painter);
     // While the strip scrolls, it fades out at each end that has more tabs beyond it.
     if (!is_vertical) {
         auto strip = ChromeStyle::chrome_tab_strip_background(Theme::chrome_palette(*this));
@@ -1520,6 +1594,215 @@ void TabBar::paintEvent(QPaintEvent*)
         auto separator_y = VERTICAL_TAB_BAR_END_ROOM + region.height + pinned_region_growth - (PINNED_TABS_SEPARATOR_HEIGHT / 2) - (region.scrolls ? m_scroll_offset : 0);
         painter.drawLine(QPoint(10, separator_y), QPoint(width() - 10, separator_y));
     }
+}
+
+// A pair shows in the strip as one unit made of two halves: one active tab's shape when shown, with an accent bar over
+// the focused half, and one outline around both halves when not.
+void TabBar::paint_horizontal_split_pairs(QPainter& painter, Optional<int> dragged_index)
+{
+    if (!m_tab_widget)
+        return;
+    auto palette = Theme::chrome_palette(*this);
+    auto const& chrome = Theme::chrome(palette);
+    auto hover_progress_of = [&](int index) {
+        if (index == m_tab_painted_unselected)
+            return 0.0;
+        return index == m_hover_animation_tab_index ? m_hover_progress : (index == m_hovered_tab_index ? 1.0 : 0.0);
+    };
+    for (auto const& pair : m_tab_widget->split_pairs()) {
+        auto start_index = m_tab_widget->index_of(pair.start);
+        auto end_index = m_tab_widget->index_of(pair.end);
+        if (start_index < 0 || end_index < 0 || dragged_index == start_index || dragged_index == end_index)
+            continue;
+        auto start_rect = shifted_tab_rect(start_index);
+        auto end_rect = shifted_tab_rect(end_index);
+        if (!start_rect.isValid() || !end_rect.isValid() || end_rect.right() < 0 || start_rect.left() > width())
+            continue;
+        auto start_body = horizontal_selected_tab_body_rect(QRectF(start_rect), horizontal_tab_end_room(start_index));
+        auto end_body = horizontal_selected_tab_body_rect(QRectF(end_rect), horizontal_tab_end_room(end_index));
+        QRectF body { start_body.left(), start_body.top(), end_body.right() - start_body.left(), start_body.height() };
+        if (body.width() < 2 * HORIZONTAL_SELECTED_TAB_RADIUS)
+            continue;
+
+        auto selection = selection_of(start_index);
+        auto hover = max(hover_progress_of(start_index), hover_progress_of(end_index));
+
+        painter.save();
+        if (selection < 1.0) {
+            auto outline = horizontal_hovered_tab_path(body);
+            if (hover > 0.0) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(horizontal_tab_hover_surface(palette, hover));
+                painter.drawPath(outline);
+            }
+            // NB: At rest, a hairline around both halves keeps them reading as one unit.
+            painter.setOpacity(1.0 - selection);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(horizontal_tab_separator(palette), 1));
+            painter.drawPath(horizontal_hovered_tab_path(body.adjusted(0.5, 0.5, -0.5, 0)));
+            painter.setOpacity(1.0);
+        }
+        if (selection > 0.0) {
+            painter.setOpacity(selection);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(ChromeStyle::chrome_active_tab_surface(palette));
+            painter.drawPath(horizontal_selected_tab_path(body));
+
+            // The focused half has an accent bar along its top, which slides to the other half as the focus moves.
+            auto* current = m_tab_widget->tab(currentIndex());
+            if (pair.contains(current)) {
+                auto half_of = [&](Tab const* tab) { return tab == pair.start ? start_body : end_body; };
+                auto target = half_of(current);
+                if (m_split_accent_progress < 1.0 && m_split_accent_from_tab && pair.contains(m_split_accent_from_tab)) {
+                    auto from = half_of(m_split_accent_from_tab);
+                    auto t = m_split_accent_progress;
+                    target = QRectF(from.left() + ((target.left() - from.left()) * t), target.top(), from.width() + ((target.width() - from.width()) * t), target.height());
+                }
+                auto inset = HORIZONTAL_SELECTED_TAB_RADIUS;
+                QRectF bar { target.left() + inset, target.top(), max<qreal>(0, target.width() - (2 * inset)), 2 };
+                painter.setBrush(Theme::accent());
+                painter.drawRoundedRect(bar, 1, 1);
+            }
+            painter.setOpacity(1.0);
+        }
+        // A short line of the divider color parts the halves.
+        auto separator_x = start_body.right() - 1;
+        QRectF separator_rect { separator_x, body.center().y() - (HORIZONTAL_TAB_SEPARATOR_HEIGHT / 2.0), HORIZONTAL_TAB_SEPARATOR_WIDTH, HORIZONTAL_TAB_SEPARATOR_HEIGHT };
+        painter.fillRect(separator_rect, selection > 0.0 ? chrome.divider : horizontal_tab_separator(palette));
+        painter.restore();
+    }
+}
+
+// In the sidebar, a pair's two rows, or two tiles in the collapsed sidebar, sit inside one outline.
+void TabBar::paint_vertical_split_pairs(QPainter& painter, QRect const& unpinned_clip, Optional<int> dragged_index)
+{
+    if (!m_tab_widget)
+        return;
+    auto palette = Theme::chrome_palette(*this);
+    auto is_collapsed = tab_layout() == TabLayout::VerticalCollapsed;
+    auto radius = is_collapsed ? COLLAPSED_VERTICAL_TAB_RADIUS : VERTICAL_TAB_RADIUS;
+    for (auto const& pair : m_tab_widget->split_pairs()) {
+        auto start_index = m_tab_widget->index_of(pair.start);
+        auto end_index = m_tab_widget->index_of(pair.end);
+        if (start_index < 0 || end_index < 0 || dragged_index == start_index || dragged_index == end_index)
+            continue;
+        auto shape_of = [&](int index) {
+            auto rect = QRectF(shifted_tab_rect(index));
+            return is_collapsed ? collapsed_vertical_tab_shape_rect(rect) : tab_card_shape_rect(rect);
+        };
+        auto outline = shape_of(start_index).united(shape_of(end_index)).adjusted(-1.5, -1.5, 1.5, 1.5);
+        if (outline.bottom() < 0 || outline.top() > height())
+            continue;
+        auto is_shown = pair.contains(m_tab_widget->tab(currentIndex()));
+        painter.save();
+        painter.setClipRect(unpinned_clip);
+        painter.setBrush(Qt::NoBrush);
+        auto pen_color = is_shown ? Theme::chrome(palette).divider : Theme::chrome(palette).separator;
+        if (is_shown && !ChromeStyle::is_dark(palette))
+            pen_color = Theme::chrome(palette).separator;
+        painter.setPen(QPen(pen_color, 1));
+        painter.drawRoundedRect(outline, radius + 1.5, radius + 1.5);
+        painter.restore();
+    }
+}
+
+// A tab dragged with Shift held over another tab goes into a split view with it, on the half of it the pointer is over.
+// Pinned tabs can't be paired, and a side of a pair is dragged with its pair, which can't join another.
+Optional<TabBar::SplitDropOnTab> TabBar::split_drop_on_tab_at(QPoint position, bool shift_held) const
+{
+    if (!shift_held || !m_tab_widget || s_dragged_tab_has_own_window)
+        return {};
+    auto* dragged = s_active_tab_dragged_tab.data();
+    if (!dragged || dragged->is_pinned() || (s_active_tab_drag_source && s_active_tab_drag_source->split_pair_of(dragged)))
+        return {};
+    auto index = tab_index_at(position);
+    auto* target = index >= 0 ? m_tab_widget->tab(index) : nullptr;
+    if (!target || target == dragged || target->is_pinned())
+        return {};
+    auto* source_window = s_active_tab_drag_source ? qobject_cast<BrowserWindow*>(s_active_tab_drag_source->window()) : nullptr;
+    auto* target_window = qobject_cast<BrowserWindow*>(window());
+    if (!source_window || !target_window || source_window->is_private() != target_window->is_private())
+        return {};
+    auto in_left_half = position.x() < QRectF(visual_tab_rect(index)).center().x();
+    return SplitDropOnTab { .tab = target, .on_start_side = in_left_half != (layoutDirection() == Qt::RightToLeft) };
+}
+
+void TabBar::set_split_drop_on_tab(Optional<SplitDropOnTab> split_drop)
+{
+    auto had = m_split_drop_on_tab.has_value();
+    auto same_tab = had && split_drop.has_value() && m_split_drop_on_tab->tab == split_drop->tab;
+    if (same_tab && m_split_drop_on_tab->on_start_side == split_drop->on_start_side)
+        return;
+    if (!had && !split_drop.has_value())
+        return;
+    m_split_drop_on_tab = split_drop;
+    // NB: The highlight fades in on each tab it moves to, and moves between a tab's halves at once.
+    if (split_drop.has_value() && !same_tab) {
+        m_split_drop_on_tab_animation->stop();
+        if (SystemAppearance::prefers_reduced_motion() || !isVisible()) {
+            m_split_drop_on_tab_progress = 1.0;
+        } else {
+            m_split_drop_on_tab_progress = 0.0;
+            m_split_drop_on_tab_animation->start();
+        }
+    }
+    update();
+}
+
+// The tab the dragged tab would pair with is outlined in the accent color, with the half the dragged tab takes tinted.
+void TabBar::paint_split_drop_on_tab(QPainter& painter)
+{
+    if (!m_split_drop_on_tab.has_value() || !m_tab_widget)
+        return;
+    auto index = m_tab_widget->index_of(m_split_drop_on_tab->tab);
+    if (index < 0)
+        return;
+    auto tab_rect = shifted_tab_rect(index);
+    if (!tab_rect.isValid())
+        return;
+
+    QRectF bounds;
+    qreal radius = 0;
+    switch (tab_layout()) {
+    case TabLayout::Horizontal:
+        bounds = horizontal_selected_tab_body_rect(QRectF(tab_rect), horizontal_tab_end_room(index)).adjusted(0, 0, 0, -HORIZONTAL_TAB_CARD_SHAPE_BOTTOM_INSET);
+        radius = HORIZONTAL_SELECTED_TAB_RADIUS;
+        break;
+    case TabLayout::VerticalCollapsed:
+        bounds = collapsed_vertical_tab_shape_rect(QRectF(tab_rect));
+        radius = COLLAPSED_VERTICAL_TAB_RADIUS;
+        break;
+    default:
+        bounds = tab_card_shape_rect(QRectF(tab_rect));
+        radius = VERTICAL_TAB_RADIUS;
+        break;
+    }
+    if (bounds.width() < 2 * radius)
+        return;
+
+    auto palette = Theme::chrome_palette(*this);
+    auto accent = Theme::accent();
+    auto on_left = m_split_drop_on_tab->on_start_side != (layoutDirection() == Qt::RightToLeft);
+    auto middle = bounds.center().x();
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setOpacity(m_split_drop_on_tab_progress);
+    QPainterPath shape;
+    shape.addRoundedRect(bounds, radius, radius);
+
+    auto tint = accent;
+    tint.setAlphaF(ChromeStyle::is_dark(palette) ? 0.30 : 0.18);
+    auto half = on_left ? QRectF(bounds.left(), bounds.top(), middle - bounds.left(), bounds.height())
+                        : QRectF(middle, bounds.top(), bounds.right() - middle, bounds.height());
+    painter.setClipPath(shape);
+    painter.fillRect(half, tint);
+    painter.setClipping(false);
+
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(accent, 1.5));
+    painter.drawRoundedRect(bounds.adjusted(0.75, 0.75, -0.75, -0.75), radius - 0.75, radius - 0.75);
+    painter.restore();
 }
 
 void TabBar::contextMenuEvent(QContextMenuEvent* event)
@@ -1552,6 +1835,7 @@ void TabBar::dragEnterEvent(QDragEnterEvent* event)
 void TabBar::dragLeaveEvent(QDragLeaveEvent* event)
 {
     hide_drop_preview();
+    set_split_drop_on_tab({});
     QTabBar::dragLeaveEvent(event);
 }
 
@@ -1563,7 +1847,15 @@ void TabBar::dragMoveEvent(QDragMoveEvent* event)
         return;
     }
 
-    update_drop_preview(event->position().toPoint());
+    auto position = event->position().toPoint();
+    auto shift_held = (event->modifiers() | QGuiApplication::queryKeyboardModifiers()).testFlag(Qt::ShiftModifier);
+    if (auto split_drop = split_drop_on_tab_at(position, shift_held); split_drop.has_value()) {
+        hide_drop_preview();
+        set_split_drop_on_tab(split_drop);
+    } else {
+        set_split_drop_on_tab({});
+        update_drop_preview(position);
+    }
     event->setDropAction(Qt::MoveAction);
     event->accept();
 }
@@ -1572,9 +1864,22 @@ void TabBar::dropEvent(QDropEvent* event)
 {
     if (!m_tab_widget || !target_can_accept_tab_drop(*m_tab_widget, *event)) {
         hide_drop_preview();
+        set_split_drop_on_tab({});
         event->ignore();
         return;
     }
+
+    auto shift_held = (event->modifiers() | QGuiApplication::queryKeyboardModifiers()).testFlag(Qt::ShiftModifier);
+    if (auto split_drop = split_drop_on_tab_at(event->position().toPoint(), shift_held); split_drop.has_value()) {
+        s_pending_split_drop_target = m_tab_widget;
+        s_pending_split_drop_partner = split_drop->tab;
+        s_pending_split_drop_on_start_side = split_drop->on_start_side;
+        set_split_drop_on_tab({});
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+        return;
+    }
+    set_split_drop_on_tab({});
 
     s_pending_tab_drop_target = m_tab_widget;
     s_pending_tab_drop_index = drop_index_at(event->position().toPoint());
@@ -1637,7 +1942,7 @@ void TabBar::mousePressEvent(QMouseEvent* event)
 void TabBar::mouseMoveEvent(QMouseEvent* event)
 {
     if (m_strip_drag_card) {
-        update_strip_drag(event->pos());
+        update_strip_drag(event->pos(), event->modifiers().testFlag(Qt::ShiftModifier));
         event->accept();
         return;
     }
@@ -1687,10 +1992,14 @@ void TabBar::mouseReleaseEvent(QMouseEvent* event)
     if (m_strip_drag_card && event->button() == Qt::LeftButton) {
         auto dragged_tab = s_active_tab_dragged_tab;
         auto drop_index = drop_index_at(event->pos());
+        auto split_drop = m_split_drop_on_tab;
         end_strip_drag();
         if (auto* source_window = qobject_cast<BrowserWindow*>(window()); source_window && dragged_tab) {
-            if (auto current_index = source_window->tab_index(dragged_tab); current_index >= 0)
+            if (split_drop.has_value() && split_drop->tab) {
+                source_window->split_with_dropped_tab(*source_window, *dragged_tab, split_drop->on_start_side, split_drop->tab);
+            } else if (auto current_index = source_window->tab_index(dragged_tab); current_index >= 0) {
                 source_window->move_tab_to_window(current_index, *source_window, drop_index);
+            }
         }
         clear_drop_preview();
         event->accept();
@@ -2149,11 +2458,29 @@ bool TabBar::is_growing_horizontal_tab(int index, QRect const& tab_rect) const
 }
 
 // How selected a tab looks, while the selection cross-fades from one tab to another.
+SplitPair const* TabBar::split_pair_at(int index) const
+{
+    if (!m_tab_widget || index < 0 || index >= count())
+        return nullptr;
+    return m_tab_widget->split_pair_of(m_tab_widget->tab(index));
+}
+
 qreal TabBar::selection_of(int index) const
 {
     if (index == m_tab_painted_unselected)
         return 0.0;
     auto previously_selected_index = m_previously_selected_tab && m_tab_widget ? m_tab_widget->index_of(m_previously_selected_tab) : -1;
+    // NB: In the strip, both halves of a shown pair take one active tab's shape, which fades in and out as one.
+    if (auto const* pair = tab_layout() == TabLayout::Horizontal ? split_pair_at(index) : nullptr) {
+        auto start_index = m_tab_widget->index_of(pair->start);
+        auto end_index = m_tab_widget->index_of(pair->end);
+        auto is_member = [&](int i) { return i >= 0 && (i == start_index || i == end_index); };
+        if (is_member(currentIndex()))
+            return m_selection_animation->state() == QAbstractAnimation::Running && !is_member(previously_selected_index) ? m_selection_progress : 1.0;
+        if (is_member(previously_selected_index))
+            return 1.0 - m_selection_progress;
+        return 0.0;
+    }
     if (index == currentIndex())
         return m_selection_animation->state() == QAbstractAnimation::Running ? m_selection_progress : 1.0;
     if (index == previously_selected_index)
@@ -2206,6 +2533,26 @@ QRect TabBar::shifted_tab_rect(int index) const
 // selected tab's own card, which is inset from the tab's row.
 QRect TabBar::tab_drag_card_rect(int index) const
 {
+    // NB: A pair is dragged as one card that holds both of its halves.
+    if (auto const* pair = split_pair_at(index)) {
+        auto start_index = m_tab_widget->index_of(pair->start);
+        auto end_index = m_tab_widget->index_of(pair->end);
+        if (start_index >= 0 && end_index >= 0 && index != -1) {
+            auto single_card_rect = [&](int i) {
+                auto rect = visual_tab_rect(i);
+                switch (tab_layout()) {
+                case TabLayout::Horizontal:
+                    return horizontal_selected_tab_body_rect(QRectF(rect), horizontal_tab_end_room(i)).toAlignedRect();
+                case TabLayout::VerticalCollapsed:
+                    return collapsed_vertical_tab_shape_rect(rect);
+                case TabLayout::VerticalExpanded:
+                    return tab_card_shape_rect(rect);
+                }
+                VERIFY_NOT_REACHED();
+            };
+            return single_card_rect(start_index).united(single_card_rect(end_index));
+        }
+    }
     auto tab_rect = visual_tab_rect(index);
     switch (tab_layout()) {
     case TabLayout::Horizontal:
@@ -2309,6 +2656,8 @@ void TabBar::drag_tab_loose(Tab& tab, QPixmap card)
     s_active_tab_dragged_tab = dragged_tab;
     s_pending_tab_drop_target = nullptr;
     s_pending_tab_drop_index = -1;
+    s_pending_split_drop_target = nullptr;
+    s_pending_split_drop_partner = nullptr;
     update_tab_button_geometry();
     update();
 
@@ -2332,13 +2681,18 @@ void TabBar::drag_tab_loose(Tab& tab, QPixmap card)
     auto was_canceled = cancellation_filter.was_canceled();
 
     auto drop_target = s_pending_tab_drop_target;
+    auto split_drop_target = exchange(s_pending_split_drop_target, nullptr);
+    auto split_drop_partner = exchange(s_pending_split_drop_partner, nullptr);
 
     if (auto* source_window = qobject_cast<BrowserWindow*>(window()); source_window && dragged_tab) {
         if (auto current_index = source_window->tab_index(dragged_tab); current_index >= 0) {
-            if (action == Qt::MoveAction && drop_target) {
+            if (action == Qt::MoveAction && split_drop_target) {
+                if (auto* target_window = qobject_cast<BrowserWindow*>(split_drop_target->window()))
+                    target_window->split_with_dropped_tab(*source_window, *dragged_tab, s_pending_split_drop_on_start_side, split_drop_partner.data());
+            } else if (action == Qt::MoveAction && drop_target) {
                 if (auto* target_window = qobject_cast<BrowserWindow*>(drop_target->window()))
                     source_window->move_tab_to_window(current_index, *target_window, s_pending_tab_drop_index);
-            } else if (!drop_target && !was_canceled && m_tab_widget->count() > 1) {
+            } else if (!drop_target && !was_canceled && m_tab_widget->count() > m_tab_widget->strip_unit_size(dragged_tab)) {
                 source_window->detach_tab_to_new_window(current_index, QCursor::pos());
             }
         }
@@ -2354,6 +2708,9 @@ void TabBar::drag_tab_loose(Tab& tab, QPixmap card)
     clear_drop_preview();
     if (drop_target && drop_target != m_tab_widget)
         drop_target->tab_bar()->clear_drop_preview();
+    set_split_drop_on_tab({});
+    if (split_drop_target)
+        split_drop_target->tab_bar()->set_split_drop_on_tab({});
 }
 
 QPoint TabBar::tab_drag_hot_spot() const
@@ -2383,10 +2740,17 @@ void TabBar::start_strip_drag(int index)
 
     m_strip_drag_card->show();
     m_strip_drag_card->raise();
-    m_strip_drag_cancellation_filter = new TabDragCancellationFilter([this] {
-        end_strip_drag();
-        clear_drop_preview();
-    });
+    m_strip_drag_cancellation_filter = new TabDragCancellationFilter(
+        [this] {
+            end_strip_drag();
+            clear_drop_preview();
+        },
+        [this](bool shift_held) {
+            // NB: Only the pointer leaving the strip takes the tab out of it, so a key alone never does.
+            auto position = mapFromGlobal(QCursor::pos());
+            if (m_strip_drag_card && m_tab_widget && m_tab_widget->tab_drop_area_contains(*this, position))
+                update_strip_drag(position, shift_held);
+        });
     QApplication::instance()->installEventFilter(m_strip_drag_cancellation_filter);
 
     update_tab_button_geometry();
@@ -2394,7 +2758,7 @@ void TabBar::start_strip_drag(int index)
     update_strip_drag(mapFromGlobal(QCursor::pos()));
 }
 
-void TabBar::update_strip_drag(QPoint position)
+void TabBar::update_strip_drag(QPoint position, Optional<bool> shift_held)
 {
     auto dragged_tab = s_active_tab_dragged_tab;
     if (!dragged_tab || m_tab_widget->index_of(dragged_tab) < 0) {
@@ -2419,6 +2783,15 @@ void TabBar::update_strip_drag(QPoint position)
         ? QPoint(position.x() - m_position_in_selected_tab_while_dragging.x() + m_tab_drag_card_offset.x(), card_rect.top())
         : QPoint(card_rect.left(), position.y() - m_position_in_selected_tab_while_dragging.y() + m_tab_drag_card_offset.y());
     m_strip_drag_card->move(mapTo(window(), card_position) - QPoint(TAB_DRAG_IMAGE_MARGIN, TAB_DRAG_IMAGE_MARGIN));
+
+    // With Shift held over another tab, the tabs stay where they are, and the tab shows the side the dragged tab takes.
+    auto shift = shift_held.value_or(QGuiApplication::queryKeyboardModifiers().testFlag(Qt::ShiftModifier));
+    if (auto split_drop = split_drop_on_tab_at(position, shift); split_drop.has_value()) {
+        hide_drop_preview();
+        set_split_drop_on_tab(split_drop);
+        return;
+    }
+    set_split_drop_on_tab({});
     update_drop_preview(position);
 }
 
@@ -2438,6 +2811,7 @@ void TabBar::end_strip_drag()
     s_active_tab_drag_source = nullptr;
     s_active_tab_dragged_tab = nullptr;
     m_pressed_tab = nullptr;
+    set_split_drop_on_tab({});
     update_tab_button_geometry();
     update();
 }
@@ -2457,7 +2831,8 @@ void TabBar::drag_tab_in_own_window(Tab& tab)
 
     QPointer<Tab> dragged_tab = &tab;
     auto* dragged_window = source_window;
-    if (m_tab_widget->count() > 1)
+    // NB: A tab of a pair takes its pair along, and a pair alone in its window takes the window.
+    if (m_tab_widget->count() > m_tab_widget->strip_unit_size(&tab))
         dragged_window = &source_window->detach_tab_to_new_window(source_window->tab_index(&tab), QCursor::pos(), BrowserWindow::DetachedWindowFollowsPointer::Yes);
 
     auto& tab_widget = dragged_window->tab_widget();
@@ -3181,8 +3556,15 @@ TabWidget::TabWidget(WebView::IsPrivate is_private, QWidget* parent)
     m_page_splitter = new QSplitter(Qt::Horizontal, this);
     m_page_splitter->setChildrenCollapsible(false);
     m_page_splitter->setOpaqueResize(false);
-    m_stacked_widget = new QStackedWidget(m_page_splitter);
-    m_page_splitter->addWidget(m_stacked_widget);
+    m_page_area = new PageArea(m_page_splitter);
+    m_page_splitter->addWidget(m_page_area);
+    connect(m_page_area, &PageArea::displayed_tabs_changed, this, &TabWidget::displayed_tabs_changed);
+    m_page_area->setAcceptDrops(true);
+    m_page_area->installEventFilter(this);
+    connect(m_page_area, &PageArea::start_fraction_changed, this, [this](float fraction) {
+        if (auto* pair = split_pair_of(m_page_area->currentWidget()))
+            set_split_start_fraction(pair->id, fraction);
+    });
     m_page_splitter->setStretchFactor(0, 1);
     m_page_column = new QWidget(this);
     m_page_column->installEventFilter(this);
@@ -3190,7 +3572,12 @@ TabWidget::TabWidget(WebView::IsPrivate is_private, QWidget* parent)
     m_page_column_layout = new QVBoxLayout(m_page_column);
     m_page_column_layout->setSpacing(0);
     m_page_column_layout->setContentsMargins(0, 0, 0, 0);
-    m_bookmarks_bar = new BookmarksBarContainer(*m_toolbar, *m_stacked_widget, m_page_column);
+    m_bookmarks_bar = new BookmarksBarContainer(*m_toolbar, *m_page_area, m_page_column);
+    // The chrome that slides over the pages steps aside on every page on display, which changes with a split view.
+    connect(m_page_area, &PageArea::displayed_tabs_changed, this, [this] {
+        m_bookmarks_bar->update_geometry();
+        update_vertical_tabs_content_overlay();
+    });
     m_bookmarks_bar->bar().installEventFilter(this);
     m_notification_bar_column = new QWidget(m_page_column);
     m_notification_bar_column->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -3383,18 +3770,23 @@ TabWidget::TabWidget(WebView::IsPrivate is_private, QWidget* parent)
     update_chrome_style();
 
     connect(m_tab_bar, &QTabBar::currentChanged, this, [this](int index) {
+        auto* previous_tab = m_page_area->currentWidget();
+        auto* new_tab = m_page_area->widget(index);
         // The tab being left keeps its omnibox's editing session for when it is shown again.
-        if (auto* previous_tab = qobject_cast<Tab*>(m_stacked_widget->currentWidget()); previous_tab && m_stacked_widget->indexOf(previous_tab) != index)
+        if (previous_tab && previous_tab != new_tab)
             previous_tab->park_location_editing();
+
+        // Moving between the two sides of a shown pair only moves the focus, and the window's own panels stay open.
+        auto* pair = split_pair_of(new_tab);
+        auto switches_side = previous_tab && pair && pair->contains(previous_tab) && m_page_area->shows_side_by_side();
 
         // Showing a tab shows its waiting permission prompt, which is placed below the tab's location field, so the
         // field moves into the toolbar first.
-        m_toolbar->bind(as_if<Tab>(m_stacked_widget->widget(index)));
+        m_toolbar->bind(new_tab, switches_side ? WindowToolbar::KeepWindowPanels::Yes : WindowToolbar::KeepWindowPanels::No);
 
-        if (index >= 0 && index < m_stacked_widget->count())
-            m_stacked_widget->setCurrentIndex(index);
+        show_current_tab_in_page_area();
 
-        m_bookmarks_bar->bind(as_if<Tab>(m_stacked_widget->widget(index)));
+        m_bookmarks_bar->bind(new_tab);
         emit current_tab_changed(index);
 
         // The all-tabs list closes as another tab is selected, such as a new tab opened in front of it. Tabs opened or
@@ -3410,13 +3802,13 @@ TabWidget::TabWidget(WebView::IsPrivate is_private, QWidget* parent)
     connect(m_tab_bar, &QTabBar::tabCloseRequested, this, &TabWidget::tab_close_requested);
 
     connect(m_tab_bar, &QTabBar::tabMoved, this, [this](int from, int to) {
-        ScopeGuard guard { [&]() { m_stacked_widget->blockSignals(false); } };
-        m_stacked_widget->blockSignals(true);
-
-        auto* widget = m_stacked_widget->widget(from);
-        m_stacked_widget->removeWidget(widget);
-        m_stacked_widget->insertWidget(to, widget);
-        m_stacked_widget->setCurrentIndex(m_tab_bar->currentIndex());
+        auto* widget = m_page_area->widget(from);
+        auto layout_was_enabled = m_page_area->layout_enabled();
+        m_page_area->set_layout_enabled(false);
+        m_page_area->insertWidget(to, widget);
+        m_page_area->setCurrentIndex(m_tab_bar->currentIndex());
+        m_page_area->set_layout_enabled(layout_was_enabled);
+        check_split_pairs();
     });
 
     if constexpr (!use_native_macos_window_controls()) {
@@ -3441,10 +3833,10 @@ ScopeGuard<Function<void()>> TabWidget::defer_tab_updates()
 {
     VERIFY(!m_tab_updates_deferred);
     m_tab_updates_deferred = true;
-    auto layout_was_enabled = m_stacked_widget->layout()->isEnabled();
-    m_stacked_widget->layout()->setEnabled(false);
+    auto layout_was_enabled = m_page_area->layout_enabled();
+    m_page_area->set_layout_enabled(false);
     return ScopeGuard<Function<void()>> { [this, layout_was_enabled] {
-        m_stacked_widget->layout()->setEnabled(layout_was_enabled);
+        m_page_area->set_layout_enabled(layout_was_enabled);
         m_tab_updates_deferred = false;
         update_tab_button_visibility();
         update_tab_layout();
@@ -3459,16 +3851,18 @@ ScopeGuard<Function<void()>> TabWidget::defer_tab_updates()
 // out now — and only then push the view's viewport.
 // NB: A page that already had a real size is left alone. Sizing it would have it lay out anew, and wake its WebContent,
 //     at every step of a window resize, for a size it would never show. It takes the window's size when it is shown.
-static void size_page_like(Tab& page, Tab const& current)
+// NB: In a split view, a page is sized for the slot it would take once shown: the whole area for a tab of its own, and
+//     its side of its pair's width for a tab in a pair.
+static void size_page_like(Tab& page, QSize slot_size, bool area_is_visible)
 {
     if (page.has_had_real_size())
         return;
-    size_hidden_page_like(page, current);
+    size_hidden_page_to(page, slot_size);
     page.view().push_viewport_size();
 
     // NB: The current view takes several sizes in one turn of the event loop as the chrome around it settles, so the
     //     page has its real size only once the turn is over.
-    if (current.isVisible()) {
+    if (area_is_visible) {
         Core::deferred_invoke([page = QPointer<Tab>(&page)] {
             if (page)
                 page->did_get_real_size();
@@ -3484,8 +3878,8 @@ void TabWidget::insert_tab(int index, Tab* widget, QString const& label)
         // A page inserted behind the current one stays at Qt's default geometry until it's selected, and a load can
         // start into it long before that. Size its view like the current page's view first, so the page's first layout
         // sees the real viewport.
-        if (auto* current = as_if<Tab>(m_stacked_widget->currentWidget()); current && current != widget && current->is_loaded())
-            size_page_like(*widget, *current);
+        if (auto* current = m_page_area->currentWidget(); current && current != widget && current->is_loaded())
+            size_page_for_its_slot(*widget);
         widget->view().installEventFilter(this);
     } else {
         // A tab that hasn't loaded gets the filter for its view once it has one.
@@ -3495,10 +3889,12 @@ void TabWidget::insert_tab(int index, Tab* widget, QString const& label)
         connect(widget, &Tab::loaded, this, did_load, Qt::SingleShotConnection);
     }
 
-    m_stacked_widget->insertWidget(index, widget);
+    m_page_area->insertWidget(index, widget);
     m_tab_bar->insertTab(index, label);
     if (!m_tab_updates_deferred)
         place_toolbar_over_page_column();
+    // NB: A tab can only land between the two tabs of a pair if the window put it there on purpose, before it pairs it.
+    check_split_pairs();
 
     update_tab_layout();
     update_tab_button_visibility();
@@ -3509,13 +3905,24 @@ void TabWidget::insert_tab(int index, Tab* widget, QString const& label)
 
 Tab* TabWidget::replace_tab(int index, Tab* widget)
 {
-    auto* old_widget = as_if<Tab>(m_stacked_widget->widget(index));
+    auto* old_widget = m_page_area->widget(index);
     if (!old_widget)
         return nullptr;
 
     update_all_tabs_entries_soon();
 
-    m_stacked_widget->removeWidget(old_widget);
+    // A tab that stands in for one of a pair, such as one that was discarded, takes its side in the pair, which keeps its
+    // ID and its widths.
+    for (auto& pair : m_split_pairs) {
+        if (pair.start == old_widget)
+            pair.start = widget;
+        if (pair.end == old_widget)
+            pair.end = widget;
+    }
+
+    auto layout_was_enabled = m_page_area->layout_enabled();
+    m_page_area->set_layout_enabled(false);
+    m_page_area->removeWidget(old_widget);
     if (old_widget->is_loaded())
         old_widget->view().removeEventFilter(this);
     disconnect(old_widget, &Tab::loaded, this, nullptr);
@@ -3529,9 +3936,10 @@ Tab* TabWidget::replace_tab(int index, Tab* widget)
         };
         connect(widget, &Tab::loaded, this, did_load, Qt::SingleShotConnection);
     }
-    m_stacked_widget->insertWidget(index, widget);
+    m_page_area->insertWidget(index, widget);
     if (m_tab_bar->currentIndex() >= 0)
-        m_stacked_widget->setCurrentIndex(m_tab_bar->currentIndex());
+        show_current_tab_in_page_area();
+    m_page_area->set_layout_enabled(layout_was_enabled);
     m_tab_bar->did_replace_tab(*old_widget, *widget);
 
     m_tab_bar->update();
@@ -3546,14 +3954,14 @@ void TabWidget::remove_tab(int index)
 
 Tab* TabWidget::take_tab(int index)
 {
-    auto* widget = m_stacked_widget->widget(index);
+    auto* widget = m_page_area->widget(index);
     if (!widget)
         return nullptr;
 
     update_all_tabs_entries_soon();
 
     m_tab_bar->prepare_for_tab_removal(index);
-    m_stacked_widget->removeWidget(widget);
+    m_page_area->removeWidget(widget);
     if (as<Tab>(widget)->is_loaded()) {
         as<Tab>(widget)->view().removeEventFilter(this);
     }
@@ -3565,22 +3973,175 @@ Tab* TabWidget::take_tab(int index)
     m_tab_bar->removeTab(index);
 
     if (m_tab_bar->count() > 0 && m_tab_bar->currentIndex() >= 0)
-        m_stacked_widget->setCurrentIndex(m_tab_bar->currentIndex());
+        show_current_tab_in_page_area();
+
+    // NB: A tab that leaves the strip leaves its pair, unless the window moves the whole pair, which it does while the
+    //     checks are deferred.
+    check_split_pairs();
 
     update_tab_layout();
     update_tab_button_visibility();
-    return as<Tab>(widget);
+    return widget;
 }
 
 void TabWidget::set_current_tab(Tab* widget)
 {
-    if (auto index = m_stacked_widget->indexOf(widget); index >= 0)
+    if (auto index = m_page_area->indexOf(widget); index >= 0)
         set_current_index(index);
 }
 
 int TabWidget::index_of(Tab* widget) const
 {
-    return m_stacked_widget->indexOf(widget);
+    return m_page_area->indexOf(widget);
+}
+
+u64 TabWidget::allocate_split_pair_id()
+{
+    // NB: Extensions see the ID as a positive integer within the range of a JavaScript number.
+    static u64 next_id = 1;
+    return next_id++;
+}
+
+SplitPair const* TabWidget::split_pair_of(Tab const* tab) const
+{
+    if (!tab)
+        return nullptr;
+    for (auto const& pair : m_split_pairs) {
+        if (pair.contains(tab))
+            return &pair;
+    }
+    return nullptr;
+}
+
+SplitPair const* TabWidget::split_pair_with_id(u64 id) const
+{
+    for (auto const& pair : m_split_pairs) {
+        if (pair.id == id)
+            return &pair;
+    }
+    return nullptr;
+}
+
+u64 TabWidget::create_split_pair(Tab& start, Tab& end, float start_fraction, Optional<u64> id)
+{
+    VERIFY(&start != &end);
+    VERIFY(!split_pair_of(&start) && !split_pair_of(&end));
+    VERIFY(index_of(&start) >= 0 && index_of(&start) + 1 == index_of(&end));
+    auto pair_id = id.value_or_lazy_evaluated([] { return allocate_split_pair_id(); });
+    m_split_pairs.append({ .id = pair_id, .start_fraction = SplitView::sanitized_start_fraction(start_fraction), .start = &start, .end = &end });
+    show_current_tab_in_page_area();
+    m_tab_bar->update();
+    update_all_tabs_entries_soon();
+    emit split_pairs_changed();
+    return pair_id;
+}
+
+void TabWidget::dissolve_split_pair(u64 id)
+{
+    auto removed = m_split_pairs.remove_first_matching([&](auto const& pair) { return pair.id == id; });
+    if (!removed)
+        return;
+    show_current_tab_in_page_area();
+    m_tab_bar->update();
+    update_all_tabs_entries_soon();
+    emit split_pairs_changed();
+}
+
+void TabWidget::set_split_start_fraction(u64 id, float start_fraction)
+{
+    for (auto& pair : m_split_pairs) {
+        if (pair.id != id)
+            continue;
+        pair.start_fraction = SplitView::sanitized_start_fraction(start_fraction);
+        show_current_tab_in_page_area();
+        emit split_pairs_changed();
+        return;
+    }
+}
+
+void TabWidget::swap_split_pair(u64 id)
+{
+    for (auto& pair : m_split_pairs) {
+        if (pair.id != id)
+            continue;
+        auto start_index = index_of(pair.start);
+        auto end_index = index_of(pair.end);
+        if (start_index < 0 || end_index != start_index + 1)
+            return;
+        {
+            auto checks = defer_split_pair_checks();
+            swap(pair.start, pair.end);
+            // NB: Each page keeps its width, so the start side's share becomes what the end side's was.
+            pair.start_fraction = SplitView::sanitized_start_fraction(1.0f - pair.start_fraction);
+            m_tab_bar->moveTab(end_index, start_index);
+        }
+        show_current_tab_in_page_area();
+        m_tab_bar->update();
+        emit split_pairs_changed();
+        return;
+    }
+}
+
+ScopeGuard<Function<void()>> TabWidget::defer_split_pair_checks()
+{
+    ++m_split_pair_checks_deferred;
+    return ScopeGuard<Function<void()>> { [this] {
+        --m_split_pair_checks_deferred;
+        check_split_pairs();
+    } };
+}
+
+// The two tabs of a pair always sit next to each other, start first. A pair whose tabs were parted, or which lost one,
+// is separated, and its tabs go on as tabs of their own.
+void TabWidget::check_split_pairs()
+{
+    if (m_split_pair_checks_deferred > 0)
+        return;
+    auto removed = m_split_pairs.remove_all_matching([&](SplitPair const& pair) {
+        if (!pair.start || !pair.end)
+            return true;
+        auto start_index = index_of(pair.start);
+        auto end_index = index_of(pair.end);
+        return start_index < 0 || end_index != start_index + 1;
+    });
+    if (removed) {
+        show_current_tab_in_page_area();
+        m_tab_bar->update();
+        emit split_pairs_changed();
+    }
+}
+
+void TabWidget::show_current_tab_in_page_area()
+{
+    auto layout_was_enabled = m_page_area->layout_enabled();
+    m_page_area->set_layout_enabled(false);
+    auto index = m_tab_bar->currentIndex();
+    if (index >= 0 && index < m_page_area->count())
+        m_page_area->setCurrentIndex(index);
+    m_page_area->set_shown_pair(split_pair_of(m_page_area->currentWidget()));
+    m_page_area->set_layout_enabled(layout_was_enabled);
+    // NB: A tab of a pair that hides keeps room for its pane bar, so it is sized as it will show. Any other hidden tab
+    //     has none.
+    for (int i = 0; i < m_page_area->count(); ++i) {
+        auto* page = m_page_area->widget(i);
+        if (!page || m_page_area->is_displayed(page))
+            continue;
+        page->set_split_presentation(split_pair_of(page) ? Tab::SplitPresentation::OtherSide : Tab::SplitPresentation::None);
+    }
+}
+
+void TabWidget::set_page_fullscreen_tab(Tab* tab)
+{
+    m_page_area->set_page_fullscreen_tab(tab);
+}
+
+void TabWidget::update_pane_bars_for_toolbar_placement()
+{
+    auto in_sidebar = toolbar_is_in_sidebar();
+    for (int i = 0; i < count(); ++i) {
+        if (auto* page = tab(i))
+            page->pane_bar().set_toolbar_in_sidebar(in_sidebar);
+    }
 }
 
 void TabWidget::set_new_tab_action(QAction* action)
@@ -4123,6 +4684,47 @@ void TabWidget::dropEvent(QDropEvent* event)
 
 bool TabWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    // A tab dragged over the start or end third of the pages previews a split view there. The middle third is left to
+    // the rest of the window, where a drop detaches the tab into a window of its own, as before.
+    if (watched == m_page_area) {
+        switch (event->type()) {
+        case QEvent::DragEnter:
+        case QEvent::DragMove: {
+            auto* drag_event = static_cast<QDragMoveEvent*>(event);
+            auto side = split_drop_side_at(drag_event->position().toPoint(), *drag_event);
+            if (!side.has_value()) {
+                hide_split_drop_preview();
+                drag_event->ignore();
+                return false;
+            }
+            show_split_drop_preview(*side);
+            drag_event->setDropAction(Qt::MoveAction);
+            drag_event->accept();
+            return true;
+        }
+        case QEvent::DragLeave:
+            hide_split_drop_preview();
+            return false;
+        case QEvent::Drop: {
+            auto* drop_event = static_cast<QDropEvent*>(event);
+            auto side = split_drop_side_at(drop_event->position().toPoint(), *drop_event);
+            hide_split_drop_preview();
+            if (!side.has_value()) {
+                drop_event->ignore();
+                return false;
+            }
+            s_pending_split_drop_target = this;
+            s_pending_split_drop_partner = nullptr;
+            s_pending_split_drop_on_start_side = *side == SplitDropSide::Start;
+            drop_event->setDropAction(Qt::MoveAction);
+            drop_event->accept();
+            return true;
+        }
+        default:
+            break;
+        }
+    }
+
     if (watched == m_tab_bar && (event->type() == QEvent::Move || event->type() == QEvent::Resize))
         place_horizontal_new_tab_button();
 
@@ -4166,7 +4768,7 @@ bool TabWidget::eventFilter(QObject* watched, QEvent* event)
         place_horizontal_new_tab_button();
 
     if (event->type() == QEvent::Resize) {
-        if (auto* current = as_if<Tab>(m_stacked_widget->currentWidget()); current && current->is_loaded() && watched == &current->view())
+        if (auto* current = m_page_area->currentWidget(); current && current->is_loaded() && watched == &current->view())
             size_hidden_pages_like_the_current_one();
     }
 
@@ -4306,13 +4908,111 @@ void TabWidget::resizeEvent(QResizeEvent* event)
 // out before the current page's child layout has run. So at that point the current view still has its placeholder size.
 void TabWidget::size_hidden_pages_like_the_current_one()
 {
-    auto* current = as_if<Tab>(m_stacked_widget->currentWidget());
+    auto* current = m_page_area->currentWidget();
     if (!current || !current->is_loaded())
         return;
-    for (int i = 0; i < m_stacked_widget->count(); ++i) {
-        if (auto* page = as_if<Tab>(m_stacked_widget->widget(i)); page && page != current && page->is_loaded())
-            size_page_like(*page, *current);
+    for (int i = 0; i < m_page_area->count(); ++i) {
+        if (auto* page = m_page_area->widget(i); page && page->is_loaded() && !m_page_area->is_displayed(page))
+            size_page_for_its_slot(*page);
     }
+}
+
+void TabWidget::size_page_for_its_slot(Tab& page)
+{
+    if (m_page_area->size().isEmpty())
+        return;
+    auto slot = m_page_area->slot_rect_for(page, split_pair_of(&page));
+    size_page_like(page, slot.size(), m_page_area->isVisible());
+}
+
+// The preview floats over the side the tab would take. Native page surfaces sit above the widgets beside them, so it is
+// a window of its own.
+class SplitDropPreview final : public QWidget {
+public:
+    AK_ALLOC_WITH_KMALLOC;
+
+    explicit SplitDropPreview(QWidget* parent)
+        : QWidget(parent, Qt::ToolTip | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint | Qt::WindowTransparentForInput)
+    {
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+protected:
+    virtual void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        auto palette = Theme::chrome_palette(*this);
+        auto const& chrome = Theme::chrome(palette);
+        auto dark = ChromeStyle::is_dark(palette);
+        static constexpr int SHADOW_ROOM = 10;
+        static constexpr qreal RADIUS = 8;
+        QRectF card = QRectF(rect()).adjusted(SHADOW_ROOM, SHADOW_ROOM, -SHADOW_ROOM, -SHADOW_ROOM);
+        // NB: The Lift elevation: a close, sharper shadow under a wide, soft one.
+        for (int i = SHADOW_ROOM; i > 0; --i) {
+            auto alpha = (dark ? 0.30 : 0.12) * (1.0 - (static_cast<qreal>(i) / SHADOW_ROOM)) / 3.0;
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, qRound(alpha * 255)));
+            painter.drawRoundedRect(card.adjusted(-i, -i + 4, i, i + 4), RADIUS + i, RADIUS + i);
+        }
+        auto fill = chrome.toolbar;
+        fill.setAlphaF(0.72);
+        painter.setBrush(fill);
+        painter.setPen(Qt::NoPen);
+        painter.drawRoundedRect(card, RADIUS, RADIUS);
+        painter.setBrush(chrome.hover);
+        painter.drawRoundedRect(card, RADIUS, RADIUS);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(Theme::accent(), 2));
+        painter.drawRoundedRect(card.adjusted(1, 1, -1, -1), RADIUS - 1, RADIUS - 1);
+    }
+};
+
+Optional<TabWidget::SplitDropSide> TabWidget::split_drop_side_at(QPoint position, QDropEvent const& event) const
+{
+    if (!target_can_accept_tab_drop(*const_cast<TabWidget*>(this), const_cast<QDropEvent&>(event)) || s_dragged_tab_has_own_window)
+        return {};
+    auto* dragged = s_active_tab_dragged_tab.data();
+    auto* current = m_page_area->currentWidget();
+    // A pinned tab, a tab of a pair, and the current tab itself can't join the current tab. Nor can a pinned one.
+    if (!dragged || !current || dragged == current || dragged->is_pinned() || current->is_pinned())
+        return {};
+    if (s_active_tab_drag_source && s_active_tab_drag_source->split_pair_of(dragged))
+        return {};
+    if (m_page_area->width() < SplitView::side_by_side_threshold())
+        return {};
+    auto third = m_page_area->width() / 3;
+    auto rtl = m_page_area->layoutDirection() == Qt::RightToLeft;
+    if (position.x() < third)
+        return rtl ? SplitDropSide::End : SplitDropSide::Start;
+    if (position.x() >= m_page_area->width() - third)
+        return rtl ? SplitDropSide::Start : SplitDropSide::End;
+    return {};
+}
+
+void TabWidget::show_split_drop_preview(SplitDropSide side)
+{
+    if (!m_split_drop_preview)
+        m_split_drop_preview = new SplitDropPreview(this);
+    auto widths = SplitView::side_widths(m_page_area->width(), 0.5f);
+    auto rtl = m_page_area->layoutDirection() == Qt::RightToLeft;
+    auto on_left = (side == SplitDropSide::Start) != rtl;
+    auto width = side == SplitDropSide::Start ? widths.start : widths.end;
+    QRect half { on_left ? 0 : m_page_area->width() - width, 0, width, m_page_area->height() };
+    auto global = QRect(m_page_area->mapToGlobal(half.topLeft()), half.size()).adjusted(-10 + 6, -10 + 6, 10 - 6, 10 - 6);
+    if (m_split_drop_preview->geometry() != global)
+        m_split_drop_preview->setGeometry(global);
+    if (!m_split_drop_preview->isVisible())
+        m_split_drop_preview->show();
+    m_split_drop_preview->raise();
+}
+
+void TabWidget::hide_split_drop_preview()
+{
+    if (m_split_drop_preview)
+        m_split_drop_preview->hide();
 }
 
 void TabWidget::accept_tab_drag(QDragMoveEvent* event, QWidget* target)
@@ -4765,6 +5465,7 @@ void TabWidget::update_all_tabs_entries()
             .title = tab->title(),
             .detail = url.host().has_value() ? qstring_from_ak_string(url.serialized_host()) : QString {},
             .is_current = index == current_index(),
+            .is_visible = m_page_area->is_displayed(tab),
             .tab = tab,
         });
     }
@@ -4785,6 +5486,7 @@ void TabWidget::update_all_tabs_entries()
                 .title = AK::move(title),
                 .detail = time_since_closed(now - unit.closed_at),
                 .is_current = false,
+                .is_visible = false,
                 .tab = {},
             });
             m_recently_closed_unit_ids.append(unit.id);
@@ -5540,8 +6242,24 @@ void TabWidget::update_vertical_tabs_content_overlay()
     auto left = vertical_tabs_are_on_right() ? 0 : overlap;
     auto right = vertical_tabs_are_on_right() ? overlap : 0;
 
-    if (auto* current = tab(index))
-        current->view().set_vertical_tab_overlay_insets(left, right);
+    // NB: The sidebar slides over the page area from its side, so in a split view it covers the side next to it first,
+    //     and the other side only once it reaches past the first.
+    auto area_left = m_page_area->mapTo(this, QPoint()).x();
+    auto area_right = area_left + m_page_area->width();
+    for (int i = 0; i < count(); ++i) {
+        auto* page = tab(i);
+        if (!page || !page->is_loaded())
+            continue;
+        if (!m_page_area->is_displayed(page)) {
+            page->view().set_vertical_tab_overlay_insets(0, 0);
+            continue;
+        }
+        auto page_left = page->mapTo(this, QPoint()).x();
+        auto page_right = page_left + page->width();
+        auto page_left_inset = left > 0 ? clamp(area_left + left - page_left, 0, page->width()) : 0;
+        auto page_right_inset = right > 0 ? clamp(page_right - (area_right - right), 0, page->width()) : 0;
+        page->view().set_vertical_tab_overlay_insets(page_left_inset, page_right_inset);
+    }
 }
 
 void TabWidget::defer_update_vertical_tabs_hover_expanded()

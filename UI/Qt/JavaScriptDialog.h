@@ -59,10 +59,15 @@ public:
     void accept();
     void dismiss();
     void reset();
+    void focus_dialog_if_waiting();
 
     Function<void(Type, bool accepted, QString const& prompt_text)> on_complete;
     // Dims the page under the dialog, from 0 for not at all to 1 for fully.
     Function<void(qreal)> on_page_dim_change;
+    // A dialog from a page the person isn't using, such as the other side of a split view, waits for them without taking
+    // the keyboard from the page they type in. It takes the focus once its page is focused.
+    Function<bool()> may_take_focus;
+    Function<void()> on_open_change;
 
 protected:
     virtual bool event(QEvent*) override;
@@ -98,6 +103,7 @@ private:
     QCheckBox* m_block_further_dialogs { nullptr };
     QDialogButtonBox* m_button_box { nullptr };
     QPointer<QWidget> m_previous_focus_widget;
+    bool m_focus_was_deferred { false };
     Optional<Qt::FocusPolicy> m_parent_focus_policy;
     bool m_is_updating_chrome_style { false };
     QVariantAnimation* m_opening_animation { nullptr };

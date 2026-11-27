@@ -138,6 +138,10 @@ private:
         bool blocking { false };
         bool include_headers { false };
         RefPtr<Extensions::NavigationURLFilter> navigation_filter {};
+        // A tabs.onUpdated listener's filter.
+        Optional<Vector<String>> updated_properties {};
+        Optional<i64> updated_tab_id {};
+        Optional<i64> updated_window_id {};
         Vector<Extensions::MatchPattern> urls;
         Vector<Extensions::WebRequestResourceType> types;
     };

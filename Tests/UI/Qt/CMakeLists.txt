@@ -45,6 +45,7 @@ set(TEST_SOURCES
     TestSelectDropdown.cpp
     TestSessionHistorySnapshotStorage.cpp
     TestSessionStore.cpp
+    TestSplitView.cpp
     TestSiteSettingsPopover.cpp
     TestStringUtils.cpp
     TestWebCompatReportReview.cpp

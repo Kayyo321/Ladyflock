@@ -242,6 +242,8 @@ void JavaScriptDialog::open(Type type, QString const& title, QString const& mess
 
     if (type == Type::Prompt && ok_button)
         ok_button->setDefault(false);
+    if (on_open_change)
+        on_open_change();
 }
 
 void JavaScriptDialog::set_prompt_text(QString const& text)
@@ -273,6 +275,15 @@ void JavaScriptDialog::reset()
     m_type.clear();
     QApplication::instance()->removeEventFilter(this);
     restore_focus_after_close();
+    m_focus_was_deferred = false;
+    if (on_open_change)
+        on_open_change();
+}
+
+void JavaScriptDialog::focus_dialog_if_waiting()
+{
+    if (m_type.has_value() && m_focus_was_deferred)
+        focus_dialog();
 }
 
 void JavaScriptDialog::complete(bool accepted)
@@ -281,6 +292,9 @@ void JavaScriptDialog::complete(bool accepted)
     QApplication::instance()->removeEventFilter(this);
     auto prompt_text = m_prompt_text->text();
     restore_focus_after_close();
+    m_focus_was_deferred = false;
+    if (on_open_change)
+        on_open_change();
 
     if (on_complete)
         on_complete(type, accepted, prompt_text);
@@ -490,6 +504,13 @@ void JavaScriptDialog::focus_dialog()
 {
     if (!m_type.has_value())
         return;
+    if (may_take_focus && !may_take_focus()) {
+        m_focus_was_deferred = true;
+        return;
+    }
+    // NB: A dialog that waited took the focus from wherever it was later, which is not where it should return to.
+    if (exchange(m_focus_was_deferred, false))
+        m_previous_focus_widget = nullptr;
 
     if (m_type == Type::Prompt) {
         m_prompt_text->setFocus(Qt::OtherFocusReason);

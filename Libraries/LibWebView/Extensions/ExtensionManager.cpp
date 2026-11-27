@@ -2060,7 +2060,9 @@ Optional<Web::Extensions::ExtensionTabInfo> ExtensionManager::tab_info_for_exten
     info.tab_id = tab_id;
     info.window_id = view.extension_window_id();
     info.active = view.is_current_tab_of_window() || is_active;
+    info.highlighted = info.active;
     info.pinned = view.is_pinned();
+    info.split_view_id = view.split_view_id();
     info.status = view.traversable().has_unactivated_load() ? "loading"_string : "complete"_string;
     if (expose_sensitive) {
         info.url = url.serialize();
@@ -2743,7 +2745,9 @@ static JsonObject serialize_tab(Web::Extensions::ExtensionTabInfo const& t)
     o.set("id"sv, static_cast<i64>(t.tab_id));
     o.set("windowId"sv, static_cast<i64>(t.window_id));
     o.set("active"sv, t.active);
+    o.set("highlighted"sv, t.highlighted);
     o.set("pinned"sv, t.pinned);
+    o.set("splitViewId"sv, t.split_view_id);
     o.set("status"sv, t.status);
     if (t.url.has_value())
         o.set("url"sv, *t.url);
@@ -4046,13 +4050,28 @@ void ExtensionManager::handle_api_call(
     if (namespace_name == "tabs"sv) {
         if (method_name == "query"sv) {
             Optional<bool> want_active;
+            Optional<bool> want_highlighted;
             Optional<bool> want_current_window;
             Optional<u64> window_id;
+            // NB: The split view ID is signed, as -1 asks for the tabs that aren't in a split view.
+            Optional<i64> split_view_id;
             if (!parsed_args.is_error() && parsed_args.value().is_array() && !parsed_args.value().as_array().is_empty() && parsed_args.value().as_array().at(0).is_object()) {
                 auto const& q = parsed_args.value().as_array().at(0).as_object();
                 want_active = q.get_bool("active"sv);
+                want_highlighted = q.get_bool("highlighted"sv);
                 want_current_window = q.get_bool("currentWindow"sv);
                 window_id = q.get_u64("windowId"sv);
+                if (auto value = q.get("splitViewId"sv); value.has_value()) {
+                    if (!value->is_number()) {
+                        reply_err("splitViewId must be an integer");
+                        return;
+                    }
+                    split_view_id = value->get_integer<i64>();
+                    if (!split_view_id.has_value()) {
+                        reply_err("splitViewId must be an integer");
+                        return;
+                    }
+                }
             }
             auto current_window = caller_window();
 
@@ -4066,6 +4085,10 @@ void ExtensionManager::handle_api_call(
                 if (want_current_window.has_value() && (info->window_id == current_window) != *want_current_window)
                     continue;
                 if (want_active.has_value() && info->active != *want_active)
+                    continue;
+                if (want_highlighted.has_value() && info->highlighted != *want_highlighted)
+                    continue;
+                if (split_view_id.has_value() && info->split_view_id != *split_view_id)
                     continue;
                 arr.must_append(serialize_tab(*info));
             }
@@ -5067,6 +5090,9 @@ void ExtensionManager::notify_tab_updated(u64 tab_id, TabChange change)
             break;
         case TabChange::Pinned:
             info.set("pinned"sv, tab->pinned);
+            break;
+        case TabChange::SplitView:
+            info.set("splitViewId"sv, tab->split_view_id);
             break;
         }
         JsonArray args;

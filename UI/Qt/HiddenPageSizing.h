@@ -15,5 +15,7 @@ namespace Ladybird {
 // is shown. So without this, a hidden page and everything in it keep whatever geometry they last had — or, for a page
 // that's never been shown, Qt's default 100x30 — until the user selects the page.
 void size_hidden_page_like(QWidget& page, QWidget const& current);
+// The same, for the size of the slot the page would take once shown, such as one side of a split view.
+void size_hidden_page_to(QWidget& page, QSize);
 
 }

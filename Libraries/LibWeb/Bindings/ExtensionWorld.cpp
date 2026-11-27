@@ -465,6 +465,23 @@ JS::Value ExtensionRealmContext::create_event_object(StringView ns_name, StringV
                     return vm.throw_completion<JS::TypeError>("Invalid navigation URL filter"_utf16);
                 listener.navigation_filter = filter.release_value();
             }
+            // NB: A tabs.onUpdated listener can ask only for changes to some of a tab's properties.
+            if (event_key == "tabs.onUpdated"sv && vm.argument_count() > 1 && vm.argument(1).is_object()) {
+                auto value = JsonValue::from_string(js_value_to_json_string(vm, vm.argument(1)));
+                if (value.is_error() || !value.value().is_object())
+                    return vm.throw_completion<JS::TypeError>("Invalid tabs.onUpdated filter"_utf16);
+                if (auto properties = value.value().as_object().get_array("properties"sv); properties.has_value()) {
+                    Vector<String> names;
+                    for (auto const& property : properties->values()) {
+                        if (!property.is_string())
+                            return vm.throw_completion<JS::TypeError>("Invalid tabs.onUpdated filter property"_utf16);
+                        names.append(property.as_string());
+                    }
+                    listener.updated_properties = move(names);
+                }
+                listener.updated_tab_id = value.value().as_object().get_integer<i64>("tabId"sv);
+                listener.updated_window_id = value.value().as_object().get_integer<i64>("windowId"sv);
+            }
             if (web_request_event.has_value()) {
                 JsonObject args_obj;
                 args_obj.set("listener_id"sv, listener_id);
@@ -1317,6 +1334,7 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         auto tabs_obj = create_namespace_object("tabs"sv, tabs_methods.span(), is_chrome);
         auto& tabs_js_obj = tabs_obj.as_object();
         tabs_js_obj.define_direct_property("TAB_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::Attribute::Enumerable);
+        tabs_js_obj.define_direct_property("SPLIT_VIEW_ID_NONE"_utf16_fly_string, JS::Value(-1), JS::Attribute::Enumerable);
         tabs_js_obj.define_direct_property("onUpdated"_utf16_fly_string, create_event_object("tabs"sv, "onUpdated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onActivated"_utf16_fly_string, create_event_object("tabs"sv, "onActivated"sv), JS::default_attributes);
         tabs_js_obj.define_direct_property("onHighlighted"_utf16_fly_string, create_event_object("tabs"sv, "onHighlighted"sv), JS::default_attributes);
@@ -1828,8 +1846,29 @@ void ExtensionRealmContext::dispatch_event(StringView namespace_name, StringView
         if (!parsed.is_error() && parsed.value().is_array() && !parsed.value().as_array().is_empty() && parsed.value().as_array().at(0).is_object())
             navigation_url = URL::Parser::basic_parse(parsed.value().as_array().at(0).as_object().get_string("url"sv).value_or({}));
     }
+    Optional<JsonValue> updated_args;
+    if (namespace_name == "tabs"sv && event_name == "onUpdated"sv) {
+        if (auto parsed = JsonValue::from_string(args_json); !parsed.is_error() && parsed.value().is_array() && parsed.value().as_array().size() >= 3)
+            updated_args = parsed.release_value();
+    }
+    // The arguments are the tab's ID, what changed, and the tab, and a listener's filter can name each.
+    auto tabs_updated_listener_matches = [](EventListener const& listener, JsonArray const& arguments) {
+        if (listener.updated_tab_id.has_value() && arguments.at(0).get_integer<i64>() != listener.updated_tab_id)
+            return false;
+        if (listener.updated_window_id.has_value() && (!arguments.at(2).is_object() || arguments.at(2).as_object().get_integer<i64>("windowId"sv) != listener.updated_window_id))
+            return false;
+        if (listener.updated_properties.has_value()) {
+            if (!arguments.at(1).is_object())
+                return false;
+            auto const& change_info = arguments.at(1).as_object();
+            return any_of(*listener.updated_properties, [&](String const& property) { return change_info.has(property); });
+        }
+        return true;
+    };
     for (auto const& listener : listeners) {
         if (listener.navigation_filter && (!navigation_url.has_value() || !listener.navigation_filter->matches(*navigation_url)))
+            continue;
+        if (updated_args.has_value() && !tabs_updated_listener_matches(listener, updated_args->as_array()))
             continue;
         (void)JS::call(vm, *listener.callback, JS::js_undefined(), args.span());
     }

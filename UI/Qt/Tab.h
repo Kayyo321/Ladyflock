@@ -50,6 +50,7 @@ class BrowserWindow;
 enum class ChromeIcon;
 class JavaScriptDialog;
 class MessagePopover;
+class PaneBar;
 
 class HyperlinkLabel final : public QLabel {
 public:
@@ -161,6 +162,25 @@ public:
     // BrowserWindow pins and unpins tabs, since it keeps each window's pinned tabs at the start of its strip.
     void set_pinned(bool);
 
+    // How the tab shows in the window's page area: alone, as one side of a pair shown side by side, or as the one side
+    // of its pair that a narrow window has room for.
+    enum class SplitPresentation : u8 {
+        None,
+        FocusedSide,
+        OtherSide,
+        Fallback,
+    };
+    void set_split_presentation(SplitPresentation);
+    SplitPresentation split_presentation() const { return m_split_presentation; }
+    PaneBar& pane_bar() const { return *m_pane_bar; }
+    // Whether the tab is one side of a pair, shown or not.
+    bool is_in_split_view() const;
+    // Shows what the side waits on the person for, and lets a dialog take the focus once the side is focused.
+    void update_split_view_side_state();
+    void update_permission_prompts();
+    // The next view the page opens is the other side of a split view with this tab.
+    bool take_opens_next_view_in_split_view() { return exchange(m_opens_next_view_in_split_view, false); }
+
     bool url_is_hidden() const { return m_location_edit->url_is_hidden(); }
     void set_url_is_hidden(bool url_is_hidden) { m_location_edit->set_url_is_hidden(url_is_hidden); }
 
@@ -186,6 +206,7 @@ signals:
     void microphone_in_use_changed();
     void loading_changed();
     void performance_stats_changed();
+    void url_changed();
     void loaded();
 
 private:
@@ -215,7 +236,6 @@ private:
     void leave_report_review();
     void position_private_session_popover();
     QWidget& site_settings_anchor() const;
-    void update_permission_prompts();
     void hide_hover_label();
     bool hover_text_belongs_on_right(QPoint pointer) const;
     QImage render_hover_text(QString const&) const;
@@ -281,6 +301,16 @@ private:
     bool m_preserve_close_retry_state_on_dialog_dismissal { false };
     bool m_window_is_closing { false };
     bool m_is_pinned { false };
+
+    PaneBar* m_pane_bar { nullptr };
+    bool m_opens_next_view_in_split_view { false };
+
+public:
+    // The split view ID the Hub last heard of for the tab, which a tab moved with its pair keeps.
+    i64 published_split_view_id { -1 };
+
+private:
+    SplitPresentation m_split_presentation { SplitPresentation::None };
 
     Optional<SessionTabId> m_session_tab_id;
     Optional<DeferredTab> m_deferred_tab;

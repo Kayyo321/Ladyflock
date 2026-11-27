@@ -22,6 +22,7 @@
 #include <UI/Qt/BookmarksBar.h>
 #include <UI/Qt/NotificationBar.h>
 #include <UI/Qt/PlainText.h>
+#include <UI/Qt/SplitView.h>
 #include <UI/Qt/Tab.h>
 #include <UI/Qt/WindowToolbar.h>
 
@@ -31,7 +32,6 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSplitter>
-#include <QStackedWidget>
 #include <QStaticText>
 #include <QTabBar>
 #include <QWidget>
@@ -177,6 +177,18 @@ private:
     qreal current_pinned_region_growth() const;
     QRect shifted_tab_rect(int index) const;
     qreal selection_of(int index) const;
+    // The pair a tab of the strip is a side of, if any.
+    SplitPair const* split_pair_at(int index) const;
+    void paint_horizontal_split_pairs(QPainter&, Optional<int> dragged_index);
+    void paint_vertical_split_pairs(QPainter&, QRect const& unpinned_clip, Optional<int> dragged_index);
+    // With Shift held, a tab dragged over another tab pairs with it, on the side of that tab the pointer is over.
+    struct SplitDropOnTab {
+        QPointer<Tab> tab;
+        bool on_start_side { false };
+    };
+    Optional<SplitDropOnTab> split_drop_on_tab_at(QPoint position, bool shift_held) const;
+    void set_split_drop_on_tab(Optional<SplitDropOnTab>);
+    void paint_split_drop_on_tab(QPainter&);
     bool is_growing_horizontal_tab(int index, QRect const& tab_rect) const;
     QRectF horizontal_tab_contents_rect(int index, QRect const& tab_rect) const;
     QRect tab_drag_card_rect(int index) const;
@@ -187,7 +199,8 @@ private:
     void start_tab_drag(int index);
     QPoint tab_drag_hot_spot() const;
     void start_strip_drag(int index);
-    void update_strip_drag(QPoint position);
+    // NB: A Shift key that was just pressed or released isn't always in the modifiers the system reports yet.
+    void update_strip_drag(QPoint position, Optional<bool> shift_held = {});
     void end_strip_drag();
     void drag_tab_loose(Tab&, QPixmap card);
     void drag_tab_in_own_window(Tab&);
@@ -260,6 +273,10 @@ private:
     QPointer<Tab> m_previously_selected_tab;
     qreal m_selection_progress { 1.0 };
     QVariantAnimation* m_selection_animation { nullptr };
+    // Moving between the sides of a shown pair only moves the accent bar from one side's half to the other's.
+    QPointer<Tab> m_split_accent_from_tab;
+    qreal m_split_accent_progress { 1.0 };
+    QVariantAnimation* m_split_accent_animation { nullptr };
 
     Optional<int> m_drop_slot;
     DropPreview m_drop_preview_start;
@@ -304,6 +321,9 @@ private:
     // Where the card a dragged tab is drawn as sits in the tab.
     QPoint m_tab_drag_card_offset;
     QObject* m_strip_drag_cancellation_filter { nullptr };
+    Optional<SplitDropOnTab> m_split_drop_on_tab;
+    qreal m_split_drop_on_tab_progress { 0.0 };
+    QVariantAnimation* m_split_drop_on_tab_animation { nullptr };
 };
 
 class TabWidget final : public QWidget {
@@ -335,8 +355,30 @@ public:
     int current_index() const { return m_tab_bar->currentIndex(); }
     void set_current_index(int index) { m_tab_bar->setCurrentIndex(index); }
 
-    Tab* tab(int index) const { return as<Tab>(m_stacked_widget->widget(index)); }
+    Tab* tab(int index) const { return m_page_area->widget(index); }
     void set_current_tab(Tab*);
+
+    PageArea& page_area() const { return *m_page_area; }
+
+    // The pairs of tabs shown side by side. Each tab is in at most one pair, whose tabs sit next to each other in the
+    // strip, start first.
+    Vector<SplitPair> const& split_pairs() const { return m_split_pairs; }
+    SplitPair const* split_pair_of(Tab const*) const;
+    SplitPair const* split_pair_with_id(u64) const;
+    // Joins two tabs that sit next to each other, start first, into a pair.
+    u64 create_split_pair(Tab& start, Tab& end, float start_fraction, Optional<u64> id = {});
+    // The pair's tabs go on as tabs of their own, where they are.
+    void dissolve_split_pair(u64 id);
+    void set_split_start_fraction(u64 id, float);
+    // The pair's tabs trade places, and each keeps its width.
+    void swap_split_pair(u64 id);
+    // While the strip is changed in several steps, a pair's tabs can be apart. The pairs are checked once it is done.
+    ScopeGuard<Function<void()>> defer_split_pair_checks();
+    void set_page_fullscreen_tab(Tab*);
+    bool toolbar_in_sidebar() const { return toolbar_is_in_sidebar(); }
+    static u64 allocate_split_pair_id();
+    // How many tabs move with the tab when it is dragged: its pair, or just itself.
+    int strip_unit_size(Tab const* tab) const { return split_pair_of(tab) ? 2 : 1; }
 
     QSplitter& page_splitter() const { return *m_page_splitter; }
     WindowToolbar& toolbar() const { return *m_toolbar; }
@@ -386,6 +428,9 @@ public:
 signals:
     void current_tab_changed(int index);
     void tab_close_requested(int index);
+    // A pair was made, separated, swapped or resized.
+    void split_pairs_changed();
+    void displayed_tabs_changed();
 
 protected:
     virtual void dragEnterEvent(QDragEnterEvent*) override;
@@ -461,13 +506,28 @@ private:
     void toggle_window_maximized();
     bool start_window_move();
     void accept_tab_drag(QDragMoveEvent*, QWidget* target);
+    // A tab dragged over the start or end third of the page area pairs with the current tab on that side.
+    enum class SplitDropSide : u8 {
+        Start,
+        End,
+    };
+    Optional<SplitDropSide> split_drop_side_at(QPoint position_in_page_area, QDropEvent const&) const;
+    void show_split_drop_preview(SplitDropSide);
+    void hide_split_drop_preview();
+    QWidget* m_split_drop_preview { nullptr };
     void accept_tab_drop(QDropEvent*, int index);
 
     TabBar* m_tab_bar { nullptr };
     void size_hidden_pages_like_the_current_one();
+    void size_page_for_its_slot(Tab&);
+    void show_current_tab_in_page_area();
+    void check_split_pairs();
+    void update_pane_bars_for_toolbar_placement();
 
     QSplitter* m_page_splitter { nullptr };
-    QStackedWidget* m_stacked_widget { nullptr };
+    PageArea* m_page_area { nullptr };
+    Vector<SplitPair> m_split_pairs;
+    int m_split_pair_checks_deferred { 0 };
     QToolButton* m_new_tab_button { nullptr };
     QToolButton* m_all_tabs_button { nullptr };
     ChromeHeaderButton* m_bookmarks_menu_button { nullptr };

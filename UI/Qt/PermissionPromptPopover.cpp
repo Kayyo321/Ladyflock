@@ -249,6 +249,8 @@ void PermissionPromptQueue::cancel(WebView::PermissionPromptRequest const& reque
     popover->withdraw();
     popover->deleteLater();
     show_next();
+    if (on_change)
+        on_change();
 }
 
 void PermissionPromptQueue::ignore_all()
@@ -288,12 +290,16 @@ void PermissionPromptQueue::show_next()
         popover->deleteLater();
         callback(outcome);
         show_next();
+        if (on_change)
+            on_change();
     };
 
     if (m_suspended)
         m_current->suspend();
     else
         m_current->show();
+    if (on_change)
+        on_change();
 }
 
 }

@@ -1784,14 +1784,15 @@ BrowserWindow& WindowToolbar::browser_window() const
     return as<BrowserWindow>(*window());
 }
 
-void WindowToolbar::bind(Tab* tab)
+void WindowToolbar::bind(Tab* tab, KeepWindowPanels keep_window_panels)
 {
     if (m_tab != tab) {
+        // NB: An extension's popup belongs to the tab it opened for, so it closes as the other side is focused.
         if (m_extension_popup)
             m_extension_popup->close();
         m_extension_buttons->close_menu();
         m_extension_buttons->hide();
-        if (m_extension_sidebar)
+        if (m_extension_sidebar && keep_window_panels == KeepWindowPanels::No)
             m_extension_sidebar->hide();
     }
     if (m_tab)

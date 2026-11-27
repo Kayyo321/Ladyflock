@@ -26,7 +26,12 @@ static void move_native_descendants_along(QWidget& widget)
 
 void size_hidden_page_like(QWidget& page, QWidget const& current)
 {
-    page.resize(current.size());
+    size_hidden_page_to(page, current.size());
+}
+
+void size_hidden_page_to(QWidget& page, QSize size)
+{
+    page.resize(size);
 
     // Resizing a hidden page updates its geometry, but not its children's: The page's layout runs only on its next
     // activation, which Qt defers until the page is shown. Invalidating first makes activate() lay it out now.

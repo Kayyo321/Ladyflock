@@ -1225,6 +1225,12 @@ void DashboardPage::handle_tabs_list(i64 request_id)
             to.set("title"sv, ak_string_from_qstring(tab->title()));
             to.set("url"sv, tab->url().serialize());
             to.set("isCurrent"sv, win->current_tab() == tab);
+            // NB: The other side of a shown split view is on display too, and the two sides of a pair share an ID.
+            to.set("isVisible"sv, win->tab_widget().page_area().is_displayed(tab) && win->isVisible() && !win->isMinimized());
+            if (auto const* pair = win->tab_widget().split_pair_of(tab))
+                to.set("splitViewId"sv, static_cast<i64>(pair->id));
+            else
+                to.set("splitViewId"sv, -1);
             to.set("isSelf"sv, target_view_id != 0 && target_view_id == m_context.view_id);
             to.set("isPinned"sv, tab->is_pinned());
             to.set("isLoaded"sv, tab->is_loaded());
@@ -1988,6 +1994,8 @@ void DashboardPage::handle_health_snapshot(i64 request_id)
                 m_tab_handles.set(handle, target_view_id);
 
             bool is_active = win->current_tab() == tab;
+            // NB: A page on display, such as the other side of a shown split view, can't be discarded either.
+            bool is_displayed = win->tab_widget().page_area().is_displayed(tab);
             bool is_self = target_view_id != 0 && target_view_id == m_context.view_id;
 
             JsonObject to;
@@ -1996,7 +2004,8 @@ void DashboardPage::handle_health_snapshot(i64 request_id)
             to.set("url"sv, tab->url().serialize());
             to.set("isActive"sv, is_active);
             to.set("isLoaded"sv, tab->is_loaded());
-            to.set("canDiscard"sv, tab->is_loaded() && !is_active && !is_self && !tab->is_pinned());
+            to.set("isVisible"sv, is_displayed);
+            to.set("canDiscard"sv, tab->is_loaded() && !is_active && !is_displayed && !is_self && !tab->is_pinned());
             if (stats.cpu_percent.has_value())
                 to.set("cpuPercent"sv, *stats.cpu_percent);
             if (stats.memory_bytes.has_value())

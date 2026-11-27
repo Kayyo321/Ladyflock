@@ -146,6 +146,14 @@ private:
                 path.addRoundedRect(QRectF(rect), ROW_RADIUS, ROW_RADIUS);
                 painter.fillPath(path, static_cast<int>(row) == m_highlighted_row && !entry.is_current ? panel.pressed : panel.control);
             }
+            // The other side of a shown split view is on display too, so its row is outlined like the current one's.
+            if (entry.is_visible && !entry.is_current) {
+                painter.save();
+                painter.setPen(QPen(panel.separator, 1));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), ROW_RADIUS, ROW_RADIUS);
+                painter.restore();
+            }
 
             auto x = rect.left() + ROW_HORIZONTAL_PADDING;
             QRect icon_rect { x, rect.center().y() - (ROW_ICON_SIZE / 2) + 1, ROW_ICON_SIZE, ROW_ICON_SIZE };

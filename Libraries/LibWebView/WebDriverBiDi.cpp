@@ -1199,16 +1199,22 @@ void WebDriverBiDi::browsing_context_activate(JsonObject const& params, CommandR
 
     // 1. Run implementation-specific steps so that navigable's system visibility state becomes visible. If this is not
     //    possible return error with error code unsupported operation.
-    // NB: The other tabs of its OS window become hidden.
+    // NB: The other tabs of its OS window become hidden. A browser window with a UI decides that itself, as it can keep
+    //     another tab on display beside the activated one, as the other side of a split view. It publishes the
+    //     visibility of its tabs once it has selected the activated one.
     auto os_window = os_window_of(navigable_id);
+    auto ui_owns_visibility = static_cast<bool>(view->on_activate_tab);
     for (auto& other_traversable : all_top_level_traversables()) {
+        if (ui_owns_visibility)
+            break;
         auto other_id = WebDriverBiDi::navigable_id(other_traversable);
         if (&other_traversable == traversable || os_window_of(other_id) != os_window)
             continue;
         if (auto other_view = other_traversable.view(); other_view.has_value())
             other_view->set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
     }
-    view->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
+    if (!ui_owns_visibility)
+        view->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
     if (view->on_activate_tab)
         view->on_activate_tab();
 
@@ -1337,7 +1343,8 @@ void WebDriverBiDi::browsing_context_create(JsonObject const& params, CommandRes
         if (background) {
             if (auto new_view = get_a_top_level_traversable(*handle).value()->view(); new_view.has_value()) {
                 new_view->traversable().set_has_system_focus(false, nullptr);
-                if (is_tab)
+                // NB: A browser window with a UI publishes its tabs' visibility itself, as it activates the reference.
+                if (is_tab && !new_view->on_activate_tab)
                     new_view->set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
             }
             JsonObject reference_params;

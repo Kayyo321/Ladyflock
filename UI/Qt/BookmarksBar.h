@@ -160,6 +160,8 @@ private:
     QWidget* m_sidebar { nullptr };
     BookmarksBar* m_bar { nullptr };
     QPointer<Tab> m_tab;
+    // The pages the bar lies over, which in a split view are both sides.
+    Vector<QPointer<Tab>> m_overlaid_tabs;
 
     QTimer* m_hover_expand_timer { nullptr };
     QTimer* m_hover_collapse_timer { nullptr };

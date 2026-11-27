@@ -222,6 +222,49 @@ public:
 
     void show_window_context_menu(QPoint global_position);
 
+    // Split view shows two tabs of the window side by side. The current tab is always the focused side of its pair.
+    // Pairs the current tab with another tab of the window, which shows beside it, focused.
+    void open_in_split_view(Tab&);
+    // Opens the new tab page beside the current tab, focused.
+    void open_new_split_view();
+    // Opens a link from a tab beside it, focused.
+    void open_url_in_split_view(Tab& source, URL::URL const&);
+    void swap_split_view_sides(Tab&);
+    void separate_split_view(Tab&);
+    void move_split_view_to_new_window(Tab&);
+    // Why the tab can't go into a split view with the current tab, or nothing if it can.
+    QString split_view_unavailable_reason(Tab&) const;
+    // Why a new split view can't open now, or nothing if it can.
+    QString new_split_view_unavailable_reason() const;
+    enum class SideFocus : u8 {
+        // Focuses the side, and leaves the keyboard in its pane bar rather than its page.
+        Chrome,
+        // Focuses the side and its page, or whatever waits for the person in it.
+        Page,
+    };
+    void focus_split_view_side(Tab&, SideFocus);
+    // With room for only one side, shows the other side of the current tab's pair.
+    void show_other_split_view_side(Tab&);
+    // Pairs a tab with another tab of the window, which shows beside it, focused. The tab keeps its place in the strip,
+    // and the other one joins it there.
+    void open_split_view_with(Tab& tab, Tab& other);
+    // Fills a menu with the window's other tabs that a tab can go into a split view with.
+    void populate_split_view_with_menu(QMenu&, Tab& tab);
+    // A tab dragged onto the start or end of this window's pages joins its current tab there. A tab dragged onto
+    // another tab of the strip, with Shift held, joins that tab instead.
+    void split_with_dropped_tab(BrowserWindow& source_window, Tab&, bool on_start_side, Tab* partner = nullptr);
+    // The only writer of the visibility of the window's pages: the pages on display are visible while the window shows.
+    void update_page_visibility();
+    // Tells the Hub, and so extensions, of the tabs whose split view changed, all at once once the strip has settled.
+    void publish_split_view_ids();
+    // Saves which tabs form pairs, with their widths, for the session to restore.
+    void save_split_pairs_to_session();
+    // Pairs the tabs that were saved as pairs: two adjacent tabs, neither pinned, that share a key.
+    void rebuild_split_pairs(Vector<QPointer<Tab>> const& tabs, Vector<Optional<SessionSplitMembership>> const& memberships);
+    // A reopened side of a pair joins its partner again if the partner still waits beside it. Returns the tab that is
+    // selected afterward, if the pair came back.
+    Tab* rejoin_split_side(Tab& reopened, ClosedSplitSide const&);
+
     template<typename Callback>
     void for_each_tab(Callback&& callback)
     {
@@ -313,6 +356,14 @@ private:
     void update_window_border();
     void report_session_window_geometry();
 
+    void pair_with_current_tab(Tab& end_side);
+    void pair_tabs(Tab& start_side, Tab& end_side, Tab& selected);
+    void pair_new_tab_beside(Tab& start_side, Tab& new_tab);
+    Tab* tab_containing(QWidget const&) const;
+    bool window_shows_pages() const;
+    void move_split_pair_to_window(u64 pair_id, BrowserWindow& target_window, int target_index);
+    void adopt_split_pair(Tab& start, Tab& end, int index, float start_fraction, u64 pair_id, Tab* selected);
+
     void initialize_application_actions();
     void initialize_application_menu();
     void initialize_ladybird_menu();
@@ -378,6 +429,11 @@ private:
     WindowCloseCoordinator m_window_close_coordinator;
     Function<void(bool approved)> m_window_close_preflight_on_complete;
     bool m_window_close_approved { false };
+    // NB: Qt can still report a spontaneously hidden window as visible, so the window keeps track of it itself.
+    bool m_window_spontaneously_hidden { false };
+    bool m_is_switching_split_view_side { false };
+    // What the session last saved of each tab's membership of a pair.
+    HashMap<SessionTabId, Optional<SessionSplitMembership>> m_saved_split_memberships;
 
     ExitFullscreenButton* m_exit_button { nullptr };
     FullscreenMode* m_fullscreen_mode { nullptr };

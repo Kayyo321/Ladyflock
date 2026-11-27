@@ -84,6 +84,7 @@ enum class ActionID {
     InspectElement,
 
     OpenInNewTab,
+    OpenInSplitView,
     OpenInNewWindow,
     OpenInNewPrivateWindow,
     DownloadLinkedFile,

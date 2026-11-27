@@ -27,6 +27,7 @@
 #include <UI/Qt/LadybirdButton.h>
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
+#include <UI/Qt/PaneBar.h>
 #include <UI/Qt/Popover.h>
 #include <UI/Qt/RemoteDownloads.h>
 #include <UI/Qt/SessionStore.h>
@@ -49,6 +50,7 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QPainter>
@@ -130,6 +132,7 @@ void FullscreenMode::exit(ExitInitiatedBy initiated_by, Tab const* requesting_ta
     qApp->removeEventFilter(this);
     // NB: The tab is let go of first, so the window leaving full screen below doesn't end it a second time.
     auto* tab = exchange(m_fullscreen_tab, nullptr);
+    m_window->tab_widget().set_page_fullscreen_tab(nullptr);
     // NB: The tab that went full screen is told it left, even when another tab is current by now.
     if (m_window->tab_index(tab) != -1) {
         if (initiated_by == ExitInitiatedBy::UI)
@@ -155,6 +158,8 @@ void FullscreenMode::enter(Tab* tab)
 
     qApp->installEventFilter(this);
     m_fullscreen_tab = tab;
+    // NB: A side of a pair fills the whole window, and its partner hides behind it until the page leaves full screen.
+    m_window->tab_widget().set_page_fullscreen_tab(tab);
     auto window_was_fullscreen = m_window->isFullScreen();
     m_window->enter_fullscreen();
     // NB: A window the user already made full screen has no state change to report, so the page gets it at once.
@@ -419,7 +424,8 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
 
         auto focus_was_in_location_edit = focus_is_in_location_edit_of(*this);
         set_current_tab(tab);
-        if (tab) {
+        // NB: A side focused by a press in it takes the focus where the press lands, as the press goes on to it.
+        if (tab && !m_is_switching_split_view_side) {
             auto& focus_widget = focus_widget_for_tab(*tab);
 #if defined(AK_OS_MACOS)
             make_appkit_window_first_responder(focus_widget);
@@ -432,6 +438,25 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
         fullscreen_mode().exit(FullscreenMode::ExitInitiatedBy::UI);
     });
     QObject::connect(m_tabs_container, &TabWidget::tab_close_requested, this, &BrowserWindow::request_to_close_tab);
+    // The pages that come on display load, and become visible, as do the pages a pair brings along.
+    QObject::connect(m_tabs_container, &TabWidget::displayed_tabs_changed, this, [this] {
+        for (auto* tab : m_tabs_container->page_area().displayed_tabs())
+            tab->ensure_loaded();
+        update_page_visibility();
+    });
+    QObject::connect(m_tabs_container, &TabWidget::split_pairs_changed, this, [this] {
+        update_page_visibility();
+        // NB: A pair that moves to another window is separated here and made again there with the same ID, which
+        //     extensions never hear of, as the membership is only published once both windows have settled.
+        QTimer::singleShot(0, this, [this] {
+            publish_split_view_ids();
+            save_split_pairs_to_session();
+        });
+    });
+    // NB: A move reorders the tabs a pair saved as start and end.
+    QObject::connect(m_tabs_container->tab_bar(), &QTabBar::tabMoved, this, [this](int, int) {
+        QTimer::singleShot(0, this, [this] { save_split_pairs_to_session(); });
+    });
     QObject::connect(m_tabs_container->tab_bar(), &QTabBar::tabMoved, this, [this](int, int) {
         sync_session_tab_order();
     });
@@ -751,11 +776,19 @@ void BrowserWindow::restore_tabs(Vector<RestoredSessionTab> const& tabs, i64 act
     // The first tab a strip gets becomes its current tab, so the active tab goes in first, at what's then index 0, and
     // every other tab goes in around it at its own index.
     auto active_index = static_cast<size_t>(clamp<i64>(active_tab_index, 0, static_cast<i64>(tabs.size()) - 1));
-    create_restored_tab(tabs[active_index], 0, false);
+    Vector<QPointer<Tab>> restored_tabs;
+    restored_tabs.resize(tabs.size());
+    restored_tabs[active_index] = &create_restored_tab(tabs[active_index], 0, false);
     for (size_t i = 0; i < tabs.size(); ++i) {
         if (i != active_index)
-            create_restored_tab(tabs[i], static_cast<int>(i), !tabs[i].pinned);
+            restored_tabs[i] = &create_restored_tab(tabs[i], static_cast<int>(i), !tabs[i].pinned);
     }
+
+    // The pairs come back once every tab is in its place, as a pair's tabs must sit next to each other.
+    Vector<Optional<SessionSplitMembership>> memberships;
+    for (auto const& tab : tabs)
+        memberships.append(tab.split);
+    rebuild_split_pairs(restored_tabs, memberships);
 }
 
 SessionStore& BrowserWindow::session() const
@@ -925,20 +958,33 @@ void BrowserWindow::initialize_tab(Tab* tab)
 
 void BrowserWindow::initialize_tab_view(Tab* tab)
 {
-    QObject::connect(&tab->view(), &WebContentView::urls_dropped, this, [this](auto& urls) {
+    // NB: A tab that loads after joining a pair tells the Hub of its split view now that it has a view.
+    if (m_tabs_container->split_pair_of(tab))
+        QTimer::singleShot(0, this, [this] { publish_split_view_ids(); });
+
+    // NB: A drop loads in the page it landed on, which in a split view need not be the current tab's.
+    QObject::connect(&tab->view(), &WebContentView::urls_dropped, this, [this, tab = QPointer<Tab>(tab)](auto& urls) {
         VERIFY(urls.size());
-        m_current_tab->view().load_from_user_input(ak_url_from_qurl(urls[0]));
+        if (!tab || tab_index(tab) < 0)
+            return;
+        tab->view().load_from_user_input(ak_url_from_qurl(urls[0]));
 
         for (qsizetype i = 1; i < urls.size(); ++i) {
             auto url = ak_url_from_qurl(urls[i]);
             if (WebView::is_url_handled_internally(url))
                 new_tab_from_url(url, Web::HTML::ActivateTab::No, TabLocation::end());
             else
-                m_current_tab->view().open_url_in_new_tab(url, Web::HTML::ActivateTab::No);
+                tab->view().open_url_in_new_tab(url, Web::HTML::ActivateTab::No);
         }
     });
 
-    tab->view().on_open_new_view = [this](auto activate_tab, Web::HTML::WebViewHints hints, u64 hub_view_id) {
+    tab->view().on_open_new_view = [this, opener = QPointer<Tab>(tab)](auto activate_tab, Web::HTML::WebViewHints hints, u64 hub_view_id) {
+        // A link opened in split view comes back as a new view, which becomes the end side beside the page it came from.
+        if (opener && !hints.popup && opener->take_opens_next_view_in_split_view()) {
+            auto& new_tab = create_new_tab(Web::HTML::ActivateTab::No, hub_view_id);
+            pair_new_tab_beside(*opener, new_tab);
+            return;
+        }
         if (hints.popup) {
             auto cascaded_configuration = Application::the().configuration_for_new_window();
             WindowConfiguration configuration {
@@ -1006,6 +1052,12 @@ void BrowserWindow::move_tab_to_window(int index, BrowserWindow& target_window, 
 {
     if (index < 0 || index >= m_tabs_container->count())
         return;
+
+    // A tab of a pair takes its pair along.
+    if (auto const* pair = m_tabs_container->split_pair_of(m_tabs_container->tab(index)); pair && &target_window != this) {
+        move_split_pair_to_window(pair->id, target_window, target_index);
+        return;
+    }
 
     if (&target_window == this) {
         if (target_index > index)
@@ -1085,9 +1137,11 @@ void BrowserWindow::set_current_tab(Tab* tab)
         tab->ensure_loaded();
 
     // What a tab's toolbar showed belongs to that tab, so it goes away with it however another tab is selected.
+    // NB: The page's visibility follows what the window displays, which update_page_visibility() sees to. Of the two
+    //     sides of a shown pair, the one that's no longer current stays visible.
+    auto* previous_tab = m_current_tab;
     if (m_current_tab) {
         m_current_tab->close_popovers();
-        m_current_tab->view().set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
         m_current_tab->view().set_current_tab_of_window(false);
     }
 
@@ -1096,11 +1150,23 @@ void BrowserWindow::set_current_tab(Tab* tab)
 
     if (m_current_tab) {
         m_current_tab->clear_attention();
-        m_current_tab->view().set_system_visibility_state(Web::HTML::VisibilityState::Visible);
         m_current_tab->view().set_current_tab_of_window(true);
 
         if (auto session_tab_id = m_current_tab->session_tab_id(); session_tab_id.has_value())
             session().active_tab_changed(*session_tab_id);
+    }
+
+    // The pages a pair shows beside the current one load, and only then is visibility published.
+    for (auto* displayed : m_tabs_container->page_area().displayed_tabs())
+        displayed->ensure_loaded();
+    update_page_visibility();
+
+    // NB: A prompt shows only for the current tab, so the tab left and the tab selected each check theirs again.
+    if (previous_tab && tab_index(previous_tab) >= 0)
+        previous_tab->update_permission_prompts();
+    if (m_current_tab) {
+        m_current_tab->update_permission_prompts();
+        m_current_tab->update_split_view_side_state();
     }
 
     reposition_page_cards();
@@ -1186,13 +1252,49 @@ bool BrowserWindow::close_tab(int index, SessionStore::KeepForReopening keep_for
     }
 
     auto* tab = m_tabs_container->tab(index);
+
+    // Closing one side of a pair gives the window to the other side. The current side's partner is selected first, so no
+    // neighbor is selected, and loaded, in between.
+    Optional<ClosedSplitSide> closed_split_side;
+    if (auto const* pair = m_tabs_container->split_pair_of(tab)) {
+        QPointer<Tab> partner = pair->partner_of(tab);
+        auto pair_id = pair->id;
+        auto closed_was_current = tab == m_current_tab;
+        // NB: What Reopen Closed Tab needs to bring the pair back is taken before the pair is separated.
+        if (auto survivor_id = partner ? partner->session_tab_id() : Optional<SessionTabId> {}; survivor_id.has_value()) {
+            auto selected = ClosedSplitSide::Selected::Neither;
+            if (closed_was_current)
+                selected = ClosedSplitSide::Selected::ClosedSide;
+            else if (partner == m_current_tab)
+                selected = ClosedSplitSide::Selected::Survivor;
+            closed_split_side = ClosedSplitSide {
+                .survivor_tab_id = *survivor_id,
+                .closed_side_was_start = pair->start == tab,
+                .start_fraction = pair->start_fraction,
+                .selected = selected,
+            };
+        }
+        m_tabs_container->dissolve_split_pair(pair_id);
+        if (closed_was_current && partner) {
+            m_tabs_container->set_current_tab(partner);
+            if (partner->is_loaded())
+                focus_widget_for_tab(*partner).setFocus();
+        }
+        index = m_tabs_container->index_of(tab);
+    }
+
     m_tabs_container->remove_tab(index);
     if (auto session_tab_id = tab->session_tab_id(); session_tab_id.has_value()) {
         SessionStore::TabClosed closed {
             .tab_id = *session_tab_id,
             .closed_at = UnixDateTime::now(),
             .keep_for_reopening = keep_for_reopening,
+            .split_side = closed_split_side,
         };
+        // NB: The store clears both sides' memberships along with the close.
+        m_saved_split_memberships.remove(*session_tab_id);
+        if (closed_split_side.has_value())
+            m_saved_split_memberships.set(closed_split_side->survivor_tab_id, {});
         if (auto result = session().tab_closed(AK::move(closed)); result.is_error())
             dbgln("Unable to record the closed tab in the session store: {}", result.error());
     }
@@ -1214,7 +1316,8 @@ void BrowserWindow::discard_tab(Tab& tab)
     //     reviews a report would lose the report, which only its page holds, and one with an unfinished edit of its
     //     address would lose the edit.
     auto index = tab_index(&tab);
-    if (index < 0 || &tab == m_current_tab || tab.is_pinned() || tab.is_in_report_review() || tab.location_edit_with_parked_editing()) {
+    // NB: A page on display, such as the other side of a shown pair, is in use even when its tab isn't current.
+    if (index < 0 || &tab == m_current_tab || m_tabs_container->page_area().is_displayed(&tab) || tab.is_pinned() || tab.is_in_report_review() || tab.location_edit_with_parked_editing()) {
         tab.view().decline_discard();
         return;
     }
@@ -1265,11 +1368,53 @@ void BrowserWindow::move_tab(int old_index, int new_index)
     if (!tab)
         return;
 
+    // The two tabs of a pair move as one, and a tab never lands between the tabs of another pair.
+    if (auto const* pair = m_tabs_container->split_pair_of(tab)) {
+        QPointer<Tab> start = pair->start;
+        QPointer<Tab> end = pair->end;
+        auto start_index = tab_index(start);
+        auto count = m_tabs_container->count();
+        // The place the pair's start lands at, among the tabs without the pair.
+        auto target = clamp(new_index, pinned_tab_count(), count - 2);
+        if (new_index > old_index && tab == start)
+            target = clamp(new_index - 1, pinned_tab_count(), count - 2);
+        if (target == start_index)
+            return;
+        auto checks = m_tabs_container->defer_split_pair_checks();
+        if (target < start_index) {
+            // NB: Skip back over a whole pair rather than into it.
+            if (auto const* other = m_tabs_container->split_pair_of(m_tabs_container->tab(target)); other && m_tabs_container->tab(target) == other->end)
+                --target;
+            m_tabs_container->tab_bar()->moveTab(start_index, target);
+            m_tabs_container->tab_bar()->moveTab(tab_index(end), target + 1);
+        } else {
+            if (auto const* other = m_tabs_container->split_pair_of(m_tabs_container->tab(target + 1)); other && m_tabs_container->tab(target + 1) == other->start)
+                ++target;
+            target = min(target, count - 2);
+            m_tabs_container->tab_bar()->moveTab(tab_index(end), target + 1);
+            m_tabs_container->tab_bar()->moveTab(tab_index(start), target);
+        }
+        return;
+    }
+
     auto pinned_count = pinned_tab_count();
     if (tab->is_pinned())
         new_index = clamp(new_index, 0, pinned_count - 1);
     else
         new_index = clamp(new_index, pinned_count, m_tabs_container->count() - 1);
+    // A tab never lands between the two tabs of a pair. It goes past the pair, the way it was moving.
+    if (!tab->is_pinned() && new_index != old_index) {
+        Vector<Tab*> others;
+        for (int i = 0; i < m_tabs_container->count(); ++i) {
+            if (i != old_index)
+                others.append(m_tabs_container->tab(i));
+        }
+        if (new_index > 0 && new_index < static_cast<int>(others.size())) {
+            if (auto const* pair = m_tabs_container->split_pair_of(others[new_index - 1]); pair && pair->start == others[new_index - 1] && pair->end == others[new_index])
+                new_index += new_index > old_index ? 1 : -1;
+        }
+        new_index = clamp(new_index, pinned_count, m_tabs_container->count() - 1);
+    }
     if (new_index != old_index)
         m_tabs_container->tab_bar()->moveTab(old_index, new_index);
 }
@@ -1284,7 +1429,13 @@ int BrowserWindow::constrain_insertion_index(int index, bool pinned) const
     auto pinned_count = pinned_tab_count();
     if (pinned)
         return clamp(index, 0, pinned_count);
-    return clamp(index, pinned_count, m_tabs_container->count());
+    index = clamp(index, pinned_count, m_tabs_container->count());
+    // A new tab never lands between the two tabs of a pair. It goes after the pair.
+    if (index > 0 && index < m_tabs_container->count()) {
+        if (auto const* pair = m_tabs_container->split_pair_of(m_tabs_container->tab(index)); pair && m_tabs_container->tab(index) == pair->end)
+            ++index;
+    }
+    return index;
 }
 
 void BrowserWindow::pin_tab(Tab& tab, Optional<int> pinned_index)
@@ -1292,6 +1443,11 @@ void BrowserWindow::pin_tab(Tab& tab, Optional<int> pinned_index)
     auto index = tab_index(&tab);
     if (index < 0 || tab.is_pinned())
         return;
+
+    // A pinned tab can't be one side of a pair, so its pair is separated first.
+    if (auto const* pair = m_tabs_container->split_pair_of(&tab))
+        m_tabs_container->dissolve_split_pair(pair->id);
+    index = tab_index(&tab);
 
     auto pinned_count = pinned_tab_count();
     auto destination = clamp(pinned_index.value_or(pinned_count), 0, pinned_count);
@@ -1652,6 +1808,37 @@ void BrowserWindow::move_focus_between_chrome_and_page()
 {
     if (!m_current_tab)
         return;
+    // F6 goes from the chrome to the focused side, then to the other side of a shown pair, then back to the chrome.
+    // Shift+F6 goes the other way.
+    auto backward = QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+    Tab* other_side = nullptr;
+    if (auto const* pair = m_tabs_container->split_pair_of(m_current_tab); pair && m_tabs_container->page_area().shows_side_by_side())
+        other_side = pair->partner_of(m_current_tab);
+
+    auto* focus = QApplication::focusWidget();
+    auto focus_is_in_page = [&](Tab* tab) { return tab && tab->is_loaded() && focus && (focus == &tab->view() || tab->view().isAncestorOf(focus)); };
+
+    if (other_side) {
+        auto in_current_page = focus_is_in_page(m_current_tab);
+        auto in_chrome = !in_current_page;
+        if (!backward) {
+            if (in_chrome) {
+                m_current_tab->view().setFocus(Qt::ShortcutFocusReason);
+            } else {
+                focus_split_view_side(*other_side, SideFocus::Page);
+                m_is_switching_split_view_side = false;
+            }
+            return;
+        }
+        // NB: Going backward from the chrome lands on the side the person last left, which is the other side.
+        if (in_current_page) {
+            m_current_tab->focus_location_editor();
+        } else {
+            focus_split_view_side(*other_side, SideFocus::Page);
+        }
+        return;
+    }
+
     if (m_current_tab->view().hasFocus())
         m_current_tab->focus_location_editor();
     else
@@ -1813,14 +2000,60 @@ bool BrowserWindow::event(QEvent* event)
         clear_resize_cursor();
     }
 
+    // NB: The pages follow whether the window shows them, which a spontaneous hide, such as minimizing, changes without
+    //     the window being hidden.
+    if (event->type() == QEvent::Hide || event->type() == QEvent::Show) {
+        m_window_spontaneously_hidden = event->type() == QEvent::Hide && event->spontaneous();
+        QTimer::singleShot(0, this, [this] { update_page_visibility(); });
+    }
+
     return QMainWindow::event(event);
 }
 
 bool BrowserWindow::eventFilter(QObject* object, QEvent* event)
 {
+    // A press in the other side of a shown pair focuses that side before the press reaches its page, so the toolbar
+    // already describes the page the press acts on.
+    // NB: Qt moves the focus to the pressed widget before the widget, or any filter of the application's, sees the press,
+    //     which would end an address being edited in the side the press leaves before that side could keep it. So the
+    //     side is focused as the press reaches the window, before Qt finds the widget under it.
+    if (auto* qwindow = qobject_cast<QWindow*>(object); qwindow && event->type() == QEvent::MouseButtonPress) {
+        auto* top_level = qwindow;
+        while (top_level->parent())
+            top_level = top_level->parent();
+        if (top_level == windowHandle() && m_tabs_container) {
+            auto global_position = static_cast<QMouseEvent*>(event)->globalPosition().toPoint();
+            if (auto* pressed = QApplication::widgetAt(global_position); pressed && pressed->window() == this) {
+                if (auto* tab = tab_containing(*pressed); tab && tab != m_current_tab && m_tabs_container->page_area().is_displayed(tab)) {
+                    m_is_switching_split_view_side = true;
+                    m_tabs_container->set_current_tab(tab);
+                    m_is_switching_split_view_side = false;
+                    // NB: A press that gives no focus, such as on a button that takes none or with a button that
+                    //     doesn't focus, leaves the keyboard where it was. It follows the side once the press is done.
+                    QTimer::singleShot(0, this, [this, tab = QPointer<Tab>(tab)] {
+                        auto* focus = focusWidget();
+                        if (tab && tab == m_current_tab && tab->is_loaded() && !(focus && tab->isAncestorOf(focus)))
+                            focus_widget_for_tab(*tab).setFocus(Qt::OtherFocusReason);
+                    });
+                }
+            }
+        }
+        return QMainWindow::eventFilter(object, event);
+    }
+
     auto* widget = as_if<QWidget>(object);
     if (!widget || widget->window() != this)
         return QMainWindow::eventFilter(object, event);
+
+    // A keyboard move into the other side of a shown pair focuses that side too.
+    // NB: The page's own focus moves, such as a script's, don't count. They never take the focus from the other side.
+    if (event->type() == QEvent::FocusIn && (static_cast<QFocusEvent*>(event)->reason() == Qt::TabFocusReason || static_cast<QFocusEvent*>(event)->reason() == Qt::BacktabFocusReason)) {
+        if (auto* tab = tab_containing(*widget); tab && tab != m_current_tab && m_tabs_container->page_area().is_displayed(tab)) {
+            m_is_switching_split_view_side = true;
+            m_tabs_container->set_current_tab(tab);
+            m_is_switching_split_view_side = false;
+        }
+    }
     if (!has_chrome_in_titlebar())
         return QMainWindow::eventFilter(object, event);
 
@@ -2052,6 +2285,7 @@ void BrowserWindow::changeEvent(QEvent* event)
         update_menu_bar_window_control_icons();
         update_tab_button_icons();
     } else if (event->type() == QEvent::WindowStateChange) {
+        update_page_visibility();
         update_menu_bar_visibility();
         update_menu_bar_window_control_icons();
         m_tabs_container->update_window_button_icons();
@@ -2430,6 +2664,465 @@ void BrowserWindow::on_tab_load_start(Tab& tab)
 
     if (m_window_close_current_preflight_tab == &tab || m_window_close_approved_tabs.contains([&](auto const& approved_tab) { return approved_tab == &tab; }))
         cancel_window_close_preflight();
+}
+
+
+Tab* BrowserWindow::tab_containing(QWidget const& widget) const
+{
+    for (auto const* ancestor = &widget; ancestor && ancestor != this; ancestor = ancestor->parentWidget()) {
+        if (auto* tab = qobject_cast<Tab*>(const_cast<QWidget*>(ancestor)); tab && m_tabs_container->index_of(tab) >= 0)
+            return tab;
+    }
+    return nullptr;
+}
+
+bool BrowserWindow::window_shows_pages() const
+{
+    return isVisible() && !isMinimized() && !m_window_spontaneously_hidden;
+}
+
+// A page is visible while it is on display in a window that shows: the current tab, and the other side of a shown pair.
+// Deactivating the window leaves its pages visible.
+void BrowserWindow::update_page_visibility()
+{
+    if (!m_tabs_container)
+        return;
+    auto displayed = m_tabs_container->page_area().displayed_tabs();
+    auto shows_pages = window_shows_pages();
+    for (int i = 0; i < m_tabs_container->count(); ++i) {
+        auto* tab = m_tabs_container->tab(i);
+        if (!tab || !tab->is_loaded())
+            continue;
+        auto is_visible = shows_pages && displayed.contains_slow(tab);
+        tab->view().set_system_visibility_state(is_visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden);
+        // NB: A page that comes on display has no news the person hasn't seen.
+        if (is_visible)
+            tab->clear_attention();
+    }
+}
+
+QString BrowserWindow::split_view_unavailable_reason(Tab& tab) const
+{
+    if (tab.is_pinned() || (m_current_tab && m_current_tab->is_pinned()))
+        return QStringLiteral("Unpin the tab to use split view");
+    return {};
+}
+
+QString BrowserWindow::new_split_view_unavailable_reason() const
+{
+    if (!m_current_tab)
+        return QStringLiteral("There is no tab to open a split view beside");
+    if (auto reason = split_view_unavailable_reason(*m_current_tab); !reason.isEmpty())
+        return reason;
+    if (m_tabs_container->page_area().width() < SplitView::side_by_side_threshold())
+        return QStringLiteral("The window is too narrow for split view");
+    return {};
+}
+
+// The current tab and the other tab come together as a pair at the current tab's place, the current tab on the start
+// side, and the other tab is selected.
+void BrowserWindow::pair_with_current_tab(Tab& end_side)
+{
+    if (m_current_tab)
+        pair_tabs(*m_current_tab, end_side, end_side);
+}
+
+// The two tabs come together as a pair at the start tab's place. A tab either was paired with goes on as a tab of its
+// own: the start tab's former partner right after the new pair, and the end tab's former partner where its pair was.
+void BrowserWindow::pair_tabs(Tab& start_side, Tab& end_side, Tab& selected_side)
+{
+    QPointer<Tab> start = &start_side;
+    QPointer<Tab> end = &end_side;
+    QPointer<Tab> selected = &selected_side;
+    if (start == end || tab_index(start) < 0 || tab_index(end) < 0 || start->is_pinned() || end->is_pinned())
+        return;
+
+    // Two tabs that already share a pair keep it as it is.
+    if (auto const* pair = m_tabs_container->split_pair_of(start); pair && pair->contains(end)) {
+        m_tabs_container->set_current_tab(selected);
+        return;
+    }
+
+    {
+        auto checks = m_tabs_container->defer_split_pair_checks();
+        QPointer<Tab> start_partner;
+        if (auto const* pair = m_tabs_container->split_pair_of(start)) {
+            start_partner = pair->partner_of(start);
+            m_tabs_container->dissolve_split_pair(pair->id);
+        }
+        if (auto const* pair = m_tabs_container->split_pair_of(end))
+            m_tabs_container->dissolve_split_pair(pair->id);
+
+        auto* tab_bar = m_tabs_container->tab_bar();
+        // The start tab takes the start of its former unit.
+        if (start_partner && tab_index(start_partner) < tab_index(start))
+            tab_bar->moveTab(tab_index(start), tab_index(start_partner));
+        // The end tab joins it right after it.
+        auto start_index = tab_index(start);
+        auto end_index = tab_index(end);
+        if (end_index > start_index)
+            tab_bar->moveTab(end_index, start_index + 1);
+        else
+            tab_bar->moveTab(end_index, start_index);
+        // The start tab's former partner follows the new pair.
+        if (start_partner) {
+            auto target = tab_index(end) + 1;
+            auto partner_index = tab_index(start_partner);
+            if (partner_index != target)
+                tab_bar->moveTab(partner_index, partner_index > target ? target : target - 1);
+        }
+    }
+    m_tabs_container->create_split_pair(*start, *end, 0.5f);
+    if (!selected)
+        return;
+    m_tabs_container->set_current_tab(selected);
+    if (selected->is_loaded())
+        focus_widget_for_tab(*selected).setFocus();
+}
+
+void BrowserWindow::open_split_view_with(Tab& tab, Tab& other)
+{
+    if (&tab == &other || tab.is_pinned() || other.is_pinned() || tab_index(&tab) < 0 || tab_index(&other) < 0)
+        return;
+    pair_tabs(tab, other, other);
+}
+
+void BrowserWindow::populate_split_view_with_menu(QMenu& menu, Tab& tab)
+{
+    menu.clear();
+    QPointer<Tab> anchor = &tab;
+    auto const* pair = m_tabs_container->split_pair_of(&tab);
+    auto metrics = QFontMetrics(menu.font());
+    static constexpr int MAXIMUM_TITLE_WIDTH = 280;
+    for (int i = 0; i < m_tabs_container->count(); ++i) {
+        QPointer<Tab> other = m_tabs_container->tab(i);
+        // NB: Pinned tabs can't be paired, and the tab's own partner is already beside it.
+        if (!other || other == anchor || other->is_pinned() || (pair && pair->contains(other)))
+            continue;
+        auto title = other->title().trimmed();
+        if (title.isEmpty())
+            title = QStringLiteral("Untitled");
+        auto* action = menu.addAction(other->favicon(), metrics.elidedText(title, Qt::ElideRight, MAXIMUM_TITLE_WIDTH));
+        // NB: An ampersand in a title is text, not a mnemonic.
+        action->setText(action->text().replace(QLatin1Char('&'), QStringLiteral("&&")));
+        if (other == m_current_tab)
+            action->setToolTip(QStringLiteral("The current tab"));
+        QObject::connect(action, &QAction::triggered, this, [this, anchor, other] {
+            if (anchor && other)
+                open_split_view_with(*anchor, *other);
+        });
+    }
+    if (menu.isEmpty()) {
+        auto* action = menu.addAction(QStringLiteral("No Other Tabs"));
+        action->setEnabled(false);
+    }
+}
+
+void BrowserWindow::open_in_split_view(Tab& tab)
+{
+    if (&tab == m_current_tab) {
+        open_new_split_view();
+        return;
+    }
+    if (!split_view_unavailable_reason(tab).isEmpty())
+        return;
+    pair_with_current_tab(tab);
+}
+
+void BrowserWindow::open_new_split_view()
+{
+    if (!m_current_tab || !split_view_unavailable_reason(*m_current_tab).isEmpty())
+        return;
+    auto focus_ring_transition = focus_is_in_location_edit_of(*this) ? Tab::FocusRingTransition::Immediate : Tab::FocusRingTransition::FadeIn;
+    auto url = Application::the().effective_new_tab_page_url();
+    open_url_in_split_view(*m_current_tab, url);
+    if (auto* tab = m_current_tab) {
+        tab->set_url_is_hidden(true);
+        tab->focus_location_editor(focus_ring_transition);
+    }
+}
+
+// The page opens as the end side, beside the tab it came from, and is focused. A side the source tab was paired with
+// goes on as a tab of its own, right after the new pair.
+void BrowserWindow::open_url_in_split_view(Tab& source, URL::URL const& url)
+{
+    if (tab_index(&source) < 0 || source.is_pinned())
+        return;
+    QPointer<Tab> start = &source;
+    auto& end = new_tab_from_url(url, Web::HTML::ActivateTab::No, TabLocation::after_tab(source));
+    if (start)
+        pair_new_tab_beside(*start, end);
+}
+
+void BrowserWindow::pair_new_tab_beside(Tab& start_side, Tab& new_tab)
+{
+    QPointer<Tab> start = &start_side;
+    QPointer<Tab> end = &new_tab;
+    if (tab_index(start) < 0 || tab_index(end) < 0 || start->is_pinned())
+        return;
+    {
+        auto checks = m_tabs_container->defer_split_pair_checks();
+        auto* tab_bar = m_tabs_container->tab_bar();
+        if (auto const* pair = m_tabs_container->split_pair_of(start)) {
+            QPointer<Tab> partner = pair->partner_of(start);
+            m_tabs_container->dissolve_split_pair(pair->id);
+            if (partner && tab_index(partner) < tab_index(start))
+                tab_bar->moveTab(tab_index(start), tab_index(partner));
+        }
+        auto target = tab_index(start) + 1;
+        auto new_index = tab_index(end);
+        if (new_index != target)
+            tab_bar->moveTab(new_index, new_index > target ? target : target - 1);
+    }
+    if (tab_index(end) != tab_index(start) + 1)
+        return;
+    m_tabs_container->create_split_pair(*start, *end, 0.5f);
+    m_tabs_container->set_current_tab(end);
+}
+
+void BrowserWindow::swap_split_view_sides(Tab& tab)
+{
+    if (auto const* pair = m_tabs_container->split_pair_of(&tab))
+        m_tabs_container->swap_split_pair(pair->id);
+}
+
+void BrowserWindow::separate_split_view(Tab& tab)
+{
+    if (auto const* pair = m_tabs_container->split_pair_of(&tab))
+        m_tabs_container->dissolve_split_pair(pair->id);
+}
+
+void BrowserWindow::move_split_view_to_new_window(Tab& tab)
+{
+    auto const* pair = m_tabs_container->split_pair_of(&tab);
+    if (!pair || m_tabs_container->count() <= 2)
+        return;
+    WindowConfiguration configuration {
+        .x = Web::DevicePixels { x() + 40 },
+        .y = Web::DevicePixels { y() + 40 },
+        .width = Web::DevicePixels { width() },
+        .height = Web::DevicePixels { height() },
+        .maximized = isMaximized(),
+    };
+    auto& window = Application::the().new_window({}, configuration, IsPopupWindow::No, m_is_private, {}, ShowWindow::No);
+    move_split_pair_to_window(pair->id, window, 0);
+    if (configuration.maximized == true)
+        window.showMaximized();
+    else
+        window.show();
+    window.activateWindow();
+    window.raise();
+}
+
+// The pair leaves as one: both tabs, in their order, with the pair's widths, its ID and its focused side.
+void BrowserWindow::move_split_pair_to_window(u64 pair_id, BrowserWindow& target_window, int target_index)
+{
+    auto const* pair = m_tabs_container->split_pair_with_id(pair_id);
+    if (!pair || &target_window == this || is_private() != target_window.is_private())
+        return;
+    QPointer<Tab> start = pair->start;
+    QPointer<Tab> end = pair->end;
+    auto start_fraction = pair->start_fraction;
+    if (!start || !end)
+        return;
+    QPointer<Tab> selected = pair->contains(m_current_tab) ? m_current_tab : end.data();
+
+    cancel_window_close_preflight();
+
+    {
+        auto checks = m_tabs_container->defer_split_pair_checks();
+        m_tabs_container->dissolve_split_pair(pair_id);
+        for (auto* tab : { start.data(), end.data() }) {
+            if (tab->is_loaded())
+                tab->view().prepare_for_window_move();
+            uninitialize_tab(tab);
+            m_tabs_container->take_tab(tab_index(tab));
+        }
+    }
+    if (m_current_tab == start || m_current_tab == end)
+        set_current_tab(m_tabs_container->count() > 0 ? m_tabs_container->tab(m_tabs_container->current_index()) : nullptr);
+
+    target_window.adopt_split_pair(*start, *end, target_index, start_fraction, pair_id, selected);
+    sync_session_tab_order();
+
+    if (m_tabs_container->count() == 0)
+        close();
+}
+
+void BrowserWindow::adopt_split_pair(Tab& start, Tab& end, int index, float start_fraction, u64 pair_id, Tab* selected)
+{
+    {
+        auto checks = m_tabs_container->defer_split_pair_checks();
+        index = constrain_insertion_index(index, false);
+        adopt_tab(start, index);
+        adopt_tab(end, tab_index(&start) + 1);
+        m_tabs_container->create_split_pair(start, end, start_fraction, pair_id);
+    }
+    m_tabs_container->set_current_tab(selected ? selected : &end);
+}
+
+void BrowserWindow::focus_split_view_side(Tab& tab, SideFocus focus)
+{
+    if (tab_index(&tab) < 0)
+        return;
+    if (&tab != m_current_tab) {
+        m_is_switching_split_view_side = focus == SideFocus::Chrome;
+        m_tabs_container->set_current_tab(&tab);
+        m_is_switching_split_view_side = false;
+    }
+    if (focus == SideFocus::Chrome) {
+        tab.pane_bar().setFocus(Qt::MouseFocusReason);
+        return;
+    }
+    if (tab.is_loaded()) {
+#if defined(AK_OS_MACOS)
+        make_appkit_window_first_responder(focus_widget_for_tab(tab));
+#endif
+        focus_widget_for_tab(tab).setFocus(Qt::OtherFocusReason);
+        tab.update_split_view_side_state();
+    }
+}
+
+void BrowserWindow::split_with_dropped_tab(BrowserWindow& source_window, Tab& tab, bool on_start_side, Tab* partner_tab)
+{
+    QPointer<Tab> current = m_current_tab;
+    QPointer<Tab> partner = partner_tab ? partner_tab : m_current_tab;
+    QPointer<Tab> dropped = &tab;
+    if (!partner || partner == dropped || tab_index(partner) < 0 || dropped->is_pinned() || partner->is_pinned() || is_private() != source_window.is_private())
+        return;
+    if (&source_window != this) {
+        auto source_index = source_window.tab_index(dropped);
+        if (source_index < 0)
+            return;
+        // NB: The tab arrives next to its partner, and the current tab stays current until the pair forms.
+        source_window.move_tab_to_window(source_index, *this, tab_index(partner) + 1);
+        if (!dropped || !partner || tab_index(dropped) < 0 || tab_index(partner) < 0)
+            return;
+        if (current)
+            m_tabs_container->set_current_tab(current);
+    }
+    pair_tabs(*partner, *dropped, *dropped);
+    if (on_start_side) {
+        if (auto const* pair = m_tabs_container->split_pair_of(dropped))
+            m_tabs_container->swap_split_pair(pair->id);
+    }
+}
+
+void BrowserWindow::publish_split_view_ids()
+{
+    Vector<u64> view_ids;
+    Vector<i64> split_view_ids;
+    for (int i = 0; i < m_tabs_container->count(); ++i) {
+        auto* tab = m_tabs_container->tab(i);
+        if (!tab || !tab->is_loaded())
+            continue;
+        auto const* pair = m_tabs_container->split_pair_of(tab);
+        auto split_view_id = pair ? static_cast<i64>(pair->id) : -1;
+        if (tab->published_split_view_id == split_view_id)
+            continue;
+        tab->published_split_view_id = split_view_id;
+        view_ids.append(tab->view().view_id());
+        split_view_ids.append(split_view_id);
+    }
+    if (!view_ids.is_empty())
+        HubConnection::the().async_view_set_split_view_ids(AK::move(view_ids), AK::move(split_view_ids));
+}
+
+void BrowserWindow::save_split_pairs_to_session()
+{
+    if (!m_tabs_container)
+        return;
+    Vector<SessionStore::SplitMembershipWrite> writes;
+    HashTable<SessionTabId> tabs_in_window;
+    for (int i = 0; i < m_tabs_container->count(); ++i) {
+        auto* tab = m_tabs_container->tab(i);
+        auto session_tab_id = tab ? tab->session_tab_id() : Optional<SessionTabId> {};
+        if (!session_tab_id.has_value())
+            continue;
+        tabs_in_window.set(*session_tab_id);
+        Optional<SessionSplitMembership> membership;
+        if (auto const* pair = m_tabs_container->split_pair_of(tab); pair && pair->start && pair->end) {
+            // NB: The key is the start tab's own ID, which stays the same however the live pair IDs are given out.
+            if (auto start_id = pair->start->session_tab_id(); start_id.has_value()) {
+                membership = SessionSplitMembership {
+                    .split_key = *start_id,
+                    .start_fraction = pair->start == tab ? Optional<float> { pair->start_fraction } : Optional<float> {},
+                };
+            }
+        }
+        auto saved = m_saved_split_memberships.get(*session_tab_id);
+        auto unchanged = saved.has_value() && saved->has_value() == membership.has_value()
+            && (!membership.has_value() || ((*saved)->split_key == membership->split_key && (*saved)->start_fraction == membership->start_fraction));
+        if (unchanged || (!saved.has_value() && !membership.has_value()))
+            continue;
+        m_saved_split_memberships.set(*session_tab_id, membership);
+        writes.append({ .tab_id = *session_tab_id, .membership = membership });
+    }
+    // A tab that left the window took its membership along, or the close recorded it.
+    m_saved_split_memberships.remove_all_matching([&](auto tab_id, auto const&) { return !tabs_in_window.contains(tab_id); });
+    if (writes.is_empty())
+        return;
+    if (auto result = session().tab_split_changed(AK::move(writes)); result.is_error())
+        dbgln("Unable to save the window's split views in the session store: {}", result.error());
+}
+
+void BrowserWindow::rebuild_split_pairs(Vector<QPointer<Tab>> const& tabs, Vector<Optional<SessionSplitMembership>> const& memberships)
+{
+    VERIFY(tabs.size() == memberships.size());
+    for (size_t i = 0; i + 1 < tabs.size(); ++i) {
+        auto const& start = tabs[i];
+        auto const& end = tabs[i + 1];
+        auto const& start_membership = memberships[i];
+        auto const& end_membership = memberships[i + 1];
+        if (!start || !end || !start_membership.has_value() || !end_membership.has_value())
+            continue;
+        if (start_membership->split_key != end_membership->split_key)
+            continue;
+        // A third tab with the same key makes the saved pair ambiguous, so none of them pairs.
+        if (i + 2 < tabs.size() && memberships[i + 2].has_value() && memberships[i + 2]->split_key == start_membership->split_key)
+            continue;
+        if (i > 0 && memberships[i - 1].has_value() && memberships[i - 1]->split_key == start_membership->split_key)
+            continue;
+        if (start->is_pinned() || end->is_pinned() || m_tabs_container->split_pair_of(start) || m_tabs_container->split_pair_of(end))
+            continue;
+        if (tab_index(end) != tab_index(start) + 1)
+            continue;
+        m_tabs_container->create_split_pair(*start, *end, SplitView::sanitized_start_fraction(start_membership->start_fraction));
+        for (auto const& tab : { start, end }) {
+            if (auto session_tab_id = tab->session_tab_id(); session_tab_id.has_value())
+                m_saved_split_memberships.set(*session_tab_id, tab == start ? start_membership : end_membership);
+        }
+        ++i;
+    }
+}
+
+Tab* BrowserWindow::rejoin_split_side(Tab& reopened, ClosedSplitSide const& side)
+{
+    // The partner is found by what it is, and only where it waited: right beside the reopened tab, on the side it
+    // was on, and in no other pair. A tab that only looks the same in its place, such as one with the same address,
+    // is not the partner.
+    auto index = tab_index(&reopened);
+    if (index < 0 || reopened.is_pinned() || m_tabs_container->split_pair_of(&reopened))
+        return nullptr;
+    auto partner_index = side.closed_side_was_start ? index + 1 : index - 1;
+    if (partner_index < 0 || partner_index >= tab_count())
+        return nullptr;
+    auto* partner = tab_at(partner_index);
+    if (!partner || partner->session_tab_id() != side.survivor_tab_id || partner->is_pinned() || m_tabs_container->split_pair_of(partner))
+        return nullptr;
+    auto& start = side.closed_side_was_start ? reopened : *partner;
+    auto& end = side.closed_side_was_start ? *partner : reopened;
+    m_tabs_container->create_split_pair(start, end, side.start_fraction);
+    return side.selected == ClosedSplitSide::Selected::Survivor ? partner : &reopened;
+}
+
+void BrowserWindow::show_other_split_view_side(Tab& tab)
+{
+    auto const* pair = m_tabs_container->split_pair_of(&tab);
+    if (!pair)
+        return;
+    if (auto* partner = pair->partner_of(&tab))
+        focus_split_view_side(*partner, SideFocus::Page);
 }
 
 }

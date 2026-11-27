@@ -1989,6 +1989,28 @@ void ConnectionFromUI::view_commit_synchronized_resize(u64 view_id, u64 token)
         async_view_did_commit_synchronized_resize(view_id, token);
 }
 
+// NB: A batch holds the tabs whose membership changed in one step, such as both tabs of a new pair, and extensions hear
+//     of each only once all of them hold their new IDs.
+void ConnectionFromUI::view_set_split_view_ids(Vector<u64> view_ids, Vector<i64> split_view_ids)
+{
+    if (view_ids.size() != split_view_ids.size())
+        return;
+    Vector<u64> changed;
+    for (size_t i = 0; i < view_ids.size(); ++i) {
+        auto split_view_id = split_view_ids[i] > 0 ? split_view_ids[i] : -1;
+        if (auto* view = find_view(view_ids[i]); view && view->split_view_id() != split_view_id) {
+            view->set_split_view_id(split_view_id);
+            changed.append(view_ids[i]);
+        }
+    }
+    for (auto view_id : changed) {
+        if (auto* view = find_view(view_id)) {
+            if (auto* manager = extension_manager_for_tab(view))
+                manager->notify_tab_updated(view_id, WebView::Extensions::ExtensionManager::TabChange::SplitView);
+        }
+    }
+}
+
 void ConnectionFromUI::view_set_pinned(u64 view_id, bool pinned)
 {
     if (auto* view = find_view(view_id); view && view->is_pinned() != pinned) {

@@ -32,6 +32,8 @@ public:
         QString title;
         QString detail;
         bool is_current { false };
+        // A tab on display beside the current one, as the other side of a split view.
+        bool is_visible { false };
         // The tab the entry stands for, so the row picked with the keyboard stays on it as tabs open and close.
         QPointer<QObject> tab;
     };

@@ -256,6 +256,9 @@ public:
     bool discarding_ends_a_process() const;
     bool is_pinned() const { return m_pinned; }
     void set_pinned(bool pinned);
+    // The split view the tab is a side of, as extensions see it, or -1.
+    void set_split_view_id(i64 split_view_id) { m_split_view_id = split_view_id; }
+    i64 split_view_id() const { return m_split_view_id; }
     void set_current_tab_of_window(bool current_tab_of_window);
     // When the user last stopped seeing the view, if they don't see it now.
     Optional<MonotonicTime> hidden_since() const { return m_hidden_since; }
@@ -1400,6 +1403,7 @@ protected:
     bool m_changed_favicon_while_hidden { false };
     RefPtr<Gfx::Bitmap const> m_favicon;
     bool m_pinned { false };
+    i64 m_split_view_id { -1 };
     // NB: The current tab of a minimized window is hidden, but the user sees it again as soon as they bring the window
     //     back.
     // Headless applications present their tabs in a single logical window.

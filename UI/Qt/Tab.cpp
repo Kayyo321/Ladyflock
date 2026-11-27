@@ -33,6 +33,7 @@
 #endif
 #include <UI/Qt/Menu.h>
 #include <UI/Qt/Motion.h>
+#include <UI/Qt/PaneBar.h>
 #include <UI/Qt/PermissionPromptPopover.h>
 #include <UI/Qt/Popover.h>
 #include <UI/Qt/SiteSettingsPopover.h>
@@ -196,7 +197,76 @@ void Tab::create_tab_shell()
     tab_layout->setSpacing(0);
     tab_layout->setContentsMargins(0, 0, 0, 0);
 
+    // NB: The pane bar heads the tab, above the view that the tab adds once it loads. It shows only while the tab is a
+    //     side of a shown pair.
+    m_pane_bar = new PaneBar(*this);
+    tab_layout->addWidget(m_pane_bar);
+    QObject::connect(m_pane_bar, &PaneBar::focus_side_requested, this, [this] { m_window->focus_split_view_side(*this, BrowserWindow::SideFocus::Chrome); });
+    QObject::connect(m_pane_bar, &PaneBar::focus_address_requested, this, [this] { focus_location_editor(); });
+    QObject::connect(m_pane_bar, &PaneBar::show_other_side_requested, this, [this] { m_window->show_other_split_view_side(*this); });
+    QObject::connect(m_pane_bar, &PaneBar::pending_chip_clicked, this, [this] { m_window->focus_split_view_side(*this, BrowserWindow::SideFocus::Page); });
+    QObject::connect(m_pane_bar, &PaneBar::swap_sides_requested, this, [this] { m_window->swap_split_view_sides(*this); });
+    QObject::connect(m_pane_bar, &PaneBar::separate_tabs_requested, this, [this] { m_window->separate_split_view(*this); });
+    QObject::connect(m_pane_bar, &PaneBar::move_to_new_window_requested, this, [this] { m_window->move_split_view_to_new_window(*this); });
+    QObject::connect(m_pane_bar, &PaneBar::close_tab_requested, this, [this] { request_close(); });
+
     create_tab_context_menu();
+}
+
+bool Tab::is_in_split_view() const
+{
+    return m_window && m_window->tab_widget().split_pair_of(this) != nullptr;
+}
+
+void Tab::set_split_presentation(SplitPresentation presentation)
+{
+    if (m_split_presentation == presentation)
+        return;
+    m_split_presentation = presentation;
+    switch (presentation) {
+    case SplitPresentation::None:
+        m_pane_bar->hide();
+        break;
+    case SplitPresentation::FocusedSide:
+        m_pane_bar->set_state(PaneBar::State::FocusedSide);
+        m_pane_bar->show();
+        break;
+    case SplitPresentation::OtherSide:
+        m_pane_bar->set_state(PaneBar::State::OtherSide);
+        m_pane_bar->show();
+        break;
+    case SplitPresentation::Fallback:
+        m_pane_bar->set_state(PaneBar::State::Fallback);
+        m_pane_bar->show();
+        break;
+    }
+    if (presentation != SplitPresentation::None) {
+        if (auto* pair = m_window->tab_widget().split_pair_of(this); pair) {
+            if (auto* partner = pair->partner_of(this))
+                m_pane_bar->set_partner_title(partner->title());
+        }
+        m_pane_bar->set_toolbar_in_sidebar(m_window->tab_widget().toolbar_in_sidebar());
+    }
+    update_split_view_side_state();
+    update_permission_prompts();
+}
+
+void Tab::update_split_view_side_state()
+{
+    if (!m_pane_bar)
+        return;
+    Optional<PaneBar::Pending> pending;
+    if (is_loaded()) {
+        if (view().crash_overlay_active())
+            pending = PaneBar::Pending::Crashed;
+        else if (m_javascript_dialog && m_javascript_dialog->is_open())
+            pending = PaneBar::Pending::Dialog;
+        else if (m_permission_prompts.has_prompt())
+            pending = PaneBar::Pending::PermissionRequest;
+    }
+    m_pane_bar->set_pending(pending);
+    if (m_javascript_dialog && m_window && m_window->current_tab() == this)
+        m_javascript_dialog->focus_dialog_if_waiting();
 }
 
 void Tab::initialize(Optional<u64> hub_view_id)
@@ -244,6 +314,10 @@ void Tab::initialize(Optional<u64> hub_view_id)
     m_view->set_window_size({ m_window->width(), m_window->height() });
     m_javascript_dialog = new JavaScriptDialog(m_view);
     m_javascript_dialog->on_page_dim_change = [this](qreal dim) { m_view->set_page_dim(dim); };
+    // NB: A dialog from the side of a pair that isn't focused would take the keystrokes meant for the focused side, so it
+    //     waits there until the person focuses its side.
+    m_javascript_dialog->may_take_focus = [this] { return m_window->current_tab() == this || !m_window->tab_widget().page_area().is_displayed(this); };
+    m_javascript_dialog->on_open_change = [this] { update_split_view_side_state(); };
 
     // The window's toolbar holds the address field while it shows this tab.
     m_location_edit = new LocationEdit(this, Application::settings(), make<SuggestionProvider>(m_window->is_private()));
@@ -251,6 +325,20 @@ void Tab::initialize(Optional<u64> hub_view_id)
     m_location_edit->installEventFilter(this);
 
     m_view->installEventFilter(this);
+    m_view->on_visibility_inputs_changed = [this] { m_window->update_page_visibility(); };
+    m_view->may_take_page_focus = [this] { return m_window->current_tab() == this; };
+    m_view->on_open_in_split_view = [this](URL::URL const& url, Optional<Web::HTML::PreparedNavigationDescriptor> const& navigation) {
+        if (is_pinned())
+            return;
+        // NB: A link followed from the page keeps the page as its initiator and referrer, so it goes through the page as
+        //     a new view, which the window then pairs with this tab.
+        if (navigation.has_value()) {
+            m_opens_next_view_in_split_view = true;
+            view().open_navigation_in_new_tab(*navigation, Web::HTML::ActivateTab::No);
+            return;
+        }
+        m_window->open_url_in_split_view(*this, url);
+    };
 
     m_hover_label = new HyperlinkLabel(this);
     m_hover_label->hide();
@@ -310,6 +398,7 @@ void Tab::initialize(Optional<u64> hub_view_id)
 
     QObject::connect(m_view, &WebContentView::crash_overlay_changed, this, [this] {
         update_tab_icon();
+        update_split_view_side_state();
     });
 
     // NB: A tab that was discarded keeps its view until the event loop deletes it, and messages from the view that were
@@ -401,6 +490,7 @@ void Tab::initialize(Optional<u64> hub_view_id)
 
     view().on_url_change = [this](auto const& url) {
         m_location_edit->set_url(url);
+        emit url_changed();
     };
 
     m_location_edit->on_navigation = [this](auto input, auto fallback_url, auto destination_kind) {
@@ -412,7 +502,8 @@ void Tab::initialize(Optional<u64> hub_view_id)
 
     view().on_title_change = [this](auto const& title) {
         auto new_title = qstring_from_utf16_string(title);
-        if (!m_is_loading && !m_title.isEmpty() && new_title != m_title && m_window->current_tab() != this)
+        // NB: A page on display, such as the other side of a shown pair, has no news the person hasn't seen.
+        if (!m_is_loading && !m_title.isEmpty() && new_title != m_title && m_window->current_tab() != this && !m_window->tab_widget().page_area().is_displayed(this))
             m_needs_attention = true;
         m_title = AK::move(new_title);
         update_tab_title();
@@ -593,6 +684,7 @@ void Tab::initialize(Optional<u64> hub_view_id)
         dialog->open();
     };
 
+    m_permission_prompts.on_change = [this] { update_split_view_side_state(); };
     m_permission_prompts.create_popover = [this](WebView::PermissionPromptRequest const& request) {
         auto* popover = new PermissionPromptPopover(this, request);
         popover->update_chrome_style(palette());
@@ -939,7 +1031,34 @@ void Tab::create_tab_context_menu()
 
     auto* move_to_new_window_action = new QAction("Move to New &Window", this);
     QObject::connect(move_to_new_window_action, &QAction::triggered, this, [this]() {
+        if (is_in_split_view()) {
+            m_window->move_split_view_to_new_window(*this);
+            return;
+        }
         m_window->detach_tab_to_new_window(tab_index(), m_window->mapToGlobal(QPoint(m_window->width() / 4, m_window->height() / 4)));
+    });
+
+    // Split view: the current tab gains a new tab as its other side, and any other tab joins the current one.
+    auto* split_view_action = new QAction("Open in &Split View", this);
+    QObject::connect(split_view_action, &QAction::triggered, this, [this]() {
+        if (m_window->current_tab() == this)
+            m_window->open_new_split_view();
+        else
+            m_window->open_in_split_view(*this);
+    });
+    // Any tab can also go into a split view with one of the window's other tabs, chosen by name.
+    auto* split_view_with_menu = new QMenu("Split View &With", this);
+    split_view_with_menu->setToolTipsVisible(true);
+    QObject::connect(split_view_with_menu, &QMenu::aboutToShow, this, [this, split_view_with_menu]() {
+        m_window->populate_split_view_with_menu(*split_view_with_menu, *this);
+    });
+    auto* swap_sides_action = new QAction("S&wap Sides", this);
+    QObject::connect(swap_sides_action, &QAction::triggered, this, [this]() {
+        m_window->swap_split_view_sides(*this);
+    });
+    auto* separate_tabs_action = new QAction("Sep&arate Tabs", this);
+    QObject::connect(separate_tabs_action, &QAction::triggered, this, [this]() {
+        m_window->separate_split_view(*this);
     });
 
     auto* copy_link_action = new QAction("Copy &Link", this);
@@ -960,29 +1079,54 @@ void Tab::create_tab_context_menu()
     QObject::connect(close_following_tabs_action, &QAction::triggered, this, [this]() {
         // Closing the current tab selects a neighbor, which may be a tab about to close too, and selecting a tab that
         // hasn't loaded loads it. So, this tab, which stays open, becomes the current tab first.
-        if (auto* current = m_window->current_tab(); current && m_window->tab_index(current) > tab_index() && !current->is_pinned())
+        // NB: The tabs that close start after this tab's pair, which stays open as a whole.
+        auto last_kept_index = tab_index();
+        if (auto const* pair = m_window->tab_widget().split_pair_of(this))
+            last_kept_index = max(m_window->tab_index(pair->start), m_window->tab_index(pair->end));
+        if (auto* current = m_window->current_tab(); current && m_window->tab_index(current) > last_kept_index && !current->is_pinned())
             m_window->activate_tab(tab_index());
-        for (auto i = m_window->tab_count() - 1; i > tab_index(); i--) {
+        // NB: Closing a tab moves the ones after it, so the tabs are found again by what they are rather than where.
+        Vector<QPointer<Tab>> tabs_to_close;
+        for (auto i = m_window->tab_count() - 1; i > last_kept_index; i--) {
             if (!m_window->tab_at(i)->is_pinned())
-                m_window->request_to_close_tab(i);
+                tabs_to_close.append(m_window->tab_at(i));
+        }
+        for (auto& tab : tabs_to_close) {
+            if (tab && m_window->tab_index(tab) >= 0)
+                m_window->request_to_close_tab(m_window->tab_index(tab));
         }
     });
 
     auto* close_other_tabs_action = new QAction("Cl&ose Other Tabs", this);
     QObject::connect(close_other_tabs_action, &QAction::triggered, this, [this]() {
         // As with closing the following tabs, activate this tab first if the current tab is among those closing.
-        if (auto* current = m_window->current_tab(); current && current != this && !current->is_pinned())
+        // NB: This tab's pair stays open as a whole.
+        Tab* partner = nullptr;
+        if (auto const* pair = m_window->tab_widget().split_pair_of(this))
+            partner = pair->partner_of(this);
+        if (auto* current = m_window->current_tab(); current && current != this && current != partner && !current->is_pinned())
             m_window->activate_tab(tab_index());
+        Vector<QPointer<Tab>> tabs_to_close;
         for (auto i = m_window->tab_count() - 1; i >= 0; i--) {
-            if (i == tab_index() || m_window->tab_at(i)->is_pinned())
+            auto* tab = m_window->tab_at(i);
+            if (tab == this || tab == partner || tab->is_pinned())
                 continue;
-
-            m_window->request_to_close_tab(i);
+            tabs_to_close.append(tab);
+        }
+        for (auto& tab : tabs_to_close) {
+            if (tab && m_window->tab_index(tab) >= 0)
+                m_window->request_to_close_tab(m_window->tab_index(tab));
         }
     });
 
     m_context_menu = new QMenu("Context menu", this);
+    // NB: A split view item that can't be used says why in its tooltip.
+    m_context_menu->setToolTipsVisible(true);
     m_context_menu->addAction(new_tab_action);
+    m_context_menu->addAction(split_view_action);
+    m_context_menu->addMenu(split_view_with_menu);
+    m_context_menu->addAction(swap_sides_action);
+    m_context_menu->addAction(separate_tabs_action);
     m_context_menu->addSeparator();
     m_context_menu->addAction(create_application_action(*this, application.reload_action(), IncludeActionIcon::No));
     m_context_menu->addAction(duplicate_tab_action);
@@ -998,7 +1142,7 @@ void Tab::create_tab_context_menu()
     m_context_menu->addSeparator();
     m_context_menu->addAction(Application::the().reopen_recently_closed_tab_action());
 
-    QObject::connect(m_context_menu, &QMenu::aboutToShow, this, [this, new_tab_action, close_following_tabs_action, mute_tab_action, move_to_new_window_action]() {
+    QObject::connect(m_context_menu, &QMenu::aboutToShow, this, [this, new_tab_action, close_following_tabs_action, mute_tab_action, move_to_new_window_action, split_view_action, split_view_with_menu, swap_sides_action, separate_tabs_action]() {
         auto is_horizontal = m_window->tab_widget().tab_bar()->tab_layout() == TabLayout::Horizontal;
         new_tab_action->setText(is_horizontal ? "New Tab to the &Right" : "New Tab &Below");
         close_following_tabs_action->setText(is_horizontal ? "Close Tabs to the R&ight" : "Close Tabs B&elow");
@@ -1007,6 +1151,31 @@ void Tab::create_tab_context_menu()
         mute_tab_action->setEnabled(is_loaded());
         mute_tab_action->setText(is_loaded() && view().page_mute_state() == Web::HTML::MuteState::Muted ? "Un&mute Tab" : "&Mute Tab");
         move_to_new_window_action->setEnabled(m_window->tab_count() > 1);
+
+        auto* pair = m_window->tab_widget().split_pair_of(this);
+        auto* current = m_window->current_tab();
+        auto is_current = current == this;
+        move_to_new_window_action->setText(pair ? "Move Split View to New &Window" : "Move to New &Window");
+        if (pair)
+            move_to_new_window_action->setEnabled(m_window->tab_count() > 2);
+        // A tab already in the current tab's pair needs no new one. Its pair is shown once it is selected.
+        auto shares_pair_with_current = pair && pair->contains(current);
+        split_view_action->setVisible(!shares_pair_with_current || !is_current);
+        split_view_action->setText(is_current ? "New &Split View" : "Open in &Split View");
+        // NB: An empty reason means the tab can go into a split view.
+        auto unavailable_reason = m_window->split_view_unavailable_reason(*this);
+        split_view_action->setEnabled(unavailable_reason.isEmpty());
+        split_view_action->setToolTip(unavailable_reason);
+        // A pinned tab can't be paired. Nor can a tab whose window has no other tab to pair it with.
+        auto has_other_tab = false;
+        for (int i = 0; i < m_window->tab_count() && !has_other_tab; ++i) {
+            auto* other = m_window->tab_at(i);
+            has_other_tab = other != this && !other->is_pinned() && (!pair || !pair->contains(other));
+        }
+        split_view_with_menu->menuAction()->setEnabled(!m_is_pinned && has_other_tab);
+        split_view_with_menu->menuAction()->setToolTip(m_is_pinned ? QStringLiteral("Unpin the tab to use split view") : (has_other_tab ? QString {} : QStringLiteral("There is no other tab to split with")));
+        swap_sides_action->setVisible(pair != nullptr);
+        separate_tabs_action->setVisible(pair != nullptr);
     });
 }
 
@@ -1340,7 +1509,9 @@ void Tab::showEvent(QShowEvent* event)
 // comes up over an inactive window is closed by the next click or activation anywhere else.
 void Tab::update_permission_prompts()
 {
-    if (isVisible() && isActiveWindow())
+    // NB: Of the two sides of a shown pair, only the focused one shows its prompt, which sits below the toolbar's address
+    //     field. The other side waits, and its pane bar says so.
+    if (isVisible() && isActiveWindow() && m_window->current_tab() == this)
         m_permission_prompts.resume();
     else
         m_permission_prompts.suspend();

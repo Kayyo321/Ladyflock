@@ -196,6 +196,12 @@ public:
     Function<void(WebCompatReportCapture)> on_request_web_compat_report_review;
     Function<void(Function<void(QImage)> on_selected)> on_request_web_compat_report_screenshot;
     Function<void()> on_close_web_compat_report_tab;
+    // A tab's window decides whether its page is visible, as a page can stay on screen while another tab is current,
+    // such as the other side of a split view. The view only tells it when it is shown or hidden.
+    Function<void()> on_visibility_inputs_changed;
+    // Whether the page may take the keyboard or the screen reader's focus by itself, which the page of a split view's
+    // other side may not.
+    Function<bool()> may_take_page_focus;
 
     enum class PaletteMode {
         Default,

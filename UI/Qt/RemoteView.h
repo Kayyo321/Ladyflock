@@ -90,7 +90,16 @@ public:
     String const& handle() const { return m_state.handle; }
     void set_window_position(Gfx::IntPoint position) { HubConnection::the().async_view_set_window_position(view_id(), position); }
     void set_window_size(Gfx::IntSize size) { HubConnection::the().async_view_set_window_size(view_id(), size); }
-    void set_system_visibility_state(Web::HTML::VisibilityState visibility_state) { HubConnection::the().async_view_set_system_visibility_state(view_id(), move(visibility_state)); }
+    // NB: A window publishes its pages' visibility as its layout settles, which can be many times for one change, so only
+    //     a change in it is sent on.
+    void set_system_visibility_state(Web::HTML::VisibilityState visibility_state)
+    {
+        if (m_published_system_visibility_state == visibility_state)
+            return;
+        m_published_system_visibility_state = visibility_state;
+        HubConnection::the().async_view_set_system_visibility_state(view_id(), move(visibility_state));
+    }
+    Optional<Web::HTML::VisibilityState> published_system_visibility_state() const { return m_published_system_visibility_state; }
     void set_pinned(bool pinned) { HubConnection::the().async_view_set_pinned(view_id(), pinned); }
     void set_current_tab_of_window(bool current_tab_of_window) { HubConnection::the().async_view_set_current_tab_of_window(view_id(), current_tab_of_window); }
     void set_presents_from_cpu_memory(bool presents_from_cpu_memory) { HubConnection::the().async_view_set_presents_from_cpu_memory(view_id(), presents_from_cpu_memory); }
@@ -298,6 +307,7 @@ protected:
     static Gfx::IntRect rect_fitting_frame(Gfx::IntSize frame_size, Gfx::IntSize target_size) { return Hub::View::rect_fitting_frame(frame_size, target_size); }
 
 private:
+    Optional<Web::HTML::VisibilityState> m_published_system_visibility_state;
     virtual void bookmarks_changed() override { update_bookmark_action(); }
 
     void update_view_actions();
@@ -367,6 +377,8 @@ public:
     decltype(Hub::View::on_performance_stats) on_performance_stats;
     decltype(Hub::View::on_compositor_layers_change) on_compositor_layers_change;
     Function<void(Web::HTML::ActivateTab, Web::HTML::WebViewHints, u64 view_id)> on_open_new_view;
+    // Opens a link from the page beside it, as the other side of a split view. Only a tab's view can.
+    Function<void(URL::URL const&, Optional<Web::HTML::PreparedNavigationDescriptor> const&)> on_open_in_split_view;
     decltype(Hub::View::on_activate_tab) on_activate_tab;
     decltype(Hub::View::on_close) on_close;
     // The Hub asks to discard the tab of the view, which the tab may decline.

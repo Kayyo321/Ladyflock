@@ -53,6 +53,7 @@ add_library(ladybird_impl STATIC
     NativeWindowContainer.cpp
     NotificationBar.cpp
     PageCard.cpp
+    PaneBar.cpp
     PerformanceMonitorWidget.cpp
     PermissionPromptPopover.cpp
     PictureInPictureWindow.cpp
@@ -68,6 +69,7 @@ add_library(ladybird_impl STATIC
     SessionStore.cpp
     SelectDropdown.cpp
     SiteSettingsPopover.cpp
+    SplitView.cpp
     StringUtils.cpp
     SuggestionProvider.cpp
     SystemAppearance.cpp

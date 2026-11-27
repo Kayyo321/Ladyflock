@@ -31,6 +31,7 @@ static constexpr u32 SESSIONS_SCHEMA_RESTART_VERSION = 10u;
 static constexpr u32 SESSIONS_SCHEMA_LOCAL_FILE_CONTENT_VERSION = 11u;
 static constexpr u32 SESSIONS_SCHEMA_LOCAL_FILE_ROOTS_VERSION = 12u;
 static constexpr u32 SESSIONS_SCHEMA_LOCAL_FILE_CONTENT_AGAIN_VERSION = 13u;
+static constexpr u32 SESSIONS_SCHEMA_SPLIT_VIEW_VERSION = 14u;
 
 // After this many unclean exits in a row, launch restore stops, so a session that crashes the browser doesn't restore
 // into the same crash every time.
@@ -69,6 +70,91 @@ static ErrorOr<Optional<SessionWindowGeometry>> read_window_geometry(Database::R
         .height = *height,
         .maximized = TRY(row.read_integer<i64>("maximized"sv)) != 0,
     } };
+}
+
+static Optional<double> fraction_for_binding(Optional<float> fraction)
+{
+    if (!fraction.has_value())
+        return {};
+    return static_cast<double>(*fraction);
+}
+
+// NB: ResultRow has no reader for REAL, so this reads the column from the statement directly. A value that isn't a number
+//     reads as SQLite converts it, which the frontend's range check then turns into an even split.
+static Optional<float> read_fraction(Database::Database& database, Database::StatementID statement_id, Database::ResultRow& row, StringView column)
+{
+    auto is_null = row.is_null(column);
+    if (is_null.is_error() || is_null.value())
+        return {};
+    auto index = database.result_column_index(statement_id, column);
+    if (index.is_error())
+        return {};
+    return static_cast<float>(database.result_column<double>(statement_id, index.value()));
+}
+
+// A membership whose key doesn't read as an integer is dropped rather than failing its row, so the tab comes back on its
+// own instead of not at all.
+static Optional<SessionSplitMembership> read_split_membership(Database::Database& database, Database::StatementID statement_id, Database::ResultRow& row)
+{
+    auto split_key = row.read_optional_integer<i64>("split_id"sv);
+    if (split_key.is_error() || !split_key.value().has_value())
+        return {};
+    return SessionSplitMembership { .split_key = *split_key.value(), .start_fraction = read_fraction(database, statement_id, row, "split_start_fraction"sv) };
+}
+
+// As with a membership, a record that doesn't read back leaves the unit to reopen as a single tab.
+static Optional<ClosedSplitSide> read_closed_split_side(Database::Database& database, Database::StatementID statement_id, Database::ResultRow& row)
+{
+    auto survivor = row.read_optional_integer<SessionTabId>("split_side_survivor_tab_id"sv);
+    if (survivor.is_error() || !survivor.value().has_value())
+        return {};
+    auto closed_was_start = row.read_optional_integer<i64>("split_side_closed_was_start"sv);
+    auto selected = row.read_optional_integer<i64>("split_side_selected"sv);
+    if (closed_was_start.is_error() || selected.is_error())
+        return {};
+
+    ClosedSplitSide split_side {
+        .survivor_tab_id = *survivor.value(),
+        .closed_side_was_start = closed_was_start.value().value_or(0) != 0,
+        .start_fraction = read_fraction(database, statement_id, row, "split_side_start_fraction"sv).value_or(0.5f),
+        .selected = ClosedSplitSide::Selected::Neither,
+    };
+    switch (selected.value().value_or(to_underlying(ClosedSplitSide::Selected::Neither))) {
+    case to_underlying(ClosedSplitSide::Selected::ClosedSide):
+        split_side.selected = ClosedSplitSide::Selected::ClosedSide;
+        break;
+    case to_underlying(ClosedSplitSide::Selected::Survivor):
+        split_side.selected = ClosedSplitSide::Selected::Survivor;
+        break;
+    default:
+        break;
+    }
+    return split_side;
+}
+
+template<typename Bind>
+static ErrorOr<void> bind_split_membership(Bind& bind, Optional<SessionSplitMembership> const& membership)
+{
+    TRY(bind("split_id"sv, membership.has_value() ? Optional<i64> { membership->split_key } : Optional<i64> {}));
+    TRY(bind("split_start_fraction"sv, membership.has_value() ? fraction_for_binding(membership->start_fraction) : Optional<double> {}));
+    return {};
+}
+
+template<typename Bind>
+static ErrorOr<void> bind_closed_split_side(Bind& bind, Optional<ClosedSplitSide> const& split_side)
+{
+    if (!split_side.has_value()) {
+        TRY(bind("split_side_survivor_tab_id"sv, Optional<i64> {}));
+        TRY(bind("split_side_closed_was_start"sv, Optional<i64> {}));
+        TRY(bind("split_side_start_fraction"sv, Optional<double> {}));
+        TRY(bind("split_side_selected"sv, Optional<i64> {}));
+        return {};
+    }
+    TRY(bind("split_side_survivor_tab_id"sv, Optional<i64> { split_side->survivor_tab_id }));
+    TRY(bind("split_side_closed_was_start"sv, Optional<i64> { split_side->closed_side_was_start ? 1 : 0 }));
+    TRY(bind("split_side_start_fraction"sv, Optional<double> { static_cast<double>(split_side->start_fraction) }));
+    TRY(bind("split_side_selected"sv, Optional<i64> { static_cast<i64>(to_underlying(split_side->selected)) }));
+    return {};
 }
 
 ErrorOr<Database::MigrationOutcome> SessionStore::PersistedStorage::migrate_schema(Database::Database& database, Database::MigrationMode mode)
@@ -324,6 +410,18 @@ ErrorOr<Database::MigrationOutcome> SessionStore::PersistedStorage::migrate_sche
                 ALTER TABLE SessionEntries DROP COLUMN local_file_root_path;
             )#"sv,
         },
+        {
+            .version = SESSIONS_SCHEMA_SPLIT_VIEW_VERSION,
+            .sql = R"#(
+                ALTER TABLE SessionTabs ADD COLUMN split_id INTEGER;
+                ALTER TABLE SessionTabs ADD COLUMN split_start_fraction REAL;
+
+                ALTER TABLE Sessions ADD COLUMN split_side_survivor_tab_id INTEGER;
+                ALTER TABLE Sessions ADD COLUMN split_side_closed_was_start INTEGER;
+                ALTER TABLE Sessions ADD COLUMN split_side_start_fraction REAL;
+                ALTER TABLE Sessions ADD COLUMN split_side_selected INTEGER;
+            )#"sv,
+        },
     });
 
     return database.migrate("Sessions"sv, migrations, mode);
@@ -340,11 +438,12 @@ ErrorOr<SessionStore::PersistedStorage> SessionStore::PersistedStorage::create(D
         return Error::from_string_literal("Session storage relies on cascading deletes; open the connection with foreign keys enabled");
 
     Statements statements {};
-    statements.insert_session = TRY(database.prepare_statement("INSERT INTO Sessions (id, kind, closed_time, close_sequence, source_window_id, source_tab_index, origin, active_tab_index) VALUES (:id, :kind, :closed_time, :close_sequence, :source_window_id, :source_tab_index, :origin, :active_tab_index);"sv));
+    statements.insert_session = TRY(database.prepare_statement("INSERT INTO Sessions (id, kind, closed_time, close_sequence, source_window_id, source_tab_index, origin, active_tab_index, split_side_survivor_tab_id, split_side_closed_was_start, split_side_start_fraction, split_side_selected) VALUES (:id, :kind, :closed_time, :close_sequence, :source_window_id, :source_tab_index, :origin, :active_tab_index, :split_side_survivor_tab_id, :split_side_closed_was_start, :split_side_start_fraction, :split_side_selected);"sv));
     statements.insert_tab = TRY(database.prepare_statement("INSERT INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index) VALUES (:id, :session_id, :tab_ordinal, :active_url, :current_used_step_index);"sv));
     statements.insert_tab_if_missing = TRY(database.prepare_statement("INSERT OR IGNORE INTO SessionTabs (id, session_id, tab_ordinal, active_url, current_used_step_index) VALUES (:id, :session_id, :tab_ordinal, :active_url, :current_used_step_index);"sv));
-    statements.update_tab_row = TRY(database.prepare_statement("UPDATE SessionTabs SET active_url = :active_url, current_used_step_index = :current_used_step_index, pinned = :pinned WHERE id = :id;"sv));
-    statements.update_tab_placement = TRY(database.prepare_statement("UPDATE SessionTabs SET session_id = :session_id, tab_ordinal = :tab_ordinal, pinned = :pinned WHERE id = :id;"sv));
+    statements.update_tab_row = TRY(database.prepare_statement("UPDATE SessionTabs SET active_url = :active_url, current_used_step_index = :current_used_step_index, pinned = :pinned, split_id = :split_id, split_start_fraction = :split_start_fraction WHERE id = :id;"sv));
+    statements.update_tab_placement = TRY(database.prepare_statement("UPDATE SessionTabs SET session_id = :session_id, tab_ordinal = :tab_ordinal, pinned = :pinned, split_id = :split_id, split_start_fraction = :split_start_fraction WHERE id = :id;"sv));
+    statements.clear_tab_split = TRY(database.prepare_statement("UPDATE SessionTabs SET split_id = NULL, split_start_fraction = NULL WHERE id = :id;"sv));
     statements.update_tab_parent = TRY(database.prepare_statement("UPDATE SessionTabs SET session_id = :session_id, tab_ordinal = :tab_ordinal WHERE id = :id;"sv));
     statements.update_session_closed = TRY(database.prepare_statement("UPDATE Sessions SET kind = :kind, closed_time = :closed_time, close_sequence = :close_sequence, source_window_id = :source_window_id, source_tab_index = :source_tab_index, origin = :origin, active_tab_index = :active_tab_index, restore_at_launch = :restore_at_launch WHERE id = :id;"sv));
     statements.update_session_metadata = TRY(database.prepare_statement("UPDATE Sessions SET active_tab_index = :active_tab_index, activation_sequence = :activation_sequence WHERE id = :id;"sv));
@@ -355,10 +454,12 @@ ErrorOr<SessionStore::PersistedStorage> SessionStore::PersistedStorage::create(D
             SELECT id FROM Sessions WHERE kind = :kind ORDER BY close_sequence DESC, closed_time DESC, id DESC LIMIT :max_units);
     )#"sv));
     statements.select_max_session_id = TRY(database.prepare_statement("SELECT MAX(id) AS maximum_id FROM Sessions;"sv));
-    statements.select_max_tab_id = TRY(database.prepare_statement("SELECT MAX(id) AS maximum_id FROM SessionTabs;"sv));
+    // A closed side's record names its survivor, whose id must not go to another tab while the record could rejoin them,
+    // even once the survivor's own row is gone.
+    statements.select_max_tab_id = TRY(database.prepare_statement("SELECT MAX(maximum_id) AS maximum_id FROM (SELECT MAX(id) AS maximum_id FROM SessionTabs UNION ALL SELECT MAX(split_side_survivor_tab_id) FROM Sessions);"sv));
     statements.select_max_close_sequence = TRY(database.prepare_statement("SELECT MAX(close_sequence) AS maximum_id FROM Sessions;"sv));
-    statements.select_closed_sessions = TRY(database.prepare_statement("SELECT id, closed_time, close_sequence, source_window_id, source_tab_index, origin, active_tab_index, x, y, width, height, maximized FROM Sessions WHERE kind = :kind ORDER BY close_sequence DESC, closed_time DESC, id DESC LIMIT :max_units;"sv));
-    statements.select_session_tabs = TRY(database.prepare_statement("SELECT id, tab_ordinal, active_url, current_used_step_index, pinned FROM SessionTabs WHERE session_id = :session_id ORDER BY tab_ordinal;"sv));
+    statements.select_closed_sessions = TRY(database.prepare_statement("SELECT id, closed_time, close_sequence, source_window_id, source_tab_index, origin, active_tab_index, x, y, width, height, maximized, split_side_survivor_tab_id, split_side_closed_was_start, split_side_start_fraction, split_side_selected FROM Sessions WHERE kind = :kind ORDER BY close_sequence DESC, closed_time DESC, id DESC LIMIT :max_units;"sv));
+    statements.select_session_tabs = TRY(database.prepare_statement("SELECT id, tab_ordinal, active_url, current_used_step_index, pinned, split_id, split_start_fraction FROM SessionTabs WHERE session_id = :session_id ORDER BY tab_ordinal;"sv));
     statements.select_max_activation_sequence = TRY(database.prepare_statement("SELECT MAX(activation_sequence) AS maximum_id FROM Sessions;"sv));
     statements.update_session_geometry = TRY(database.prepare_statement("UPDATE Sessions SET x = :x, y = :y, width = :width, height = :height, maximized = :maximized WHERE id = :id;"sv));
     statements.select_open_sessions = TRY(database.prepare_statement("SELECT id, active_tab_index, activation_sequence, x, y, width, height, maximized FROM Sessions WHERE kind = :open_window_kind ORDER BY activation_sequence, id;"sv));
@@ -460,6 +561,21 @@ void SessionStore::TransientStorage::set_tab_state(SessionTabId tab_id, Optional
     tab->value.history = move(history);
     tab->value.current_used_step_index = tab->value.history.has_value() ? tab->value.history->current_used_step_index : 0;
     tab->value.dirty = dirty;
+}
+
+bool SessionStore::TransientStorage::set_tab_split(SessionTabId tab_id, Optional<SessionSplitMembership> membership)
+{
+    auto tab = m_tabs.find(tab_id);
+    if (tab == m_tabs.end())
+        return false;
+    if (tab->value.split == membership)
+        return true;
+
+    tab->value.split = move(membership);
+    // Memberships go out with the window's tab order, which pairing and moving a pair change too.
+    if (auto window = m_windows.find(tab->value.window_id); window != m_windows.end())
+        window->value.metadata_dirty = true;
+    return true;
 }
 
 bool SessionStore::TransientStorage::set_tab_pinned(SessionTabId tab_id, bool pinned)
@@ -699,6 +815,7 @@ ErrorOr<void> SessionStore::PersistedStorage::apply_tab_row_write(TabWrite const
         TRY(bind("active_url"sv, persistable_active_url(write.url)));
         TRY(bind("current_used_step_index"sv, write.current_used_step_index));
         TRY(bind("pinned"sv, i64 { write.pinned ? 1 : 0 }));
+        TRY(bind_split_membership(bind, write.split));
         TRY(bind("id"sv, write.id));
         return {};
     }));
@@ -713,6 +830,10 @@ ErrorOr<void> SessionStore::PersistedStorage::apply_window_metadata(WindowMetada
             TRY(bind("session_id"sv, write.id));
             TRY(bind("tab_ordinal"sv, tab_ordinal));
             TRY(bind("pinned"sv, i64 { write.pinned_tabs.contains(tab_id) ? 1 : 0 }));
+            Optional<SessionSplitMembership> membership;
+            if (auto it = write.split_memberships.find(tab_id); it != write.split_memberships.end())
+                membership = it->value;
+            TRY(bind_split_membership(bind, membership));
             TRY(bind("id"sv, tab_id));
             return {};
         }));
@@ -737,6 +858,7 @@ ErrorOr<void> SessionStore::PersistedStorage::insert_closed_unit_row(ClosedUnitW
         TRY(bind("source_tab_index"sv, write.source_tab_index));
         TRY(bind("origin"sv, to_underlying(write.origin)));
         TRY(bind("active_tab_index"sv, write.active_tab_index));
+        TRY(bind_closed_split_side(bind, write.split_side));
         return {};
     });
 }
@@ -759,6 +881,7 @@ ErrorOr<void> SessionStore::PersistedStorage::insert_open_window(SessionWindowId
         TRY(bind("source_tab_index"sv, Optional<i64> {}));
         TRY(bind("origin"sv, to_underlying(ClosedSessionUnit::Origin::CloseAction)));
         TRY(bind("active_tab_index"sv, 0));
+        TRY(bind_closed_split_side(bind, {}));
         return {};
     });
 }
@@ -966,6 +1089,7 @@ ErrorOr<Vector<SessionStore::RecoveredTab>> SessionStore::PersistedStorage::read
                     .url = url.release_value(),
                     .current_used_step_index = TRY(row.read_integer<size_t>("current_used_step_index"sv)),
                     .pinned = TRY(row.read_integer<i64>("pinned"sv)) != 0,
+                    .split = read_split_membership(*database, statements.select_session_tabs, row),
                 };
             }();
             if (tab.is_error())
@@ -979,6 +1103,40 @@ ErrorOr<Vector<SessionStore::RecoveredTab>> SessionStore::PersistedStorage::read
     for (auto tab_id : corrupt_tabs)
         TRY(delete_tab_rows(tab_id));
     return tabs;
+}
+
+// A pair is exactly two adjacent unpinned tabs. Any other membership, from an older or a damaged row, is dropped before
+// recovery moves the pinned tabs ahead of the rest, which could otherwise put two members side by side that weren't.
+// Returns the tabs whose membership it dropped.
+template<typename RecoveredTabType>
+static Vector<SessionTabId> drop_broken_split_memberships(Vector<RecoveredTabType>& tabs)
+{
+    auto same_pair = [&](size_t a, size_t b) {
+        return tabs[a].split.has_value() && tabs[b].split.has_value() && tabs[a].split->split_key == tabs[b].split->split_key;
+    };
+
+    Vector<bool> keep;
+    keep.resize(tabs.size());
+    for (size_t i = 0; i < tabs.size(); ++i) {
+        if (!tabs[i].split.has_value() || tabs[i].pinned)
+            continue;
+        size_t members = 0;
+        for (size_t j = 0; j < tabs.size(); ++j) {
+            if (same_pair(i, j))
+                ++members;
+        }
+        auto partner_before = i > 0 && same_pair(i, i - 1) && !tabs[i - 1].pinned;
+        auto partner_after = i + 1 < tabs.size() && same_pair(i, i + 1) && !tabs[i + 1].pinned;
+        keep[i] = members == 2 && (partner_before || partner_after);
+    }
+    Vector<SessionTabId> dropped;
+    for (size_t i = 0; i < tabs.size(); ++i) {
+        if (keep[i] || !tabs[i].split.has_value())
+            continue;
+        tabs[i].split.clear();
+        dropped.append(tabs[i].id);
+    }
+    return dropped;
 }
 
 ErrorOr<void> SessionStore::PersistedStorage::reparent_tabs(SessionWindowId window_id, Vector<RecoveredTab> const& tabs)
@@ -1060,6 +1218,13 @@ ErrorOr<SessionStore::RecoveryResult> SessionStore::PersistedStorage::recover_op
             }
 
             auto tabs = TRY(read_recovered_tabs(candidate.id));
+            // The rows lose the dropped memberships too, as the remainder that PinnedOnly sets aside is read from them
+            // again, and nothing else would rewrite a tab whose membership is already empty in memory.
+            for (auto tab_id : drop_broken_split_memberships(tabs)) {
+                TRY(database->try_execute_bound_statement(statements.clear_tab_split, [&](auto& bind) -> ErrorOr<void> {
+                    return bind("id"sv, tab_id);
+                }));
+            }
             auto active_tab = tabs.find_first_index_if([&](auto const& tab) { return tab.ordinal == candidate.active_tab_index; });
 
             Vector<RecoveredTab> pinned_tabs;
@@ -1257,6 +1422,7 @@ ErrorOr<Vector<SessionStore::ClosedUnit>> SessionStore::PersistedStorage::load_c
         // Empty when the stored index is not a usable one, which retires only this unit.
         Optional<i64> active_tab_index;
         Optional<SessionWindowGeometry> geometry;
+        Optional<ClosedSplitSide> split_side {};
     };
 
     Vector<ClosedUnit> units;
@@ -1296,6 +1462,7 @@ ErrorOr<Vector<SessionStore::ClosedUnit>> SessionStore::PersistedStorage::load_c
                     .origin = validated_origin,
                     .active_tab_index = !active_tab_index.is_error() && active_tab_index.value() >= 0 ? Optional<i64> { active_tab_index.value() } : Optional<i64> {},
                     .geometry = geometry.is_error() ? Optional<SessionWindowGeometry> {} : geometry.release_value(),
+                    .split_side = read_closed_split_side(*database, statements.select_closed_sessions, row),
                 });
                 return {};
             }));
@@ -1326,6 +1493,7 @@ ErrorOr<Vector<SessionStore::ClosedUnit>> SessionStore::PersistedStorage::load_c
                             .current_used_step_index = current_used_step_index,
                             .history = {},
                             .pinned = pinned,
+                            .split = read_split_membership(*database, statements.select_session_tabs, row),
                         });
                         return {};
                     }();
@@ -1358,6 +1526,7 @@ ErrorOr<Vector<SessionStore::ClosedUnit>> SessionStore::PersistedStorage::load_c
                 .origin = *session_row.origin,
                 .tabs = move(tabs),
                 .geometry = session_row.geometry,
+                .split_side = session_row.split_side,
             });
         }
     }
@@ -1381,6 +1550,7 @@ ErrorOr<Vector<ClosedSessionTab>> SessionStore::PersistedStorage::take_closed_un
             URL::URL active_url;
             size_t current_used_step_index { 0 };
             bool pinned { false };
+            Optional<SessionSplitMembership> split {};
         };
         Vector<TabRow> tab_rows;
         TRY(database->try_execute_bound_statement(
@@ -1400,6 +1570,7 @@ ErrorOr<Vector<ClosedSessionTab>> SessionStore::PersistedStorage::take_closed_un
                         .active_url = url.release_value(),
                         .current_used_step_index = current_used_step_index,
                         .pinned = TRY(row.read_integer<i64>("pinned"sv)) != 0,
+                        .split = read_split_membership(*database, statements.select_session_tabs, row),
                     };
                 }();
                 // Skip corrupt tabs without making the closed unit unreopenable.
@@ -1414,6 +1585,7 @@ ErrorOr<Vector<ClosedSessionTab>> SessionStore::PersistedStorage::take_closed_un
                 .active_url = tab_row.active_url,
                 .history = history.is_error() ? Optional<WebView::SessionHistorySnapshot> {} : Optional<WebView::SessionHistorySnapshot> { history.release_value() },
                 .pinned = tab_row.pinned,
+                .split = tab_row.split,
             });
         }
         return database->try_execute_bound_statement(statements.delete_session, [&](auto& bind) -> ErrorOr<void> {
@@ -1602,9 +1774,9 @@ ErrorOr<void> SessionStore::run_startup_recovery(UnixDateTime recovered_at, Sess
         m_transient_storage.open_window(window.id);
         RestoredSessionWindow restored { .window_id = window.id, .tabs = {}, .active_tab_index = window.active_tab_index, .geometry = window.geometry };
         for (auto& tab : window.tabs) {
-            restored.tabs.append({ .tab_id = tab.id, .url = tab.url, .pinned = tab.pinned });
+            restored.tabs.append({ .tab_id = tab.id, .url = tab.url, .pinned = tab.pinned, .split = tab.split });
             (void)m_transient_storage.open_tab(window.id, tab.id,
-                OpenTab { .window_id = window.id, .url = move(tab.url), .current_used_step_index = tab.current_used_step_index, .history = {}, .dirty = false, .pinned = tab.pinned });
+                OpenTab { .window_id = window.id, .url = move(tab.url), .current_used_step_index = tab.current_used_step_index, .history = {}, .dirty = false, .pinned = tab.pinned, .split = tab.split });
         }
         if (auto active_tab_index = index_as_size(window.active_tab_index); active_tab_index.has_value() && *active_tab_index < restored.tabs.size())
             m_transient_storage.set_active_tab(restored.tabs[*active_tab_index].tab_id);
@@ -1622,10 +1794,15 @@ ErrorOr<void> SessionStore::run_startup_recovery(UnixDateTime recovered_at, Sess
 
 SessionStore::WindowMetadataWrite SessionStore::window_metadata_write(SessionWindowId window_id, OpenWindow const& window) const
 {
-    WindowMetadataWrite write { .id = window_id, .tabs_in_order = window.tabs, .pinned_tabs = {}, .active_tab_index = 0, .activation_sequence = window.activation_sequence, .geometry = window.geometry };
+    WindowMetadataWrite write { .id = window_id, .tabs_in_order = window.tabs, .pinned_tabs = {}, .split_memberships = {}, .active_tab_index = 0, .activation_sequence = window.activation_sequence, .geometry = window.geometry };
     for (auto tab_id : window.tabs) {
-        if (auto const* tab = m_transient_storage.find_tab(tab_id); tab && tab->pinned)
+        auto const* tab = m_transient_storage.find_tab(tab_id);
+        if (!tab)
+            continue;
+        if (tab->pinned)
             write.pinned_tabs.set(tab_id);
+        if (tab->split.has_value())
+            write.split_memberships.set(tab_id, *tab->split);
     }
     // Pending closes' rows still live in this window's unit; they keep trailing ordinals until
     // their retry demotes or discards them.
@@ -1635,6 +1812,8 @@ SessionStore::WindowMetadataWrite SessionStore::window_metadata_write(SessionWin
         write.tabs_in_order.append(pending.tab_id);
         if (pending.tab.pinned)
             write.pinned_tabs.set(pending.tab_id);
+        if (pending.tab.split.has_value())
+            write.split_memberships.set(pending.tab_id, *pending.tab.split);
     }
     write.active_tab_index = index_as_i64(window.tabs.find_first_index(window.active_tab).value_or(0));
     return write;
@@ -1652,13 +1831,15 @@ Optional<SessionStore::WindowMetadataWrite> SessionStore::remaining_window_write
     for (auto const& pending : m_pending_window_closes) {
         if (pending.window_id != window_id)
             continue;
-        WindowMetadataWrite write { .id = window_id, .tabs_in_order = {}, .pinned_tabs = {}, .active_tab_index = 0, .activation_sequence = pending.activation_sequence, .geometry = {} };
+        WindowMetadataWrite write { .id = window_id, .tabs_in_order = {}, .pinned_tabs = {}, .split_memberships = {}, .active_tab_index = 0, .activation_sequence = pending.activation_sequence, .geometry = {} };
         for (auto const& member : pending.members) {
             if (member.tab_id == closing_tab)
                 continue;
             write.tabs_in_order.append(member.tab_id);
             if (member.tab.pinned)
                 write.pinned_tabs.set(member.tab_id);
+            if (member.tab.split.has_value())
+                write.split_memberships.set(member.tab_id, *member.tab.split);
         }
         for (auto const& tab_pending : m_pending_tab_closes) {
             if (tab_pending.tab.window_id != window_id || tab_pending.tab_id == closing_tab || write.tabs_in_order.contains_slow(tab_pending.tab_id))
@@ -1666,6 +1847,8 @@ Optional<SessionStore::WindowMetadataWrite> SessionStore::remaining_window_write
             write.tabs_in_order.append(tab_pending.tab_id);
             if (tab_pending.tab.pinned)
                 write.pinned_tabs.set(tab_pending.tab_id);
+            if (tab_pending.tab.split.has_value())
+                write.split_memberships.set(tab_pending.tab_id, *tab_pending.tab.split);
         }
         auto last_index = write.tabs_in_order.is_empty() ? 0 : index_as_i64(write.tabs_in_order.size() - 1);
         write.active_tab_index = min(pending.active_tab_index, last_index);
@@ -1686,6 +1869,7 @@ SessionStore::TabWrite SessionStore::tab_write_for(SessionTabId tab_id, OpenTab 
         .snapshot_disposition = SnapshotDisposition::Preserve,
         .snapshot = nullptr,
         .pinned = tab.pinned,
+        .split = tab.split,
     };
     if (tab.dirty) {
         if (is_storable(tab.history)) {
@@ -1889,6 +2073,24 @@ ErrorOr<void> SessionStore::tab_pinned_changed(SessionTabId tab_id, bool pinned)
     return drain_window_metadata();
 }
 
+ErrorOr<void> SessionStore::tab_split_changed(Vector<SplitMembershipWrite> writes)
+{
+    bool any_known = false;
+    for (auto& write : writes)
+        any_known |= m_transient_storage.set_tab_split(write.tab_id, move(write.membership));
+    if (!any_known)
+        return {};
+    return drain_window_metadata();
+}
+
+Optional<SessionSplitMembership> SessionStore::split_membership_of(SessionTabId tab_id) const
+{
+    auto const* tab = m_transient_storage.find_tab(tab_id);
+    if (!tab)
+        return {};
+    return tab->split;
+}
+
 void SessionStore::tab_moved(TabMoved moved)
 {
     auto ordinal = index_as_size(moved.ordinal);
@@ -1930,6 +2132,7 @@ void SessionStore::append_closed_tab_unit(PendingTabClose const& pending)
         .origin = ClosedSessionUnit::Origin::CloseAction,
         .tabs = {},
         .geometry = {},
+        .split_side = pending.split_side,
     };
     unit.tabs.append({
         .active_url = pending.tab.url,
@@ -1937,6 +2140,7 @@ void SessionStore::append_closed_tab_unit(PendingTabClose const& pending)
         .current_used_step_index = mirror_step_index,
         .history = m_persisted_storage.has_value() ? Optional<WebView::SessionHistorySnapshot> {} : pending.tab.history,
         .pinned = pending.tab.pinned,
+        .split = pending.tab.split,
     });
     m_transient_storage.append_closed_unit(move(unit));
 }
@@ -1954,6 +2158,7 @@ void SessionStore::append_closed_window_unit(PendingWindowClose const& pending)
         .origin = ClosedSessionUnit::Origin::CloseAction,
         .tabs = {},
         .geometry = pending.geometry,
+        .split_side = {},
     };
     for (auto const& member : pending.members) {
         size_t mirror_step_index = member.tab.current_used_step_index;
@@ -1965,6 +2170,7 @@ void SessionStore::append_closed_window_unit(PendingWindowClose const& pending)
             .current_used_step_index = mirror_step_index,
             .history = m_persisted_storage.has_value() ? Optional<WebView::SessionHistorySnapshot> {} : member.tab.history,
             .pinned = member.tab.pinned,
+            .split = member.tab.split,
         });
     }
     m_transient_storage.append_closed_unit(move(unit));
@@ -1972,7 +2178,9 @@ void SessionStore::append_closed_window_unit(PendingWindowClose const& pending)
 
 ErrorOr<void> SessionStore::finish_tab_close(PendingTabClose const& pending)
 {
-    if (!is_tab_worth_keeping(pending.tab.url)) {
+    // A pair member at a new-tab page was still put there on purpose, so closing it is worth undoing.
+    auto was_split_member = pending.split_side.has_value() || pending.tab.split.has_value();
+    if (!was_split_member && !is_tab_worth_keeping(pending.tab.url)) {
         if (m_persisted_storage.has_value()) {
             TRY(m_persisted_storage->discard_tab({
                 .id = pending.tab_id,
@@ -1993,6 +2201,7 @@ ErrorOr<void> SessionStore::finish_tab_close(PendingTabClose const& pending)
                 .source_tab_index = pending.source_tab_index,
                 .origin = ClosedSessionUnit::Origin::CloseAction,
                 .active_tab_index = 0,
+                .split_side = pending.split_side,
             },
             .tab = tab_write_for(pending.tab_id, pending.tab, 0),
             .remaining_window = remaining_window_write(pending.tab.window_id, pending.tab_id),
@@ -2007,8 +2216,9 @@ ErrorOr<void> SessionStore::finish_tab_close(PendingTabClose const& pending)
 ErrorOr<void> SessionStore::finish_window_close(PendingWindowClose const& pending)
 {
     bool any_tab_worth_keeping = false;
+    // As for a single tab, a pair at new-tab pages is worth undoing, and so then is a window with nothing else.
     for (auto const& member : pending.members)
-        any_tab_worth_keeping |= is_tab_worth_keeping(member.tab.url);
+        any_tab_worth_keeping |= member.tab.split.has_value() || is_tab_worth_keeping(member.tab.url);
 
     if (pending.members.is_empty() || !any_tab_worth_keeping) {
         if (m_persisted_storage.has_value())
@@ -2060,13 +2270,19 @@ ErrorOr<void> SessionStore::tab_closed(TabClosed closed)
         source_tab_index = index_as_i64(*index);
     }
 
+    // NB: The survivor leaves its pair only after the drain that each path below starts with, so that its cleared
+    //     membership is written by the same transaction as the close record or the discard. A failed write leaves its
+    //     window dirty, and the retry's drain then writes the survivor ahead of the record, which in between leaves two
+    //     single tabs, never a broken pair.
     auto discard_without_undo = [&]() -> ErrorOr<void> {
         if (!m_persisted_storage.has_value()) {
+            clear_survivor_membership(closed.split_side);
             m_transient_storage.remove_tab(closed.tab_id);
             return {};
         }
         auto tab_window_id = tab->window_id;
         auto discard_result = drain_window_metadata();
+        clear_survivor_membership(closed.split_side);
         if (!discard_result.is_error())
             discard_result = m_persisted_storage->discard_tab({ .id = closed.tab_id, .remaining_window = remaining_window_write(tab_window_id, closed.tab_id) });
         if (discard_result.is_error()) {
@@ -2079,6 +2295,8 @@ ErrorOr<void> SessionStore::tab_closed(TabClosed closed)
                 .source_tab_index = source_tab_index,
                 .discard = true,
             };
+            if (closed.split_side.has_value())
+                discard.tab.split.clear();
             m_pending_tab_closes.append(move(discard));
         }
         m_transient_storage.remove_tab(closed.tab_id);
@@ -2117,10 +2335,15 @@ ErrorOr<void> SessionStore::tab_closed(TabClosed closed)
         .close_sequence = close_sequence.value(),
         .source_tab_index = source_tab_index,
         .discard = false,
+        .split_side = closed.split_side,
     };
+    // The record says how to rejoin the pair, so the closed tab's row keeps no membership of its own.
+    if (close.split_side.has_value())
+        close.tab.split.clear();
     auto window_id = close.tab.window_id;
 
     auto result = drain_window_metadata();
+    clear_survivor_membership(closed.split_side);
     if (!result.is_error())
         result = finish_tab_close(close);
     if (result.is_error() && m_persisted_storage.has_value()) {
@@ -2139,6 +2362,12 @@ ErrorOr<void> SessionStore::tab_closed(TabClosed closed)
     if (!result.is_error() && m_persisted_storage.has_value())
         m_transient_storage.mark_window_metadata_clean(window_id);
     return result;
+}
+
+void SessionStore::clear_survivor_membership(Optional<ClosedSplitSide> const& split_side)
+{
+    if (split_side.has_value())
+        (void)m_transient_storage.set_tab_split(split_side->survivor_tab_id, {});
 }
 
 void SessionStore::tab_detached(SessionTabId tab_id)
@@ -2396,6 +2625,7 @@ ErrorOr<Optional<ClosedSessionUnit>> SessionStore::take_closed_unit(SessionWindo
         .source_tab_index = unit->source_tab_index,
         .origin = unit->origin,
         .geometry = unit->geometry,
+        .split_side = unit->split_side,
     };
 
     if (m_persisted_storage.has_value()) {
@@ -2404,7 +2634,7 @@ ErrorOr<Optional<ClosedSessionUnit>> SessionStore::take_closed_unit(SessionWindo
     } else {
         auto taken = m_transient_storage.take_closed_unit(unit_id).release_value();
         for (auto& tab : taken.tabs)
-            result.tabs.append({ .active_url = move(tab.active_url), .history = move(tab.history), .pinned = tab.pinned });
+            result.tabs.append({ .active_url = move(tab.active_url), .history = move(tab.history), .pinned = tab.pinned, .split = move(tab.split) });
     }
 
     if (result.tabs.is_empty())

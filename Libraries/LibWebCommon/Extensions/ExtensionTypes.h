@@ -137,7 +137,11 @@ struct WEBCOMMON_API ExtensionTabInfo {
     u64 tab_id { 0 };
     u64 window_id { 0 };
     bool active { false };
+    // Ladyflock has no multiselect, so a tab is highlighted exactly when it is active.
+    bool highlighted { false };
     bool pinned { false };
+    // The ID both tabs of a split view share, or -1 (tabs.SPLIT_VIEW_ID_NONE) for a tab of its own.
+    i64 split_view_id { -1 };
     String status;
     Optional<String> url;
     Optional<String> title;

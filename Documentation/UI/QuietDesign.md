@@ -638,6 +638,34 @@ sandbox one when both show: "Pages are painted on the CPU, which can be slow."
 - The Debug menu appears only when Settings → Advanced → "Show Debug menu" is on.
 - Never put a group of one item in its own section.
 
+### Split view
+
+Two tabs of one window side by side. The toolbar describes only the focused side; every side of a
+shown pair has a 32 px pane bar above its page with its favicon and origin (registrable domain in
+`text`, the rest in `muted`, HTTP as "Not secure"), so the other side's site is never left to the
+toolbar. The focused side's bar is in the `toolbar` color and joins the toolbar; the other side's is
+in the `strip` color with a `divider` hairline above it. With everything in the sidebar both bars use
+`sidebar` and the focused one has a 2 px accent line along its bottom. The bar's ⋯ menu holds Swap
+Sides, Separate Tabs, Move Split View to New Window and Close Tab. A side that waits for the person
+while not focused shows a chip on its bar ("Permission request", "Dialog", "Crashed").
+
+The sides are parted by an 8 px gutter in the `strip` color with a `divider` line against each page.
+Its 4 × 32 px grip shows on hover and while dragging; the pages take their new widths once the
+divider is released, and it snaps to the middle within 12 px. Double-click or Return puts it back in
+the middle; ←/→ move it 5 %, with Shift 1 %. The 8 px gutter is below the 32 px hit-area rule: a
+deliberate exception, with the keyboard as the accessible path. Each side is at least 320 px wide;
+below 648 px only the focused side shows, with "1 of 2" and a button for the other side on its bar,
+and both return 24 px past that.
+
+In the strip, a shown pair is one active tab's shape over both halves, with a 2 px accent bar over
+the focused half and the other half's title in `muted`. A pair that isn't shown keeps a hairline
+around both halves. In the sidebar, the pair's two rows (or rail tiles) sit inside one outline.
+Menu items: Open in Split View, New Split View, Split View With ▸ (the window's other tabs, by
+favicon and title), Open Link in Split View, Swap Sides, Separate Tabs, Move Split View to New
+Window. A tab dragged onto another tab with Shift held pairs with it: the target tab gets a 1.5 px
+accent outline and the half the dragged tab will take is tinted with the accent, fading in over
+`FAST`. Letting go of Shift goes back to reordering.
+
 ### Find in page
 
 - A bar anchored to the top right of the page, 40 px, Popover elevation.
@@ -803,7 +831,10 @@ zoom chip, drag and drop) is on the canvas's motion spec board.
 ### Focus order
 
 Ladybird button → tabs (one stop; arrow keys move between tabs) → back, forward, reload →
-address field → page. F6 moves between the chrome and the page.
+address field → page. F6 moves between the chrome and the page. In a split view, F6 goes from the
+chrome to the focused side, then the other side, then back to the chrome (Shift+F6 goes the other
+way); the narrow-window fallback skips the side that doesn't show. Tab order in a split view runs
+through the start side's page, the divider, then the end side's pane bar and page.
 
 ### Shortcuts
 
@@ -859,6 +890,7 @@ exclamation marks, no apologies, no jokes in errors.
 | The panel from the left of the field | Site settings | site info, page info |
 | Windows that keep nothing | Private window | incognito, InPrivate |
 | `about:welcome` | Welcome | onboarding, first run |
+| Two tabs shown side by side | Split view; each half is a side | split screen, tiling, side-by-side; pane, panel |
 
 **Numbers and units.** "12.4 of 19.3 MB", "8 seconds left", "125%", "3 of 12". Use a thin
 middle dot (·) to join short facts on one line.

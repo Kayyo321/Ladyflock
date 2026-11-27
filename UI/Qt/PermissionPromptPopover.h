@@ -79,6 +79,9 @@ public:
     void resume();
 
     PermissionPromptPopover* current() const { return m_current; }
+    bool has_prompt() const { return m_current != nullptr; }
+    // Called once a prompt shows or goes away.
+    Function<void()> on_change;
 
 private:
     struct Pending {

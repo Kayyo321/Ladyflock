@@ -471,6 +471,13 @@ public:
                 window->open_previous_tab();
         });
 
+        // NB: Split view has no default shortcut yet.
+        m_new_split_view_action = make_action("New &Split View");
+        QObject::connect(m_new_split_view_action, &QAction::triggered, this, []() {
+            if (auto* window = Application::the().active_window_if_any())
+                window->open_new_split_view();
+        });
+
         m_search_tabs_action = make_action("&Search Tabs…");
         m_search_tabs_action->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
         QObject::connect(m_search_tabs_action, &QAction::triggered, this, []() {
@@ -665,6 +672,7 @@ private:
     QAction* m_open_next_tab_action { nullptr };
     QAction* m_open_previous_tab_action { nullptr };
     QAction* m_search_tabs_action { nullptr };
+    QAction* m_new_split_view_action { nullptr };
     QAction* m_move_focus_action { nullptr };
     QAction* m_open_file_action { nullptr };
     QAction* m_open_settings_action { nullptr };
@@ -2061,6 +2069,8 @@ void Application::reopen_recently_closed_tab(BrowserWindow* target_window, Optio
 
     QPointer<Tab> tab_to_activate;
     i64 restored_tab_index = 0;
+    Vector<QPointer<Tab>> reopened_tabs;
+    Vector<Optional<SessionSplitMembership>> reopened_memberships;
     for (auto& closed_tab : unit.tabs) {
         auto location = next_insertion_index.has_value() ? BrowserWindow::TabLocation::at_index(*next_insertion_index) : BrowserWindow::TabLocation::end();
         auto& tab = window->create_new_tab(Web::HTML::ActivateTab::No, location);
@@ -2069,6 +2079,8 @@ void Application::reopen_recently_closed_tab(BrowserWindow* target_window, Optio
 
         if (restored_tab_index == unit.active_tab_index)
             tab_to_activate = &tab;
+        reopened_tabs.append(&tab);
+        reopened_memberships.append(closed_tab.split);
 
         if (!closed_tab.history.has_value() || tab.view().restore_session_history_from_snapshot(closed_tab.history.release_value()).is_error())
             tab.navigate(closed_tab.active_url);
@@ -2081,6 +2093,14 @@ void Application::reopen_recently_closed_tab(BrowserWindow* target_window, Optio
             window->pin_tab(tab, pinned_index);
         }
         ++restored_tab_index;
+    }
+
+    // A reopened window's pairs come back, and a reopened side of a pair joins its partner if it still waits beside it.
+    if (unit.was_window) {
+        window->rebuild_split_pairs(reopened_tabs, reopened_memberships);
+    } else if (unit.split_side.has_value() && reopened_tabs.size() == 1 && reopened_tabs.first() && restoring_to_source_window) {
+        if (auto* selected = window->rejoin_split_side(*reopened_tabs.first(), *unit.split_side))
+            tab_to_activate = selected;
     }
 
     // Pinning a reopened tab can move it, so its index is resolved only now.
@@ -3253,6 +3273,33 @@ QMenuBar* Application::create_application_menu_bar(ForBrowserWindow for_browser_
         view_menu->addAction(search_tabs_action());
         view_menu->addSeparator();
 
+        // A split view needs room for both sides, and a tab that isn't pinned. The item says why it can't be used.
+        view_menu->setToolTipsVisible(true);
+        view_menu->addAction(new_split_view_action());
+        // The current tab can also go into a split view with one of the window's other tabs.
+        auto* split_view_with_menu = view_menu->addMenu("Split View &With");
+        split_view_with_menu->setToolTipsVisible(true);
+        QObject::connect(split_view_with_menu, &QMenu::aboutToShow, split_view_with_menu, [split_view_with_menu] {
+            auto* window = Application::the().active_window_if_any();
+            if (auto* tab = window ? window->current_tab() : nullptr) {
+                window->populate_split_view_with_menu(*split_view_with_menu, *tab);
+                return;
+            }
+            split_view_with_menu->clear();
+            split_view_with_menu->addAction(QStringLiteral("No Other Tabs"))->setEnabled(false);
+        });
+        QObject::connect(view_menu, &QMenu::aboutToShow, view_menu, [split_view_with_menu] {
+            auto* window = Application::the().active_window_if_any();
+            auto reason = window ? window->new_split_view_unavailable_reason() : QStringLiteral("There is no window to open a split view in");
+            Application::the().new_split_view_action()->setEnabled(reason.isEmpty());
+            Application::the().new_split_view_action()->setToolTip(reason);
+            auto* tab = window ? window->current_tab() : nullptr;
+            auto with_reason = !tab ? QStringLiteral("There is no tab to split") : (tab->is_pinned() ? QStringLiteral("Unpin the tab to use split view") : QString {});
+            split_view_with_menu->menuAction()->setEnabled(with_reason.isEmpty());
+            split_view_with_menu->menuAction()->setToolTip(with_reason);
+        });
+        view_menu->addSeparator();
+
         view_menu->addAction(toggle_sidebar_action());
         view_menu->addSeparator();
 
@@ -3332,6 +3379,7 @@ DEFINE_APP_MENU_GETTER(QAction, close_current_tab_action);
 DEFINE_APP_MENU_GETTER(QAction, open_next_tab_action);
 DEFINE_APP_MENU_GETTER(QAction, open_previous_tab_action);
 DEFINE_APP_MENU_GETTER(QAction, search_tabs_action);
+DEFINE_APP_MENU_GETTER(QAction, new_split_view_action);
 DEFINE_APP_MENU_GETTER(QAction, move_focus_action);
 DEFINE_APP_MENU_GETTER(QAction, open_file_action);
 DEFINE_APP_MENU_GETTER(QAction, open_settings_action);
