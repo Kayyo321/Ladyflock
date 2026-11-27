@@ -106,17 +106,26 @@ fn paint_box_model_highlight<O: Observer>(
         width: label_w,
         height: label_h,
     };
-    if size_text_rect.y + size_text_rect.height > viewport_rect.y + viewport_rect.height {
-        size_text_rect.y = border_rect.y - label_h - CssPixels::from_integer(4);
+    // The label is drawn in the element's space, and the viewport rect is in the document's. The two agree only for an
+    // element that moves with the root scroller alone; one in a scrolled box, a transformed box or a fixed one is
+    // drawn somewhere a clamp in document space would not know, so its label just follows it.
+    let viewport = recorder.viewport;
+    let moves_with_root_scroller = recorder.source.paintable_row_is_populated(viewport)
+        && recorder.data(paintable).accumulated_visual_context.spatial
+            == recorder.data(viewport).accumulated_visual_context_for_descendants.spatial;
+    if moves_with_root_scroller {
+        if size_text_rect.y + size_text_rect.height > viewport_rect.y + viewport_rect.height {
+            size_text_rect.y = border_rect.y - label_h - CssPixels::from_integer(4);
+        }
+        size_text_rect.x = size_text_rect
+            .x
+            .min(viewport_rect.x + viewport_rect.width - label_w)
+            .max(viewport_rect.x);
+        size_text_rect.y = size_text_rect
+            .y
+            .min(viewport_rect.y + viewport_rect.height - label_h)
+            .max(viewport_rect.y);
     }
-    size_text_rect.x = size_text_rect
-        .x
-        .min(viewport_rect.x + viewport_rect.width - label_w)
-        .max(viewport_rect.x);
-    size_text_rect.y = size_text_rect
-        .y
-        .min(viewport_rect.y + viewport_rect.height - label_h)
-        .max(viewport_rect.y);
     let device_rect = converter.enclosing_device_rect(size_text_rect);
     let inputs = recorder.inputs;
     recorder
