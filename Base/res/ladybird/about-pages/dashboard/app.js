@@ -86,7 +86,7 @@ for (const btn of document.querySelectorAll("[data-close-dialog]")) {
     btn.addEventListener("click", () => {
         const dlg = btn.closest("dialog");
         if (dlg && dlg.open)
-            dlg.close();
+            hideDialog(dlg);
     });
 }
 
@@ -96,6 +96,14 @@ for (const btn of document.querySelectorAll("[data-close-dialog]")) {
 function showDialog(dialog) {
     dialog.style.display = "block";
     dialog.showModal();
+}
+
+// The close event comes a task later, and has been seen to leave the dialog laid out over the
+// board, so a dialog the page closes itself loses its display at once.
+function hideDialog(dialog) {
+    if (dialog.open)
+        dialog.close();
+    dialog.style.display = "none";
 }
 
 for (const dialog of [configDialog, confirmDialog]) {
@@ -1439,7 +1447,7 @@ function openConfigureDialog(instanceId) {
     const def = getWidgetDef(entry.instance.widgetType);
     configDialogTitle.textContent = `${def ? def.title : "Widget"} settings`;
     configDialogBody.replaceChildren();
-    entry.controller.renderConfig(configDialogBody, () => configDialog.close());
+    entry.controller.renderConfig(configDialogBody, () => hideDialog(configDialog));
     showDialog(configDialog);
 }
 
@@ -1513,7 +1521,7 @@ function openConfirmDialog({ title, message, acceptLabel, extraEl = null, onConf
 confirmAccept.addEventListener("click", async () => {
     const cb = confirmCallback;
     confirmCallback = null;
-    confirmDialog.close();
+    hideDialog(confirmDialog);
     if (cb)
         await cb();
 });
