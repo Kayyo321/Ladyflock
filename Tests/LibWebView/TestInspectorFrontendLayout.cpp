@@ -438,4 +438,13 @@ TEST_CASE(inspector_console_helpers)
     EXPECT_EQ(object.get_object("pageGlobalWins"sv)->get_string("value"sv), "page global"sv);
     EXPECT_EQ(object.get_object("thrown"sv)->get_bool("thrown"sv), Optional<bool> { true });
     EXPECT_EQ(object.get_object("afterThrow"sv)->get_double_with_precision_loss("value"sv), Optional<double> { 2 });
+
+    // The pane reads $0 too, and a DOM element's properties are accessors on its prototypes.
+    expect_holds(frontend, "Properties lists the selected element's prototype chain"sv, R"JS(
+        app.selectSidebar("properties");
+        await until(() => document.querySelectorAll("#sidebar-properties tr.computed-group").length > 2);
+        const sections = [...document.querySelectorAll("#sidebar-properties tr.computed-group")].map(row => row.textContent);
+        const names = [...document.querySelectorAll("#sidebar-properties td.decl-prop")].map(cell => cell.textContent);
+        return sections.includes("HTMLButtonElement") && sections.includes("Element") && names.includes("disabled") ? null : { sections, names: names.slice(0, 10) };
+    )JS"sv);
 }

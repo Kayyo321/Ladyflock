@@ -1257,6 +1257,11 @@ span.source-link {
     position: static;
 }
 
+.properties-table th {
+    position: static;
+}
+
+.properties-table tr.computed-group th,
 .computed-table tr.computed-group th {
     padding-top: 10px;
     background: var(--page);

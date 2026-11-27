@@ -46,7 +46,8 @@ export class SidebarsController {
         this.includeAncestorListeners = true;
         this.listenerFilter = "all";
         this.domBreakpoints = [];
-        this.jsProperties = [];
+        this.propertySections = [];
+        this.propertiesError = null;
         this.a11yTree = null;
         this.a11yDetails = null;
         this.fullA11yTreeMode = false;
@@ -544,28 +545,38 @@ export class SidebarsController {
     async loadProperties() {
         const nodeId = this.app.state.selectedNodeId;
         const generation = this.app.state.documentGeneration;
+        const isStale = () => this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || !!this.app.state.ghostSnapshot;
+        this.propertySections = [];
+        this.propertiesError = null;
         if (!nodeId || this.app.state.ghostSnapshot) {
-            this.jsProperties = [];
             this.renderProperties();
             return;
         }
         try {
             const evalRes = await sendCommand("consoleEvaluate", { expression: "$0" });
-            if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+            if (isStale())
                 return;
-            if (evalRes?.objectId && !evalRes.thrown) {
-                const propsRes = await sendCommand("getObjectProperties", { objectId: evalRes.objectId, scope: "console" });
-                if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+            if (!evalRes?.objectId || evalRes.thrown)
+                throw new Error("The selected element is not available to scripts.");
+            // A DOM wrapper keeps almost nothing of its own: what it offers are accessors on its prototypes. List
+            // the object's own properties, then each prototype's, as other browsers' Properties panes do.
+            let objectId = evalRes.objectId;
+            let label = evalRes.className || "Object";
+            for (let depth = 0; objectId && depth < 10; depth++) {
+                const res = await sendCommand("getObjectProperties", { objectId, scope: "console" });
+                if (isStale())
                     return;
-                this.jsProperties = propsRes?.properties || [];
-                this.jsPrototype = propsRes?.prototype || null;
-            } else {
-                this.jsProperties = [];
+                this.propertySections.push({ label: depth === 0 ? `${label} (own properties)` : label, properties: res?.properties || [] });
+                const prototype = res?.prototype;
+                if (prototype?.type !== "object" || prototype.className === "Object")
+                    break;
+                objectId = prototype.objectId;
+                label = prototype.className;
             }
-        } catch {
-            if (this.app.state.selectedNodeId !== nodeId || generation !== this.app.state.documentGeneration || this.app.state.ghostSnapshot)
+        } catch (err) {
+            if (isStale())
                 return;
-            this.jsProperties = [];
+            this.propertiesError = err.message;
         }
         this.renderProperties();
     }
@@ -577,27 +588,38 @@ export class SidebarsController {
         root.appendChild(el(
             "div",
             { class: "pane-toolbar" },
-            el("span", { class: "muted", text: "Own & inherited DOM wrapper properties ($0)" }),
+            el("span", { class: "muted", text: "Properties of the selected element ($0) and its prototypes" }),
             el("button", { class: "chip-btn", type: "button", text: "Refresh", onClick: () => this.loadProperties() })
         ));
 
-        if (!this.jsProperties || this.jsProperties.length === 0) {
+        const sections = this.propertySections || [];
+        if (!this.app.state.selectedNodeId || this.app.state.ghostSnapshot) {
             root.appendChild(el("div", { class: "section-block muted", text: "Select an element to inspect its JS properties." }));
             return;
         }
+        if (this.propertiesError || sections.length === 0) {
+            root.appendChild(el("div", { class: "section-block muted", text: this.propertiesError || "Loading properties…" }));
+            return;
+        }
 
-        const table = el("table", { class: "data-table monospace" });
+        const table = el("table", { class: "data-table monospace properties-table" });
         const tbody = el("tbody");
-        for (const p of this.jsProperties) {
-            const valText = p.value
-                ? (p.value.type === "string" ? JSON.stringify(p.value.value) : (p.value.text || String(p.value.value ?? p.value.className ?? p.value.type)))
-                : (p.hasGetter ? "(...)" : "undefined");
-            tbody.appendChild(el(
-                "tr",
-                { class: p.enumerable ? undefined : "non-enumerable" },
-                el("td", { class: "decl-prop", text: p.name }),
-                el("td", { class: "decl-val", text: valText })
-            ));
+        for (const section of sections) {
+            tbody.appendChild(el("tr", { class: "computed-group" }, el("th", { colspan: 2, scope: "rowgroup", text: section.label })));
+            if (section.properties.length === 0)
+                tbody.appendChild(el("tr", {}, el("td", { class: "muted", colspan: 2, text: "No properties" })));
+            for (const p of section.properties) {
+                // Accessors run only when asked, so a getter shows as (...) rather than running page code.
+                const valText = p.value
+                    ? (p.value.type === "string" ? JSON.stringify(p.value.value) : (p.value.text || String(p.value.value ?? p.value.className ?? p.value.type)))
+                    : (p.hasGetter ? "(...)" : "undefined");
+                tbody.appendChild(el(
+                    "tr",
+                    { class: p.enumerable ? undefined : "non-enumerable" },
+                    el("td", { class: "decl-prop", text: p.name }),
+                    el("td", { class: "decl-val", text: valText })
+                ));
+            }
         }
         table.appendChild(tbody);
         root.appendChild(table);
