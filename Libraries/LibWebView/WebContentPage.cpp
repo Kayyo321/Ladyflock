@@ -1327,9 +1327,10 @@ void WebContentPage::did_list_devtools_sources(u64 request_id, Vector<Web::HTML:
 void WebContentPage::did_get_devtools_source(Web::HTML::ScriptRegistryIdentifier source_id, Optional<Web::HTML::ScriptRegistryContent> source)
 {
     if (displays_tab()) {
-        auto handler = view().on_received_devtools_source.take(source_id);
-        if (handler.has_value())
-            (*handler)(move(source));
+        if (auto handlers = view().on_received_devtools_source.take(source_id); handlers.has_value()) {
+            for (auto& handler : *handlers)
+                handler(source);
+        }
     }
 }
 

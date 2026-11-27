@@ -994,6 +994,26 @@ TEST_CASE(inspector_css_overview_reads_current_styles)
     )JS"sv);
 }
 
+// Two requests for one script's source, as the Inspector and remote DevTools can make, are both answered.
+TEST_CASE(inspector_source_requests_for_one_script_are_all_answered)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorSourceRequests"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+
+    expect_holds(*fixture.frontend, "Both requests get the source"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const sources = (await sendCommand("listSources"))?.sources || [];
+        const script = sources.find(source => source.isInlineSource);
+        if (!script)
+            return { sources };
+        const load = () => sendCommand("getSourceContent", { documentId: script.id.documentId, scriptId: script.id.scriptId })
+            .then(result => result?.text?.includes("Edits ready") ? "source" : result, error => error.message);
+        const results = await Promise.all([load(), load()]);
+        return results.every(result => result === "source") ? null : results;
+    )JS"sv);
+}
+
 // An Inspector that could not take the debugger from remote DevTools still gives back what it took before.
 TEST_CASE(inspector_releases_the_debugger_after_remote_devtools_held_it)
 {

@@ -4404,7 +4404,7 @@ void Application::retrieve_source(DevTools::TabDescription const& description, W
         return;
     }
 
-    view->on_received_devtools_source.set(source_id, [on_complete = move(on_complete)](Optional<Web::HTML::ScriptRegistryContent> source) {
+    view->request_devtools_source(source_id, [on_complete = move(on_complete)](Optional<Web::HTML::ScriptRegistryContent> source) {
         if (!source.has_value()) {
             on_complete(Error::from_string_literal("Unable to locate source"));
             return;
@@ -4412,8 +4412,6 @@ void Application::retrieve_source(DevTools::TabDescription const& description, W
 
         on_complete(source.release_value());
     });
-
-    view->request_devtools_source(source_id);
 }
 
 void Application::listen_for_sources(DevTools::TabDescription const& description, OnSourceAvailable on_source_available) const

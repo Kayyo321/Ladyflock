@@ -2624,8 +2624,9 @@ void ViewImplementation::retrieve_devtools_sources(DevTools::DevToolsDelegate::O
     page().async_list_devtools_sources(request_id);
 }
 
-void ViewImplementation::request_devtools_source(Web::HTML::ScriptRegistryIdentifier const& source_id)
+void ViewImplementation::request_devtools_source(Web::HTML::ScriptRegistryIdentifier const& source_id, OnDevToolsSourceReceived on_complete)
 {
+    on_received_devtools_source.ensure(source_id).append(move(on_complete));
     page().async_request_devtools_source(source_id);
 }
 
@@ -4418,13 +4419,18 @@ void ViewImplementation::display_page_changed(RefPtr<WebContentPage> previous_pa
     if (auto pending_info_request = move(m_pending_info_request))
         pending_info_request->reject(Error::from_string_literal("The displayed page changed before sending its info"));
 
-    // So did console input completion requests.
+    // So did console input completion requests, and requests for a script's source.
     answer_pending_console_input_completions();
 
     auto& page = this->page();
     if (previous_page) {
         cancel_pending_inspector_engine_commands();
         // NB: The page has no hovered link and cannot clear the outgoing page's status label.
+    auto pending_source_requests = move(on_received_devtools_source);
+    for (auto& pending : pending_source_requests) {
+        for (auto& handler : pending.value)
+            handler({});
+    }
         if (on_link_unhover)
             on_link_unhover();
         if (m_debugger_paused) {

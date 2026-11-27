@@ -1496,7 +1496,7 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
         auto doc_id = Web::UniqueNodeID(params.get_i64("documentId"sv).value_or(0));
         auto script_id = params.get_u64("scriptId"sv).value_or(0);
         Web::HTML::ScriptRegistryIdentifier id { doc_id, script_id };
-        view->on_received_devtools_source.set(id, [weak_this = make_weak_ptr(), request_id](Optional<Web::HTML::ScriptRegistryContent> content) {
+        view->request_devtools_source(id, [weak_this = make_weak_ptr(), request_id](Optional<Web::HTML::ScriptRegistryContent> content) {
             auto self = weak_this.strong_ref();
             if (!self)
                 return;
@@ -1509,7 +1509,6 @@ void InspectorSession::handle_command(u64 request_id, StringView command, JsonOb
             res.set("text"sv, content->text.to_utf8_but_should_be_ported_to_utf16());
             self->send_reply(request_id, true, move(res));
         });
-        view->request_devtools_source(id);
         return;
     }
     auto acquire_debugger = [&] {

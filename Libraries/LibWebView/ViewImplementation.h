@@ -529,7 +529,9 @@ public:
     void inspect_current_grid(Web::UniqueNodeID node_id);
     void inspect_current_flexbox(Web::UniqueNodeID node_id, bool only_look_at_parents);
     void retrieve_devtools_sources(DevTools::DevToolsDelegate::OnSourcesReceived);
-    void request_devtools_source(Web::HTML::ScriptRegistryIdentifier const&);
+    // The Inspector and remote DevTools may both ask for one script's source; each answer goes to everyone waiting.
+    using OnDevToolsSourceReceived = Function<void(Optional<Web::HTML::ScriptRegistryContent>)>;
+    void request_devtools_source(Web::HTML::ScriptRegistryIdentifier const&, OnDevToolsSourceReceived);
     void attach_debugger(DevTools::DevToolsDelegate::OnDebuggerPaused, DevTools::DevToolsDelegate::OnDebuggerResumed);
     void configure_debugger(DebuggerConfiguration);
     void detach_debugger();
@@ -768,7 +770,7 @@ public:
     Function<void(Vector<Web::CSS::StyleSheetIdentifier>)> on_received_style_sheet_list;
     Function<void(Web::CSS::StyleSheetIdentifier const&, URL::URL const&, Utf16String const&)> on_received_style_sheet_source;
     HashMap<u64, DevTools::DevToolsDelegate::OnSourcesReceived> on_received_devtools_sources;
-    HashMap<Web::HTML::ScriptRegistryIdentifier, Function<void(Optional<Web::HTML::ScriptRegistryContent>)>> on_received_devtools_source;
+    HashMap<Web::HTML::ScriptRegistryIdentifier, Vector<OnDevToolsSourceReceived>> on_received_devtools_source;
     HashMap<u64, DevTools::DevToolsDelegate::OnResolvedURLReceived> on_resolved_dom_node_url;
     HashMap<u64, DevTools::DevToolsDelegate::OnConsoleInputCompleted> on_completed_js_console_input;
     Function<void(Web::HTML::ScriptRegistryDescription)> on_devtools_source_available;
