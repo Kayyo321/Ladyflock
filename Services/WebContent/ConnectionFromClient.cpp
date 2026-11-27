@@ -1654,6 +1654,14 @@ void ConnectionFromClient::inspect_dom_node(Web::PageId page_id, WebView::DOMNod
         node->document().set_inspected_node(node);
     } else {
         node->document().set_inspector_selected_node(node);
+        // Console input runs in the top-level document's window, so its $0-$4 follow a selection in a frame too, as
+        // long as the top-level document may script that frame's nodes.
+        if (auto top_document = page->page().local_traversable()->active_document(); top_document && top_document.ptr() != &node->document()) {
+            if (node->document().origin().is_same_origin_domain(top_document->origin()))
+                top_document->set_inspector_selected_node(node);
+            else
+                top_document->set_inspector_selected_node_out_of_reach();
+        }
     }
 
     Web::DOM::AbstractElement abstract_element { element, pseudo_element };
@@ -3495,7 +3503,12 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
             reply_err("Missing selector."_string);
             return;
         }
-        auto& sheet = document->ensure_inspector_style_sheet();
+        // The rule goes where it can match the selected element: into the inspector sheet of its own document, which
+        // may be an iframe's, or of the shadow root whose tree it is in.
+        auto* element = as_if<Web::DOM::Element>(active_inspector_node(page_id, Web::UniqueNodeID(params.get_i64("nodeId"sv).value_or(0))));
+        auto& sheet_document = element ? element->document() : *document;
+        auto shadow_root = element ? element->containing_shadow_root() : nullptr;
+        auto& sheet = shadow_root ? shadow_root->ensure_inspector_style_sheet() : sheet_document.ensure_inspector_style_sheet();
         auto rule_text = MUST(String::formatted("{} {{ {} }}", selector, declarations));
         auto rule_u16 = Utf16String::from_utf8(rule_text);
         auto index_or_err = sheet.insert_rule(rule_u16.utf16_view(), static_cast<unsigned>(sheet.native_rules().size()));
@@ -3505,7 +3518,7 @@ void ConnectionFromClient::inspector_engine_command(Web::PageId page_id, u64 req
         }
         auto idx = index_or_err.release_value();
         auto* rule = sheet.rules().item(idx);
-        document->update_style();
+        sheet_document.update_style();
         JsonObject out;
         out.set("ok"sv, true);
         out.set("sheetId"sv, String::number(sheet.style_engine_occurrence_id()));

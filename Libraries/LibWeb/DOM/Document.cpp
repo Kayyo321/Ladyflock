@@ -3307,6 +3307,13 @@ void Document::set_inspector_selected_node(GC::Ptr<Node> node)
         m_inspected_node_history.resize(5);
 }
 
+void Document::set_inspector_selected_node_out_of_reach()
+{
+    m_inspected_node_history.prepend(nullptr);
+    if (m_inspected_node_history.size() > 5)
+        m_inspected_node_history.resize(5);
+}
+
 GC::Ptr<Node const> Document::console_inspected_node(size_t index) const
 {
     if (index == 0 && m_inspected_node_history.is_empty())

@@ -792,3 +792,47 @@ TEST_CASE(inspector_styles_strike_what_the_cascade_overrides)
     expect_overridden("A shorthand that wins its longhands is not struck"sv, "shorthand"sv,
         R"([[".longhand", "padding-left", true], ["#shorthand", "padding", false]])"sv);
 }
+
+constexpr auto frames_html = R"HTML(<!doctype html><title>Frames</title>
+<p id="top">Top</p>
+<div id="host"></div>
+<iframe id="frame" srcdoc="<p id=inner>Inside the frame</p>"></iframe>
+<script>
+  document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = "<span id=shadowed>In the shadow tree</span>";
+  document.getElementById("frame").addEventListener("load", () => { document.title = "Frames ready"; });
+</script>
+)HTML"sv;
+
+// A node in a frame or a shadow tree is $0 for the console, and a new rule for it goes where it can match it.
+TEST_CASE(inspector_frames_and_shadow_trees)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorFramesAndShadowTrees"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { frames_html, "Frames ready"sv, 8 });
+    auto& frontend = *fixture.frontend;
+
+    expect_holds(frontend, "$0 and $1 follow a selection in a frame"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        await until(() => findElement(n => n.attributes?.id === "inner"));
+        await select(n => n.attributes?.id === "top", () => app.state.lastComputedStyle);
+        await select(n => n.attributes?.id === "inner", () => app.state.selectedNode?.attributes?.id === "inner" && app.state.lastComputedStyle);
+        const result = await sendCommand("consoleEvaluate", { expression: "[$0?.id, $1?.id].join()" });
+        return result?.value === "inner,top" ? null : result;
+    )JS"sv);
+
+    for (auto id : { "inner"sv, "shadowed"sv }) {
+        expect_holds(frontend, MUST(String::formatted("A new rule for #{} matches it, and can be edited", id)), MUST(String::formatted(R"JS(
+            const {{ sendEngineCommand }} = await import("resource://ladybird/about-pages/inspector/bridge.js");
+            const node = await select(n => n.attributes?.id === "{}", () => app.state.lastComputedStyle);
+            const rule = () => app.stylesPane.rules.find(r => r.attribution?.kind === "inspector" && (r.selectors || []).includes("#{}"));
+            await sendEngineCommand("addStyleRule", {{ nodeId: node.id, selector: "#{}", declarations: "color: rgb(1, 2, 3)" }});
+            app.refreshSelectedNodeProperties();
+            await until(() => rule() && app.state.lastComputedStyle?.color === "rgb(1, 2, 3)");
+            const declaration = rule().declarations.find(d => d.name === "color");
+            await app.stylesPane.commitDeclarationEdit(rule(), declaration, rule().declarations.indexOf(declaration), "color", "rgb(4, 5, 6)");
+            app.refreshSelectedNodeProperties();
+            await until(() => app.state.lastComputedStyle?.color === "rgb(4, 5, 6)");
+            return null;
+        )JS", id, id, id)));
+    }
+}

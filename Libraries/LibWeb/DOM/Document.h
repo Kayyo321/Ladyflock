@@ -512,6 +512,9 @@ public:
     void set_inspected_node(GC::Ptr<Node>);
     GC::Ptr<Node const> inspected_node() const { return m_inspected_node; }
     void set_inspector_selected_node(GC::Ptr<Node>);
+    // The Inspector selected a node that this document's script may not reach, such as one in a cross-origin frame:
+    // $0 stands for it, and is null here.
+    void set_inspector_selected_node_out_of_reach();
     GC::Ptr<Node const> console_inspected_node(size_t index) const;
 
     void note_element_forced_pseudo_state(Element&, bool has_any);
