@@ -167,6 +167,7 @@ if (NOT WIN32)
         TestFileDownloader.cpp
         TestFocusWithoutSystemFocus.cpp
         TestGamepadExposure.cpp
+        TestIdentityPurge.cpp
         TestImageDecoderIsolation.cpp
         TestInputMethodState.cpp
         TestInspectDOMTree.cpp
