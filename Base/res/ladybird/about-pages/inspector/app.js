@@ -852,49 +852,97 @@ class InspectorApp {
     }
 
     setupSplitters() {
-        // Horizontal/vertical splitter between DOM tree and Elements sidebar
+        // Between the DOM tree and the Elements sidebar: a column split, or a row split when the frontend is narrow.
         const splitter = document.getElementById("elements-splitter");
         const treePane = document.getElementById("elements-tree-pane");
         const sidePane = document.getElementById("elements-sidebar-pane");
         const splitContainer = document.getElementById("elements-split");
-        let dragging = false;
-
-        splitter.addEventListener("pointerdown", e => {
-            dragging = true;
-            splitter.setPointerCapture(e.pointerId);
-        });
-        splitter.addEventListener("pointermove", e => {
-            if (!dragging)
-                return;
+        let treeRatio = null;
+        const isStacked = () => getComputedStyle(splitContainer).flexDirection === "column";
+        const applyTreeRatio = ratio => {
+            treeRatio = Math.min(0.8, Math.max(0.2, ratio));
+            treePane.style.flex = `0 0 ${treeRatio * 100}%`;
+            sidePane.style.flex = "1 1 0";
+            splitter.setAttribute("aria-valuenow", String(Math.round(treeRatio * 100)));
+        };
+        splitter.setAttribute("aria-valuemin", "20");
+        splitter.setAttribute("aria-valuemax", "80");
+        const syncOrientation = () => splitter.setAttribute("aria-orientation", isStacked() ? "horizontal" : "vertical");
+        new ResizeObserver(syncOrientation).observe(splitContainer);
+        this.makeSplitterDraggable(splitter, e => {
             const rect = splitContainer.getBoundingClientRect();
-            const isVertical = getComputedStyle(splitContainer).flexDirection === "column";
-            if (isVertical) {
-                const ratio = Math.min(0.8, Math.max(0.2, (e.clientY - rect.top) / rect.height));
-                treePane.style.flex = `0 0 ${ratio * 100}%`;
-                sidePane.style.flex = "1 1 auto";
-            } else {
-                const ratio = Math.min(0.8, Math.max(0.2, (e.clientX - rect.left) / rect.width));
-                treePane.style.flex = `0 0 ${ratio * 100}%`;
-                sidePane.style.flex = "1 1 auto";
-            }
+            applyTreeRatio(isStacked() ? (e.clientY - rect.top) / rect.height : (e.clientX - rect.left) / rect.width);
         });
-        splitter.addEventListener("pointerup", () => { dragging = false; });
+        splitter.addEventListener("keydown", e => {
+            const step = e.shiftKey ? 0.1 : 0.02;
+            const current = treeRatio ?? treePane.getBoundingClientRect()[isStacked() ? "height" : "width"]
+                / splitContainer.getBoundingClientRect()[isStacked() ? "height" : "width"];
+            const decrease = isStacked() ? "ArrowUp" : "ArrowLeft";
+            const increase = isStacked() ? "ArrowDown" : "ArrowRight";
+            if (e.key === decrease)
+                applyTreeRatio(current - step);
+            else if (e.key === increase)
+                applyTreeRatio(current + step);
+            else if (e.key === "Home")
+                applyTreeRatio(0.2);
+            else if (e.key === "End")
+                applyTreeRatio(0.8);
+            else
+                return;
+            e.preventDefault();
+        });
 
-        // Drawer splitter
+        // Above the drawer.
         const drawerSplitter = document.getElementById("drawer-splitter");
         const drawerEl = document.getElementById("inspector-drawer");
-        let draggingDrawer = false;
-        drawerSplitter.addEventListener("pointerdown", e => {
-            draggingDrawer = true;
-            drawerSplitter.setPointerCapture(e.pointerId);
-        });
-        drawerSplitter.addEventListener("pointermove", e => {
-            if (!draggingDrawer)
+        const applyDrawerHeight = height => {
+            const clamped = Math.round(Math.min(window.innerHeight - 160, Math.max(120, height)));
+            drawerEl.style.height = `${clamped}px`;
+            drawerSplitter.setAttribute("aria-valuenow", String(clamped));
+        };
+        this.makeSplitterDraggable(drawerSplitter, e => applyDrawerHeight(drawerEl.getBoundingClientRect().bottom - e.clientY));
+        drawerSplitter.addEventListener("keydown", e => {
+            const step = e.shiftKey ? 60 : 12;
+            const current = drawerEl.getBoundingClientRect().height;
+            if (e.key === "ArrowUp")
+                applyDrawerHeight(current + step);
+            else if (e.key === "ArrowDown")
+                applyDrawerHeight(current - step);
+            else
                 return;
-            const height = Math.min(window.innerHeight - 160, Math.max(120, window.innerHeight - e.clientY));
-            drawerEl.style.height = `${height}px`;
+            e.preventDefault();
         });
-        drawerSplitter.addEventListener("pointerup", () => { draggingDrawer = false; });
+    }
+
+    // A drag that starts on the splitter follows the pointer until it is released or cancelled. Text under the pointer
+    // is not selected along the way.
+    makeSplitterDraggable(splitter, onMove) {
+        let pointerId = null;
+        const stop = () => {
+            pointerId = null;
+            splitter.classList.remove("dragging");
+            document.body.classList.remove("splitter-dragging");
+            document.body.style.removeProperty("cursor");
+        };
+        splitter.addEventListener("pointerdown", e => {
+            if (e.button !== 0)
+                return;
+            e.preventDefault();
+            pointerId = e.pointerId;
+            splitter.setPointerCapture(e.pointerId);
+            splitter.classList.add("dragging");
+            document.body.classList.add("splitter-dragging");
+            // The pointer keeps the resize cursor when it outruns the thin splitter.
+            document.body.style.cursor = getComputedStyle(splitter).cursor;
+            splitter.focus({ preventScroll: true });
+        });
+        splitter.addEventListener("pointermove", e => {
+            if (e.pointerId === pointerId)
+                onMove(e);
+        });
+        splitter.addEventListener("pointerup", stop);
+        splitter.addEventListener("pointercancel", stop);
+        splitter.addEventListener("lostpointercapture", stop);
     }
 }
 

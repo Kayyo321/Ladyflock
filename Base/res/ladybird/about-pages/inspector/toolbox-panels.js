@@ -140,6 +140,7 @@ export class ToolboxPanelsController {
     async openSource(src, codeEl, line) {
         this.activeSource = src;
         this.activeSourceText = "";
+        this.activeSourceFirstLine = 1;
         codeEl.textContent = "Loading source…";
         try {
             const res = await sendCommand("getSourceContent", {
@@ -149,6 +150,9 @@ export class ToolboxPanelsController {
             if (this.activeSource !== src || !codeEl.isConnected)
                 return;
             this.activeSourceText = res?.text || "";
+            // An inline script comes with its whole document (text/html), whose first line is line 1 of the page. A
+            // script's own text starts where the script does.
+            this.activeSourceFirstLine = res?.contentType === "text/html" ? 1 : Math.max(1, src.sourceStartLine || 1);
         } catch (err) {
             if (this.activeSource === src)
                 codeEl.textContent = err.message;
@@ -166,13 +170,13 @@ export class ToolboxPanelsController {
 
     renderSourceLines(codeEl) {
         codeEl.textContent = "";
-        const lines = this.activeSourceText.split("\n");
+        const lines = this.activeSourceText.split(/\r\n|\r|\n/);
         const source = this.activeSource;
         const frame = this.pauseState?.frames?.[0];
         const pausedLine = frame?.source?.id?.documentId === source.id.documentId
             && frame?.source?.id?.scriptId === source.id.scriptId ? frame.line : null;
         lines.forEach((lineText, idx) => {
-            const lineNum = idx + Math.max(1, source.sourceStartLine || 1);
+            const lineNum = idx + (this.activeSourceFirstLine || 1);
             const bpKey = `${source.id.documentId}:${source.id.scriptId}:${lineNum}`;
             const hasBp = this.breakpoints.has(bpKey);
             codeEl.appendChild(el(
@@ -493,7 +497,7 @@ export class ToolboxPanelsController {
                 onClick: () => this.runQuickAudit(resultsEl),
             })
         ));
-        const resultsEl = el("div", { class: "section-block muted", text: "Inspect document colors, fonts, and accessibility issues." });
+        const resultsEl = el("div", { class: "section-block scroll-fill", text: "Inspect document colors, fonts, and accessibility issues." });
         host.appendChild(resultsEl);
     }
 
@@ -510,17 +514,19 @@ export class ToolboxPanelsController {
             }
             const issues = res.issues || [];
             resultsEl.appendChild(el("h3", { text: `Accessibility findings (${issues.length}${issues.length === 50 ? "+" : ""})` }));
+            const list = el("ul", { class: "audit-issues" });
             for (const issue of issues) {
-                resultsEl.appendChild(el("button", {
-                    class: "source-link monospace",
+                list.appendChild(el("li", {}, el("button", {
+                    class: "source-link",
                     type: "button",
                     text: issue.message,
                     onClick: () => {
                         this.app.selectPanel("elements");
                         this.app.elementsTree.selectNode(issue.nodeId, null, { reveal: true, focusRow: true });
                     },
-                }));
+                })));
             }
+            resultsEl.appendChild(list);
         } catch (err) {
             resultsEl.textContent = `Audit could not run: ${err.message}`;
         }

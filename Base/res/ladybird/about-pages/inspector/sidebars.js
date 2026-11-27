@@ -11,6 +11,27 @@ import { el, sendCommand, sendEngineCommand } from "./bridge.js";
 
 const OVERLAY_PALETTE = ["#2c7be5", "#9b51e0", "#2f855a", "#d97706", "#e11d48", "#0891b2"];
 
+// Computed properties grouped by what they affect, in display order. The first matching pattern wins.
+const COMPUTED_GROUPS = [
+    ["Layout", /^(display|position|inset|top|right|bottom|left|float|clear|z-index|box-sizing|(min-|max-)?(width|height|inline-size|block-size)|aspect-ratio|margin|padding|overflow|visibility|contain|container|vertical-align)/],
+    ["Flexbox and grid", /^(flex|grid|gap|row-gap|column-gap|align-|justify-|place-|order$)/],
+    ["Text", /^(font|color$|line-height|letter-spacing|word-|text-|white-space|tab-size|direction|unicode-bidi|writing-mode|hyphens|quotes|list-style|-webkit-text)/],
+    ["Appearance", /^(background|border|outline|box-shadow|opacity|filter|backdrop-filter|mix-blend-mode|cursor|mask|clip|accent-color|caret-color|color-scheme|appearance|object-|image-|fill|stroke)/],
+    ["Animation and transform", /^(animation|transition|transform|translate|rotate|scale|perspective|will-change|offset)/],
+];
+
+function computedGroupOf(property) {
+    return COMPUTED_GROUPS.find(([, pattern]) => pattern.test(property))?.[0] ?? "Other";
+}
+
+// Box-model metrics arrive as doubles; two decimals are enough to read and to fit the diagram.
+function formatMetric(value) {
+    if (value === undefined || value === null || value === "")
+        return "–";
+    const number = Number(String(value).replace(/px$/, ""));
+    return Number.isFinite(number) ? String(Math.round(number * 100) / 100) : String(value);
+}
+
 export class SidebarsController {
     constructor(app) {
         this.app = app;
@@ -90,32 +111,22 @@ export class SidebarsController {
 
     buildBoxModel() {
         const m = this.layoutMetrics || {};
-        const fmt = v => (v === undefined || v === null || v === "" ? "–" : String(v).replace(/px$/, ""));
         const editable = (prop, posClass, value) => el("button", {
             class: `inline-editor-trigger bm-val ${posClass}`,
             type: "button",
             disabled: value == null || !this.app.state.selectedNodeId || !!this.app.state.ghostSnapshot || !!this.app.state.selectedPseudo,
-            text: fmt(value),
+            text: formatMetric(value),
             title: `Edit ${prop}`,
-            "aria-label": `Edit ${prop}, ${fmt(value)} pixels`,
+            "aria-label": `Edit ${prop}, ${formatMetric(value)} pixels`,
             onClick: e => {
                 e.stopPropagation();
-                if (this.app.state.ghostSnapshot)
-                    return;
-                const next = prompt(`Set ${prop} (e.g. 12px):`, `${value}px`);
-                if (next !== null) {
-                    sendEngineCommand("editStyleDeclaration", {
-                        nodeId: this.app.state.selectedNodeId,
-                        isInline: true,
-                        property: prop,
-                        value: next.trim(),
-                    }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => this.app.showToast(err.message));
-                }
+                if (!this.app.state.ghostSnapshot)
+                    this.editBoxModelValue(e.currentTarget, prop, value);
             },
         });
 
-        const w = m.width !== undefined ? Number(m.width).toFixed(2).replace(/\.00$/, "") : "–";
-        const h = m.height !== undefined ? Number(m.height).toFixed(2).replace(/\.00$/, "") : "–";
+        const w = formatMetric(m.width);
+        const h = formatMetric(m.height);
 
         const content = el("div", { class: "bm-layer bm-content", text: `${w} × ${h}` });
         const padding = el(
@@ -157,6 +168,40 @@ export class SidebarsController {
         return wrap;
     }
 
+    // Edits a box-model value in place: a bare number means pixels, anything else is used as written.
+    editBoxModelValue(button, property, value) {
+        const before = formatMetric(value);
+        const input = el("input", { class: "dom-inline-input bm-input", type: "text", value: before, "aria-label": property });
+        button.replaceWith(input);
+        input.focus();
+        input.select();
+        let finished = false;
+        const finish = (commit, refocus) => {
+            if (finished)
+                return;
+            finished = true;
+            const raw = input.value.trim();
+            input.replaceWith(button);
+            if (refocus)
+                button.focus();
+            if (!commit || !raw || raw === before)
+                return;
+            sendEngineCommand("editStyleDeclaration", {
+                nodeId: this.app.state.selectedNodeId,
+                isInline: true,
+                property,
+                value: /^-?\d*\.?\d+$/.test(raw) ? `${raw}px` : raw,
+            }).then(() => this.app.refreshSelectedNodeProperties()).catch(err => this.app.showToast(err.message));
+        };
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter" || e.key === "Escape") {
+                e.preventDefault();
+                finish(e.key === "Enter", true);
+            }
+        });
+        input.addEventListener("blur", () => finish(true, false), { once: true });
+    }
+
     renderComputedTable(host) {
         host.textContent = "";
         const entries = Object.entries(this.computedData || {});
@@ -169,15 +214,32 @@ export class SidebarsController {
             return k.toLowerCase().includes(q) || String(v).toLowerCase().includes(q);
         });
 
-        const table = el("table", { class: "data-table monospace" });
+        if (filtered.length === 0) {
+            host.appendChild(el("div", { class: "section-block muted", text: entries.length ? "No computed properties match." : "Select an element to see its computed style." }));
+            return;
+        }
+
+        const table = el("table", { class: "data-table monospace computed-table" });
         const tbody = el("tbody");
-        for (const [prop, val] of filtered.sort((a, b) => a[0].localeCompare(b[0]))) {
-            tbody.appendChild(el(
-                "tr",
-                {},
-                el("td", { class: "decl-prop", text: prop }),
-                el("td", { class: "decl-val", text: String(val) })
-            ));
+        const appendRow = (prop, val) => tbody.appendChild(el(
+            "tr",
+            {},
+            el("td", { class: "decl-prop", text: prop }),
+            el("td", { class: "decl-val", text: String(val) })
+        ));
+        const sorted = filtered.sort((a, b) => a[0].localeCompare(b[0]));
+        if (this.computedGrouped) {
+            for (const groupName of [...COMPUTED_GROUPS.map(([name]) => name), "Other"]) {
+                const rows = sorted.filter(([prop]) => computedGroupOf(prop) === groupName);
+                if (!rows.length)
+                    continue;
+                tbody.appendChild(el("tr", { class: "computed-group" }, el("th", { colspan: 2, scope: "rowgroup", text: groupName })));
+                for (const [prop, val] of rows)
+                    appendRow(prop, val);
+            }
+        } else {
+            for (const [prop, val] of sorted)
+                appendRow(prop, val);
         }
         table.appendChild(tbody);
         host.appendChild(table);

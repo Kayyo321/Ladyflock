@@ -315,19 +315,28 @@ body.inspector-shell {
 .menu-dropdown .menu-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
+    gap: 6px;
     padding: 6px 10px;
     font-size: 12px;
+    text-align: start;
+    white-space: nowrap;
 }
 
-.menu-item[aria-checked="true"]::before {
-    content: "✓ ";
+/* Every choice keeps a column for the check mark, so the labels line up whether or not they are chosen. */
+.menu-item[role="menuitemradio"]::before {
+    content: "";
+    flex: 0 0 1em;
     color: var(--accent);
     font-weight: 600;
 }
 
+.menu-item[role="menuitemradio"][aria-checked="true"]::before {
+    content: "✓";
+}
+
 .shortcut {
+    margin-left: auto;
+    padding-left: 16px;
     color: var(--muted);
     font-size: 11px;
 }
@@ -520,7 +529,12 @@ body.inspector-shell {
     flex-shrink: 0;
 }
 
+body.splitter-dragging {
+    user-select: none;
+}
+
 .pane-splitter:hover,
+.pane-splitter.dragging,
 .pane-splitter:focus-visible {
     border-left-color: var(--accent);
     background: var(--choice-fill);
@@ -1225,8 +1239,34 @@ span.source-link {
     border-radius: 3px;
 }
 
-.bm-val:hover {
+.bm-val:hover:not(:disabled) {
     background: var(--page);
+}
+
+.bm-val:disabled {
+    cursor: default;
+}
+
+.dom-inline-input.bm-input {
+    width: 6ch;
+    text-align: center;
+}
+
+/* The box model sits above; the table's sticky header would otherwise hide its rows under the toolbar. */
+.computed-table th {
+    position: static;
+}
+
+.computed-table tr.computed-group th {
+    padding-top: 10px;
+    background: var(--page);
+    color: var(--muted);
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 11px;
+}
+
+.computed-table td.decl-val {
+    overflow-wrap: anywhere;
 }
 
 .bm-val.top { top: 2px; left: 50%; transform: translateX(-50%); }
@@ -1489,10 +1529,27 @@ span.source-link {
     min-width: 110px;
 }
 
+.audit-issues {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.audit-issues li {
+    padding: 3px 0;
+}
+
+.audit-issues .source-link {
+    white-space: normal;
+    text-align: start;
+}
+
 /* Bottom Drawer */
+/* In a short bottom dock the drawer leaves the panel above it at least as much room as it takes. */
 .inspector-drawer {
     height: 230px;
-    min-height: 120px;
+    min-height: min(120px, 45%);
+    max-height: 55%;
     display: flex;
     flex-direction: column;
     background: var(--page);

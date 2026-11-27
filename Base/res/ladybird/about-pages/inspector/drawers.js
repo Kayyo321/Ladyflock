@@ -233,12 +233,19 @@ export class DrawersController {
 
         wrap.appendChild(el("div", { class: "console-prompt" }, el("span", { class: "muted monospace", text: "›" }), promptInput));
         host.appendChild(wrap);
+        // The log was filled before it was in the document, where it could not scroll; open it at the latest message.
+        logEl.scrollTop = logEl.scrollHeight;
     }
 
     renderConsoleMessages(logEl) {
+        // Follow new messages only when already at the end, so reading older ones is not interrupted.
+        const atEnd = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
         logEl.textContent = "";
         const q = this.consoleFilter.trim().toLowerCase();
         for (const entry of this.consoleEntries) {
+            // Groups are not drawn as groups yet, so the end of one has nothing to show.
+            if (entry.kind === "groupEnd")
+                continue;
             if (this.consoleLevel !== "all" && entry.level !== this.consoleLevel)
                 continue;
             const formatted = this.formatConsoleEntry(entry);
@@ -249,7 +256,8 @@ export class DrawersController {
                 text: formatted,
             }));
         }
-        logEl.scrollTop = logEl.scrollHeight;
+        if (atEnd)
+            logEl.scrollTop = logEl.scrollHeight;
     }
 
     formatConsoleEntry(entry) {
@@ -271,7 +279,12 @@ export class DrawersController {
             return `${entry.name ? `${entry.name}: ` : ""}${entry.message || "Error"}`;
         if (entry.kind === "log" && Array.isArray(entry.arguments))
             return entry.arguments.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
-        return JSON.stringify(entry);
+        if (entry.kind === "trace") {
+            const frames = (entry.trace || []).map(frame =>
+                `    at ${frame.function || "(anonymous)"}${frame.file ? ` (${frame.file}${frame.line ? `:${frame.line}${frame.column ? `:${frame.column}` : ""}` : ""})` : ""}`);
+            return [`console.trace${entry.label ? `: ${entry.label}` : ""}`, ...frames].join("\n");
+        }
+        return entry.message || entry.text || "";
     }
 
     // Changes / Flight Recorder
