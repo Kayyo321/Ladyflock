@@ -974,7 +974,21 @@ span.source-link {
     margin-left: auto;
 }
 
-.why-won-btn:hover {
+.add-decl-btn {
+    align-self: flex-start;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 10px;
+    padding: 1px 5px;
+    margin-left: 14px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.why-won-btn:hover,
+.add-decl-btn:hover {
     background: var(--control);
     color: var(--text);
 }
@@ -1165,6 +1179,221 @@ span.source-link {
     font-weight: 600;
     margin-bottom: 6px;
     color: var(--text);
+}
+
+.section-block * + h3 {
+    margin-top: 10px;
+}
+
+/* The frontend's CSP has no 'unsafe-inline' for style attributes, so every layout the panes need lives here. */
+.scroll-fill {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.scroll-fill.padded {
+    padding: 8px 10px;
+}
+
+.button-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.button-row.padded {
+    padding: 8px 12px;
+}
+
+.form-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    max-width: 460px;
+    padding: 6px 12px;
+}
+
+.form-row input,
+.form-row select {
+    height: 24px;
+    font-size: 12px;
+}
+
+.list-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--separator-soft);
+}
+
+.option-row {
+    margin: 4px 0;
+}
+
+.font-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 0;
+}
+
+.overlay-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.overlay-color-input {
+    width: 22px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    background: none;
+    flex-shrink: 0;
+}
+
+.listener-row,
+.breakpoint-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.listener-row {
+    padding: 3px 0;
+}
+
+.listener-desc,
+.breakpoint-desc {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.listener-desc .node-badge {
+    margin-left: 0;
+}
+
+.listener-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.data-table tr.non-enumerable {
+    opacity: 0.65;
+}
+
+.name-input-row {
+    font-size: 11px;
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+}
+
+.aria-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.aria-input {
+    flex: 1;
+    min-width: 0;
+    height: 22px;
+    font-size: 11px;
+}
+
+.a11y-tree-row {
+    width: 100%;
+}
+
+.subdrawer-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.subdrawer-code {
+    font-size: 11px;
+    margin-bottom: 6px;
+    overflow-wrap: anywhere;
+}
+
+.subdrawer-status {
+    margin: 6px 0;
+    font-size: 11px;
+}
+
+.subdrawer-error {
+    color: var(--error);
+    margin-bottom: 6px;
+}
+
+.class-toggle-list {
+    margin-top: 6px;
+}
+
+.cascade-story-step {
+    margin-bottom: 4px;
+}
+
+.color-popover-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.changes-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.changes-item-meta {
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+.engine-lens-output {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    font-size: 11px;
+    white-space: pre;
+}
+
+.sources-item {
+    font-size: 11px;
+    padding: 4px 6px;
+}
+
+.sources-frame {
+    font-size: 11px;
+    padding: 2px 4px;
+}
+
+.sources-heading {
+    margin-top: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.waterfall-cell {
+    min-width: 110px;
 }
 
 /* Bottom Drawer */

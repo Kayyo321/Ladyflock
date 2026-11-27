@@ -245,7 +245,7 @@ export class StylesPaneController {
                 }
             },
         });
-        const list = el("div", { class: "pseudo-grid", style: "margin-top:6px" });
+        const list = el("div", { class: "pseudo-grid class-toggle-list" });
         for (const cls of classes) {
             const cb = el("input", {
                 type: "checkbox",
@@ -291,20 +291,19 @@ export class StylesPaneController {
         const panel = el(
             "div",
             { class: "subdrawer-panel" },
-            el("div", { style: "font-weight:600;margin-bottom:4px", text: "Create Cosmetic Filter" }),
-            el("div", { class: "monospace muted", style: "font-size:11px;margin-bottom:6px", text: proposedRule }),
+            el("div", { class: "subdrawer-title", text: "Create Cosmetic Filter" }),
+            el("div", { class: "monospace muted subdrawer-code", text: proposedRule }),
             selectorInput,
             el("div", {
-                class: "muted tabular",
-                style: "margin:6px 0;font-size:11px",
+                class: "muted tabular subdrawer-status",
                 text: draft.error ? "" : draft.matchCount === null
                     ? "Previewing matches…"
                     : `${draft.matchCount} matching element${draft.matchCount === 1 ? "" : "s"} · Scope: ${isPrivate ? "Private preview only (will not save to profile)" : "Regular profile custom filters"}`,
             }),
-            draft.error ? el("div", { style: "color:var(--error);margin-bottom:6px", text: draft.error }) : null,
+            draft.error ? el("div", { class: "subdrawer-error", text: draft.error }) : null,
             el(
                 "div",
-                { style: "display:flex;gap:6px" },
+                { class: "button-row" },
                 el("button", {
                     class: "chip-btn primary",
                     type: "button",
@@ -567,9 +566,8 @@ export class StylesPaneController {
             // Quick "+ add declaration" trigger on editable rules
             if (editable) {
                 const addRow = el("button", {
-                    class: "why-won-btn",
+                    class: "add-decl-btn",
                     type: "button",
-                    style: "margin-left:0;align-self:flex-start",
                     text: "+ add declaration",
                     onClick: () => this.beginAddDeclaration(declList, rule),
                 });
@@ -587,7 +585,7 @@ export class StylesPaneController {
         if (story) {
             box.appendChild(el("div", { class: "cascade-story-headline", text: story.reason || `Winning value for ${propName}` }));
             if (story.decidingStep)
-                box.appendChild(el("div", { class: "muted", style: "margin-bottom:4px", text: `Deciding cascade step: ${story.decidingStep}` }));
+                box.appendChild(el("div", { class: "muted cascade-story-step", text: `Deciding cascade step: ${story.decidingStep}` }));
             for (const cand of story.competitors || []) {
                 box.appendChild(el(
                     "div",
@@ -637,7 +635,7 @@ export class StylesPaneController {
         return el(
             "div",
             { class: "color-popover" },
-            el("div", { style: "display:flex;align-items:center;gap:8px" }, picker, el("span", { class: "monospace", text: decl.value })),
+            el("div", { class: "color-popover-row" }, picker, el("span", { class: "monospace", text: decl.value })),
             contrastBox
         );
     }

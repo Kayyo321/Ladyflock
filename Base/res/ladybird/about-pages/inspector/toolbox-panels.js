@@ -108,9 +108,8 @@ export class ToolboxPanelsController {
             for (const src of this.sources) {
                 const label = src.displayUrl || src.url || `(inline script #${src.id?.scriptId})`;
                 sidebar.appendChild(el("button", {
-                    class: `command-item monospace ${this.activeSource?.id?.scriptId === src.id?.scriptId ? "active" : ""}`,
+                    class: `command-item monospace sources-item ${this.activeSource?.id?.scriptId === src.id?.scriptId ? "active" : ""}`,
                     type: "button",
-                    style: "font-size:11px;padding:4px 6px",
                     text: label.split("/").pop() || label,
                     title: label,
                     onClick: () => this.openSource(src, codeEl),
@@ -119,12 +118,11 @@ export class ToolboxPanelsController {
         }
 
         if (this.pauseState?.frames?.length) {
-            sidebar.appendChild(el("div", { style: "font-weight:600;margin-top:10px;font-size:11px", text: "Call Stack" }));
+            sidebar.appendChild(el("div", { class: "sources-heading", text: "Call Stack" }));
             for (const frame of this.pauseState.frames) {
                 sidebar.appendChild(el("button", {
                     type: "button",
-                    class: "command-item monospace",
-                    style: "font-size:11px;padding:2px 4px",
+                    class: "command-item monospace sources-frame",
                     text: `${frame.displayName || "(anonymous)"} :${frame.line}:${frame.column}`,
                     onClick: () => this.openSource(frame.source, codeEl, frame.line),
                 }));
@@ -256,7 +254,7 @@ export class ToolboxPanelsController {
             })
         ));
 
-        const rowsHost = el("div", { id: "network-rows", style: "flex:1;overflow:auto" });
+        const rowsHost = el("div", { id: "network-rows", class: "scroll-fill" });
         host.appendChild(rowsHost);
         this.renderNetworkRows(rowsHost);
     }
@@ -317,7 +315,7 @@ export class ToolboxPanelsController {
                 el("td", { text: req.initiatorType || "other" }),
                 el("td", { text: req.bodySize ? `${req.bodySize} B` : "–" }),
                 el("td", { text: req.durationMs ? `${req.durationMs.toFixed(1)} ms` : "–" }),
-                el("td", { style: "min-width:110px" }, bar)
+                el("td", { class: "waterfall-cell" }, bar)
             ));
         }
         table.appendChild(tbody);
@@ -377,7 +375,7 @@ export class ToolboxPanelsController {
         }
         host.appendChild(bar);
 
-        const body = el("div", { style: "flex:1;overflow:auto;padding:8px" }, el("span", { class: "muted", text: "Loading storage…" }));
+        const body = el("div", { class: "scroll-fill padded" }, el("span", { class: "muted", text: "Loading storage…" }));
         host.appendChild(body);
 
         try {
@@ -391,7 +389,8 @@ export class ToolboxPanelsController {
             const items = res?.items || [];
             body.textContent = "";
             if (items.length === 0) {
-                body.appendChild(el("div", { class: "muted", text: `No ${this.applicationTab} items for this origin.` }));
+                const label = tabs.find(([key]) => key === this.applicationTab)?.[1] ?? this.applicationTab;
+                body.appendChild(el("div", { class: "muted", text: `No ${label.toLowerCase()} for this origin.` }));
                 return;
             }
             const t = el("table", { class: "data-table monospace" });

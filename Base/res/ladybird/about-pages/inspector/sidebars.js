@@ -79,7 +79,7 @@ export class SidebarsController {
             for (const f of this.usedFonts) {
                 fontsSection.appendChild(el(
                     "div",
-                    { style: "display:flex;justify-content:space-between;padding:3px 0" },
+                    { class: "font-row" },
                     el("span", { text: `${f.family || f.name || "Unknown"} (${f.weight || 400}, ${f.size || ""})` }),
                     el("span", { class: "muted tabular", text: f.glyphCount !== undefined ? `${f.glyphCount} glyphs · ${f.source || "local"}` : (f.source || "computed") })
                 ));
@@ -205,7 +205,7 @@ export class SidebarsController {
                     this.app.refreshActiveGridOverlays();
                 },
             });
-            optSection.appendChild(el("div", { style: "margin:4px 0" }, el("label", { class: "inline-check" }, cb, label)));
+            optSection.appendChild(el("div", { class: "option-row" }, el("label", { class: "inline-check" }, cb, label)));
         }
         root.appendChild(optSection);
 
@@ -234,7 +234,8 @@ export class SidebarsController {
             const colorInput = el("input", {
                 type: "color",
                 value: color,
-                style: "width:22px;height:18px;padding:0;border:none;background:none",
+                class: "overlay-color-input",
+                "aria-label": `Overlay color for ${this.app.elementsTree.describeNodeShort(node)}`,
                 onInput: e => {
                     this.app.state.overlayColors.set(node.id, e.target.value);
                     if (this.app.state.activeGridOverlays.has(node.id))
@@ -243,7 +244,7 @@ export class SidebarsController {
             });
             gridSec.appendChild(el(
                 "div",
-                { style: "display:flex;align-items:center;gap:8px;margin:4px 0" },
+                { class: "overlay-row" },
                 cb,
                 colorInput,
                 el("button", {
@@ -269,7 +270,7 @@ export class SidebarsController {
             });
             flexSec.appendChild(el(
                 "div",
-                { style: "display:flex;align-items:center;gap:8px;margin:4px 0" },
+                { class: "overlay-row" },
                 cb,
                 el("button", {
                     class: "source-link monospace",
@@ -291,7 +292,7 @@ export class SidebarsController {
                 this.app.showToast(latchCb.checked ? "Loupe latched to selected element" : "Loupe unlatched");
             },
         });
-        extraSec.appendChild(el("div", { style: "margin:4px 0" }, el("label", { class: "inline-check" }, latchCb, "Latch Loupe overlay (Space)")));
+        extraSec.appendChild(el("div", { class: "option-row" }, el("label", { class: "inline-check" }, latchCb, "Latch Loupe overlay (Space)")));
         root.appendChild(extraSec);
     }
 
@@ -374,12 +375,12 @@ export class SidebarsController {
             for (const item of list) {
                 const row = el(
                     "div",
-                    { style: "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0" },
+                    { class: "listener-row" },
                     el(
                         "div",
-                        {},
+                        { class: "listener-desc" },
                         el("span", { class: "monospace", text: item.target || `node #${item.nodeId}` }),
-                        el("span", { class: "monospace", text: item.handlerName }),
+                        el("span", { class: "monospace muted", text: item.handlerName || "anonymous" }),
                         item.capture ? el("span", { class: "node-badge", text: "capture" }) : null,
                         item.passive ? el("span", { class: "node-badge", text: "passive" }) : null,
                         item.once ? el("span", { class: "node-badge", text: "once" }) : null,
@@ -387,7 +388,7 @@ export class SidebarsController {
                     ),
                     el(
                         "div",
-                        { style: "display:flex;gap:6px;align-items:center" },
+                        { class: "listener-actions" },
                         item.source?.id
                             ? el("button", {
                                 class: "source-link",
@@ -448,10 +449,10 @@ export class SidebarsController {
             });
             root.appendChild(el(
                 "div",
-                { class: "section-block", style: "display:flex;align-items:center;justify-content:space-between;gap:8px" },
+                { class: "section-block breakpoint-row" },
                 el(
                     "div",
-                    { style: "display:flex;align-items:center;gap:8px" },
+                    { class: "breakpoint-desc" },
                     cb,
                     el(
                         "div",
@@ -529,7 +530,7 @@ export class SidebarsController {
                 : (p.hasGetter ? "(...)" : "undefined");
             tbody.appendChild(el(
                 "tr",
-                { style: p.enumerable ? "" : "opacity:0.65" },
+                { class: p.enumerable ? undefined : "non-enumerable" },
                 el("td", { class: "decl-prop", text: p.name }),
                 el("td", { class: "decl-val", text: valText })
             ));
@@ -615,8 +616,7 @@ export class SidebarsController {
                 propsSec.appendChild(el("h3", { text: "Name-related attributes and text" }));
                 for (const input of nameInputs) {
                     propsSec.appendChild(el("div", {
-                        class: "monospace",
-                        style: "font-size:11px;padding:2px 0",
+                        class: "monospace name-input-row",
                         text: `${input.source}: ${JSON.stringify(input.value)}`,
                     }));
                 }
@@ -637,7 +637,7 @@ export class SidebarsController {
                     value: String(v),
                     "aria-label": k,
                     disabled: !!this.app.state.ghostSnapshot || !!this.app.state.selectedPseudo,
-                    style: "height:22px;font-size:11px",
+                    class: "aria-input",
                     onChange: () => sendCommand("setAttribute", {
                         nodeId: domNode.id,
                         name: k,
@@ -646,7 +646,7 @@ export class SidebarsController {
                         beforeValue: String(v),
                     }).then(() => this.loadAccessibility()).catch(err => this.app.showToast(err.message)),
                 });
-                ariaSec.appendChild(el("div", { style: "display:flex;align-items:center;gap:8px;margin:4px 0" }, el("span", { class: "monospace decl-prop", text: k }), inp));
+                ariaSec.appendChild(el("div", { class: "aria-row" }, el("span", { class: "monospace decl-prop", text: k }), inp));
             }
         }
         root.appendChild(ariaSec);
@@ -656,12 +656,13 @@ export class SidebarsController {
             const renderA11yBranch = (node, depth = 0) => {
                 const canReveal = this.app.elementsTree.nodesById.has(node.id);
                 const row = el(canReveal ? "button" : "div", {
-                    class: `inline-editor-trigger dom-row monospace ${node.id === this.app.state.selectedNodeId ? "selected" : ""}`,
+                    class: `inline-editor-trigger dom-row a11y-tree-row monospace ${node.id === this.app.state.selectedNodeId ? "selected" : ""}`,
                     type: canReveal ? "button" : undefined,
-                    style: `padding-left:${depth * 14 + 4}px`,
                     text: `${node.role || node.type || "node"}${node.name ? ` "${node.name}"` : ""}`,
                     onClick: canReveal ? () => this.app.elementsTree.selectNode(node.id, null, { reveal: true, focusRow: true }) : undefined,
                 });
+                // CSSOM, not a style attribute: the page's CSP has no 'unsafe-inline' for style-src-attr.
+                row.style.paddingLeft = `${depth * 14 + 4}px`;
                 treeSec.appendChild(row);
                 for (const c of node.children || [])
                     renderA11yBranch(c, depth + 1);

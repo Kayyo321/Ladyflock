@@ -98,6 +98,8 @@ export function el(tag, attrs = {}, ...children) {
             continue;
         if (k === "class")
             node.className = v;
+        else if (k === "style")
+            throw new Error("el(): the Inspector's CSP blocks style attributes; use a class, or node.style for computed values.");
         else if (k === "text")
             node.textContent = String(v);
         else if (k.startsWith("on") && typeof v === "function")

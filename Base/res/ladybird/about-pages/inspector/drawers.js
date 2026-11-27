@@ -310,11 +310,11 @@ export class DrawersController {
             const groupTitle = /^\d+$/.test(groupKey) ? "Stylesheet" : groupKey;
             block.appendChild(el(
                 "div",
-                { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px" },
+                { class: "changes-group-header" },
                 el("h3", { class: "monospace", text: `${groupTitle} (${list[0].isWritableSource ? "writable source" : "live document"})` })
             ));
             for (const item of list) {
-                block.appendChild(el("div", { class: "muted", style: "font-size:11px;margin-top:4px", text: `${item.kind} · ${item.targetLabel}${item.undone ? " (undone)" : ""}` }));
+                block.appendChild(el("div", { class: "muted changes-item-meta", text: `${item.kind} · ${item.targetLabel}${item.undone ? " (undone)" : ""}` }));
                 if (item.canUndo && !item.undone) {
                     block.appendChild(el("button", {
                         class: "chip-btn",
@@ -371,8 +371,7 @@ export class DrawersController {
         host.appendChild(bar);
 
         const pre = el("pre", {
-            class: "monospace",
-            style: "padding:10px;overflow:auto;flex:1;font-size:11px;white-space:pre",
+            class: "monospace engine-lens-output",
             text: "Capturing engine view…",
         });
         host.appendChild(pre);
@@ -410,7 +409,7 @@ export class DrawersController {
             for (const anim of list) {
                 body.appendChild(el(
                     "div",
-                    { style: "display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--separator-soft)" },
+                    { class: "list-row" },
                     el("button", {
                         class: "source-link",
                         type: "button",
@@ -445,7 +444,7 @@ export class DrawersController {
         });
         for (const [value, text] of [["auto", "System"], ["light", "Light"], ["dark", "Dark"]])
             select.appendChild(el("option", { value, text, selected: this.colorScheme === value }));
-        host.appendChild(el("label", { class: "inline-field" }, "Color scheme", select));
+        host.appendChild(el("label", { class: "form-row" }, el("span", { text: "Color scheme" }), select));
     }
 
     // Sensors Drawer
@@ -458,13 +457,13 @@ export class DrawersController {
                 placeholder,
                 onInput: e => { this.sensorState[key] = e.target.value; },
             });
-            return el("label", { style: "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 12px" }, el("span", { text: label }), inp);
+            return el("label", { class: "form-row" }, el("span", { text: label }), inp);
         };
         host.appendChild(field("Geolocation latitude", "latitude", "e.g. 37.7749"));
         host.appendChild(field("Geolocation longitude", "longitude", "e.g. -122.4194"));
         host.appendChild(el(
             "div",
-            { style: "padding:8px 12px;display:flex;gap:8px" },
+            { class: "button-row padded" },
             el("button", {
                 class: "chip-btn primary",
                 type: "button",
