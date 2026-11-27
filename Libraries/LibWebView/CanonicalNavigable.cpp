@@ -1130,8 +1130,12 @@ ErrorOr<NonnullRefPtr<WebContentPage>> CanonicalNavigable::obtain_page_to_host(C
     if (auto const& ext_id = document.extension_id(); ext_id.has_value()) {
         page->client().set_hosted_extension_id(*ext_id);
         if (auto const* ext_manager = Application::default_session().extension_manager.ptr()) {
-            if (auto ext = ext_manager->extension_by_id(*ext_id); ext.has_value())
-                page->client().async_set_hosted_extension_context(page->id(), ext->extension_id, ext->uuid, ext->manifest.raw_json(), ext_manager->locale_messages_for(*ext));
+            if (auto ext = ext_manager->extension_by_id(*ext_id); ext.has_value()) {
+                // Only the browser knows which view is the extension's background page.
+                auto view = top_level_traversable().view();
+                bool is_background_page = view.has_value() && !parent() && Extensions::ExtensionManager::is_extension_background_view(*view);
+                page->client().async_set_hosted_extension_context(page->id(), ext->extension_id, ext->uuid, ext->manifest.raw_json(), ext_manager->locale_messages_for(*ext), is_background_page);
+            }
         }
     }
     return page;

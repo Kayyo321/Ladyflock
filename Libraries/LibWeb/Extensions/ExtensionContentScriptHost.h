@@ -41,7 +41,7 @@ public:
     void run_scripts_for(RunAt);
     void inject_attached_script(AttachedContentScript const&);
 
-    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
+    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page);
     // Whether the document is an extension's own page whose manifest asks for the permission. The browser checks
     // again before it acts on anything the permission allows.
     bool is_extension_page_with_permission(StringView permission) const;

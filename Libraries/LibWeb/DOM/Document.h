@@ -1882,7 +1882,7 @@ public:
     Extensions::ExtensionContentScriptHost* extension_content_script_host() const { return m_extension_content_script_host.ptr(); }
     Extensions::ExtensionContentScriptHost& ensure_extension_content_script_host();
     void run_extension_content_scripts(Extensions::RunAt);
-    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json);
+    void initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page);
     void detach_extension_worlds();
 
     void exit_pointer_lock();

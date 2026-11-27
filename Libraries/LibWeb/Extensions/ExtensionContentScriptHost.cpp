@@ -73,7 +73,7 @@ GC::Ref<Bindings::ExtensionRealmContext> ExtensionContentScriptHost::ensure_cont
     return realm_ctx;
 }
 
-void ExtensionContentScriptHost::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json)
+void ExtensionContentScriptHost::initialize_extension_page_context(String extension_id, String extension_uuid, String manifest_json, String locale_messages_json, bool is_background_page)
 {
     if (m_extension_page_context)
         return;
@@ -82,7 +82,8 @@ void ExtensionContentScriptHost::initialize_extension_page_context(String extens
         move(extension_id),
         move(extension_uuid),
         move(manifest_json),
-        move(locale_messages_json));
+        move(locale_messages_json),
+        is_background_page);
 }
 
 bool ExtensionContentScriptHost::is_extension_page_with_permission(StringView permission) const

@@ -847,3 +847,41 @@ TEST_CASE(activating_a_tab_also_reports_it_highlighted)
     EXPECT_EQ(results.get_u32("window"sv).value_or(0), 77u);
     EXPECT_EQ(results.get_u64("activated"sv).value_or(0), tab_id);
 }
+
+TEST_CASE(the_background_page_finds_itself_and_other_pages_do_not_look)
+{
+    Test::HeadlessTestEnvironment env { "TestExtCompatBackgroundPage"sv, 60 };
+    auto app = TRY_OR_FAIL(env.create_application<CompatTestApp>(Array { "--temporary-profile"sv }.span()));
+    auto& manager = *app->default_session().extension_manager;
+
+    auto directory = LexicalPath::join(env.directory(), "background-page"sv).string();
+    write_file(directory, "manifest.json"sv, R"({
+        "manifest_version": 2, "name": "Background page", "version": "1",
+        "browser_specific_settings": {"gecko": {"id": "background-page@example.test"}},
+        "permissions": ["storage"], "background": {"scripts": ["background.js"]}
+    })"sv);
+    write_file(directory, "background.js"sv, R"(
+        (async () => {
+            const itself = browser.extension.getBackgroundPage() === window;
+            const asynchronously = (await browser.runtime.getBackgroundPage()) === window;
+            await browser.storage.local.set({ itself, asynchronously, background: true });
+        })().catch(error => browser.storage.local.set({ error: String(error), background: true }));
+    )"sv);
+    write_file(directory, "page.html"sv, "<!DOCTYPE html><script src=page.js></script>"sv);
+    // Other pages don't have them, so extensions that check send messages instead.
+    write_file(directory, "page.js"sv, R"(
+        browser.storage.local.set({ fromPage: typeof browser.extension.getBackgroundPage, asyncFromPage: typeof browser.runtime.getBackgroundPage, done: true });
+    )"sv);
+    auto installed = TRY_OR_FAIL(manager.load_unpacked(directory));
+    bool started = false;
+    manager.ensure_background_started(installed.extension_id, [&](bool ready) { started = ready; });
+    spin_until([&] { return started; });
+    wait_for_results(manager, installed.extension_id, "background"sv);
+
+    app->open_url_in_new_window(URL::Parser::basic_parse(MUST(String::formatted("moz-extension://{}/page.html", installed.uuid))).release_value(), WebView::IsPrivate::No);
+    auto results = wait_for_results(manager, installed.extension_id);
+    EXPECT(results.get_bool("itself"sv) == true);
+    EXPECT(results.get_bool("asynchronously"sv) == true);
+    EXPECT_EQ(results.get_string("fromPage"sv).value_or({}), "undefined"sv);
+    EXPECT_EQ(results.get_string("asyncFromPage"sv).value_or({}), "undefined"sv);
+}

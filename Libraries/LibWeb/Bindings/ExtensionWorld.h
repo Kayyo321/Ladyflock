@@ -42,7 +42,8 @@ public:
         String extension_id,
         String extension_uuid,
         String manifest_json,
-        String locale_messages_json = {});
+        String locale_messages_json = {},
+        bool is_background_page = false);
 
     virtual ~ExtensionRealmContext() override;
 

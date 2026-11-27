@@ -156,6 +156,7 @@ static constexpr Array s_supported_permissions {
 static constexpr Array s_supported_api_methods {
     "runtime.id"sv,
     "runtime.getURL"sv,
+    "runtime.getBackgroundPage"sv,
     "runtime.getManifest"sv,
     "runtime.sendMessage"sv,
     "runtime.onMessage"sv,
@@ -312,6 +313,7 @@ static constexpr Array s_supported_api_methods {
     "runtime.setUninstallURL"sv,
     "runtime.reload"sv,
     "extension.getURL"sv,
+    "extension.getBackgroundPage"sv,
     "extension.inIncognitoContext"sv,
     "extension.isAllowedIncognitoAccess"sv,
     "extension.isAllowedFileSchemeAccess"sv,

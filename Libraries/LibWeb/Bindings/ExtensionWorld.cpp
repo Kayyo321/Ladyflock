@@ -20,6 +20,7 @@
 #include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/FunctionObject.h>
+#include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/JSONObject.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/Object.h>
@@ -240,7 +241,8 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_extension_page(
     String extension_id,
     String extension_uuid,
     String manifest_json,
-    String locale_messages_json)
+    String locale_messages_json,
+    bool is_background_page)
 {
     auto& vm = main_thread_vm();
     auto& window = *document.window();
@@ -251,7 +253,7 @@ GC::Ref<ExtensionRealmContext> ExtensionRealmContext::create_for_extension_page(
         document,
         move(extension_id),
         move(extension_uuid),
-        Extensions::ContextType::ExtensionPage,
+        is_background_page ? Extensions::ContextType::BackgroundPage : Extensions::ContextType::ExtensionPage,
         move(manifest_json),
         world,
         realm);
@@ -1141,6 +1143,28 @@ void ExtensionRealmContext::install_extension_namespaces(bool full_extension_pag
         define_local_method(*extension_obj, "isAllowedFileSchemeAccess"sv, is_chrome, [](ExtensionRealmContext&) { return "false"_string; });
         static constexpr Array view_types { "tab"sv, "popup"sv, "sidebar"sv };
         define_string_enum(vm, *m_realm, *extension_obj, "ViewType"sv, view_types.span());
+
+        // Only on the background page, where the answer is its own window, as in Firefox. Ladyflock's other extension
+        // pages run apart from the background page and can't reach its window, so they don't have these, and
+        // extensions that check for them send messages instead.
+        if (m_context_type == Extensions::ContextType::BackgroundPage) {
+            auto get_background_page = JS::NativeFunction::create(
+                *m_realm,
+                GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM&) -> JS::ThrowCompletionOr<JS::Value> {
+                    return JS::Value(&self->m_realm->global_environment().global_this_value());
+                }),
+                0, "getBackgroundPage"_utf16_fly_string, m_realm);
+            extension_obj->define_direct_property("getBackgroundPage"_utf16_fly_string, get_background_page, JS::default_attributes);
+            auto get_background_page_async = JS::NativeFunction::create(
+                *m_realm,
+                GC::create_function<JS::ThrowCompletionOr<JS::Value>(JS::VM&)>(vm.heap(), GC::captures(GC::Ref { *this }), [](auto& self, JS::VM&) -> JS::ThrowCompletionOr<JS::Value> {
+                    auto promise = WebIDL::create_promise(*self->m_realm);
+                    WebIDL::resolve_promise(*self->m_realm, *promise, JS::Value(&self->m_realm->global_environment().global_this_value()));
+                    return promise->promise();
+                }),
+                0, "getBackgroundPage"_utf16_fly_string, m_realm);
+            runtime_js_obj.define_direct_property("getBackgroundPage"_utf16_fly_string, get_background_page_async, JS::default_attributes);
+        }
 
         if (manifest_has_permission(manifest, "nativeMessaging"sv)) {
             auto connect_native = JS::NativeFunction::create(*m_realm,
