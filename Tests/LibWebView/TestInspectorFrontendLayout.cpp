@@ -941,6 +941,36 @@ TEST_CASE(inspector_edits_check_what_they_replace)
     )JS"sv);
 }
 
+// Two instances of a component with the same shadow style share a compiled sheet, and each one's rules are its own.
+TEST_CASE(inspector_edits_a_sheet_two_shadow_trees_share)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorSharedSheets"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, edits_fixture);
+    auto& frontend = *fixture.frontend;
+
+    expect_holds(frontend, "Each shadow tree's copy of the sheet can be edited"sv, R"JS(
+        const itemRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes(".item"));
+        await until(() => findElement(n => n.attributes?.id === "second-host-item"));
+        await select(n => n.attributes?.id === "first-host-item", () => itemRule());
+        const firstSheet = itemRule().sheetId;
+        await select(n => n.attributes?.id === "second-host-item", () => itemRule());
+        const rule = itemRule();
+        if (!firstSheet || !rule.sheetId || firstSheet === rule.sheetId)
+            return { firstSheet, secondSheet: rule.sheetId };
+        const declaration = rule.declarations.find(d => d.name === "color");
+        await app.stylesPane.commitDeclarationEdit(rule, declaration, rule.declarations.indexOf(declaration), "color", "rgb(2, 2, 2)");
+        app.refreshSelectedNodeProperties();
+        await until(() => app.state.lastComputedStyle?.color === "rgb(2, 2, 2)");
+        return null;
+    )JS"sv);
+    run_in_target(*fixture.target, R"JS(
+        const color = id => getComputedStyle(document.getElementById(id).shadowRoot.getElementById(id + "-item")).color;
+        document.title = "Colors:" + color("first-host") + "/" + color("second-host");
+    )JS"sv, "Colors:"sv);
+    EXPECT_EQ(fixture.target->title().to_byte_string(), "Colors:rgb(1, 1, 1)/rgb(2, 2, 2)"sv);
+}
+
 // Answers every request on the loopback interface with the same small page.
 class TestPageServer {
 public:
