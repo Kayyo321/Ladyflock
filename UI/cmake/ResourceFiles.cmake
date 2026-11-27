@@ -35,6 +35,7 @@ set(ABOUT_PAGES
     crashes.html
     downloads.html
     history.html
+    inspector.html
     licenses.html
     newtab.html
     privacy.html
@@ -66,6 +67,18 @@ set(ABOUT_SETTINGS_RESOURCES
     tabs.js
 )
 list(TRANSFORM ABOUT_SETTINGS_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/settings/")
+
+set(ABOUT_INSPECTOR_RESOURCES
+    app.js
+    bridge.js
+    drawers.js
+    elements-tree.js
+    inspector.css
+    sidebars.js
+    styles-pane.js
+    toolbox-panels.js
+)
+list(TRANSFORM ABOUT_INSPECTOR_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/inspector/")
 
 set(WEB_TEMPLATES
     directory.html
@@ -180,6 +193,10 @@ function(copy_resources_to_build base_directory bundle_target)
         DESTINATION ${base_directory} TARGET ${bundle_target}
     )
 
+    copy_resource_set(ladybird/about-pages/inspector RESOURCES ${ABOUT_INSPECTOR_RESOURCES}
+        DESTINATION ${base_directory} TARGET ${bundle_target}
+    )
+
     copy_resource_set(ladybird/templates RESOURCES ${WEB_TEMPLATES}
         DESTINATION ${base_directory} TARGET ${bundle_target}
     )
@@ -218,6 +235,7 @@ function(install_ladybird_resources destination component)
         COMPONENT ${component})
     install(FILES ${ABOUT_PAGES} DESTINATION "${destination}/ladybird/about-pages" COMPONENT ${component})
     install(FILES ${ABOUT_SETTINGS_RESOURCES} DESTINATION "${destination}/ladybird/about-pages/settings" COMPONENT ${component})
+    install(FILES ${ABOUT_INSPECTOR_RESOURCES} DESTINATION "${destination}/ladybird/about-pages/inspector" COMPONENT ${component})
     install(FILES ${WEB_TEMPLATES} DESTINATION "${destination}/ladybird/templates" COMPONENT ${component})
     if (PDFJS_BUILD_FILES)
         install(FILES ${PDFJS_BUILD_FILES} DESTINATION "${destination}/ladybird/pdfjs/build" COMPONENT ${component})

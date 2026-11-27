@@ -1,0 +1,848 @@
+/*
+ * Copyright (c) 2026, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Elements DOM tree: single keyboard stop, ARIA tree semantics, inline editing,
+ * F2 outerHTML editor, search (text/CSS/XPath), Ghost Snapshots, badges, and breadcrumbs.
+ */
+
+import { announce, el, sendCommand, sendEngineCommand } from "./bridge.js";
+
+export class ElementsTreeController {
+    constructor(app) {
+        this.app = app;
+        this.treeEl = document.getElementById("dom-tree");
+        this.breadcrumbsEl = document.getElementById("dom-breadcrumbs");
+        this.searchBarEl = document.getElementById("dom-search-bar");
+        this.searchInputEl = document.getElementById("dom-search-input");
+        this.searchCountEl = document.getElementById("dom-search-count");
+        this.ghostBannerEl = document.getElementById("ghost-banner");
+
+        this.rootNode = null;
+        this.nodesById = new Map();
+        this.parentById = new Map();
+        this.expanded = new Set();
+        this.selectedId = null;
+        this.selectedPseudo = null;
+        this.flatRows = [];
+        this.searchMatches = [];
+        this.searchIndex = -1;
+        this.hiddenNodeIds = new Set();
+        this.ghostSnapshot = null;
+
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        this.treeEl.addEventListener("keydown", e => this.handleKeyDown(e));
+        this.treeEl.addEventListener("mouseleave", () => {
+            if (!this.app.state.loupeLatched)
+                sendCommand("clearHighlight").catch(() => {});
+        });
+
+        document.getElementById("dom-search-prev").addEventListener("click", () => this.stepSearch(-1));
+        document.getElementById("dom-search-next").addEventListener("click", () => this.stepSearch(1));
+        document.getElementById("dom-search-close").addEventListener("click", () => this.closeSearch());
+        this.searchInputEl.addEventListener("input", () => this.runSearch(this.searchInputEl.value));
+        this.searchInputEl.addEventListener("keydown", e => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                this.stepSearch(e.shiftKey ? -1 : 1);
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.closeSearch();
+            }
+        });
+
+        document.getElementById("btn-ghost-jump-parent").addEventListener("click", () => {
+            this.jumpToSurvivingAncestor();
+        });
+    }
+
+    setTree(treeRoot) {
+        this.rootNode = treeRoot;
+        this.nodesById.clear();
+        this.parentById.clear();
+        this.indexTree(treeRoot, null);
+
+        // Auto-expand root, html, and body on first load.
+        if (this.expanded.size === 0 && treeRoot) {
+            this.expanded.add(this.nodeKey(treeRoot));
+            for (const child of treeRoot.children || []) {
+                this.expanded.add(this.nodeKey(child));
+                for (const grand of child.children || []) {
+                    if (String(grand.name || "").toLowerCase() === "body")
+                        this.expanded.add(this.nodeKey(grand));
+                }
+            }
+        }
+
+        // Check if currently selected node vanished -> preserve Ghost Snapshot!
+        if (this.selectedId !== null && !this.nodesById.has(this.selectedId)) {
+            this.activateGhostSnapshot();
+        } else if (this.selectedId !== null) {
+            this.clearGhostSnapshot();
+        }
+
+        this.render();
+    }
+
+    indexTree(node, parentId) {
+        if (!node)
+            return;
+        const id = node.id ?? node["parent-id"];
+        if (node.id !== undefined) {
+            this.nodesById.set(node.id, node);
+            if (parentId !== null)
+                this.parentById.set(node.id, parentId);
+        }
+        for (const child of node.children || [])
+            this.indexTree(child, node.id ?? parentId);
+    }
+
+    nodeKey(node) {
+        if (node.type === "pseudo-element")
+            return `pseudo:${node["parent-id"]}:${node["pseudo-element"]}`;
+        return String(node.id);
+    }
+
+    selectNode(nodeId, pseudo = null, { reveal = true, focusRow = false } = {}) {
+        if (!nodeId)
+            return;
+        this.selectedId = nodeId;
+        this.selectedPseudo = pseudo;
+
+        if (this.nodesById.has(nodeId)) {
+            this.clearGhostSnapshot();
+            if (reveal)
+                this.expandAncestors(nodeId);
+            this.captureGhostSeed(nodeId);
+        } else {
+            this.activateGhostSnapshot();
+        }
+
+        this.render();
+        this.renderBreadcrumbs();
+        this.app.onNodeSelected(nodeId, pseudo, this.nodesById.get(nodeId) || this.ghostSnapshot?.node || null);
+
+        if (focusRow) {
+            const row = this.treeEl.querySelector(".dom-row.selected");
+            row?.scrollIntoView({ block: "nearest" });
+        }
+    }
+
+    expandAncestors(nodeId) {
+        let cur = this.parentById.get(nodeId);
+        while (cur !== undefined) {
+            this.expanded.add(String(cur));
+            cur = this.parentById.get(cur);
+        }
+    }
+
+    captureGhostSeed(nodeId) {
+        const node = this.nodesById.get(nodeId);
+        if (!node)
+            return;
+        const ancestors = [];
+        let cur = this.parentById.get(nodeId);
+        while (cur !== undefined) {
+            ancestors.push(cur);
+            cur = this.parentById.get(cur);
+        }
+        this.lastKnownSelection = {
+            nodeId,
+            node: structuredClone(node),
+            ancestors,
+            computed: this.app.state.lastComputedStyle || null,
+            rules: this.app.state.lastAppliedRules || null,
+        };
+    }
+
+    activateGhostSnapshot() {
+        if (!this.lastKnownSelection)
+            return;
+        this.ghostSnapshot = {
+            ...this.lastKnownSelection,
+            detachedAt: Date.now(),
+        };
+        this.ghostBannerEl.classList.remove("hidden");
+        announce("Selected element detached from document. Showing Ghost Snapshot.");
+        this.app.onGhostSnapshotActive(this.ghostSnapshot);
+    }
+
+    clearGhostSnapshot() {
+        if (!this.ghostSnapshot)
+            return;
+        this.ghostSnapshot = null;
+        this.ghostBannerEl.classList.add("hidden");
+        this.app.onGhostSnapshotActive(null);
+    }
+
+    jumpToSurvivingAncestor() {
+        if (!this.ghostSnapshot)
+            return;
+        for (const ancestorId of this.ghostSnapshot.ancestors) {
+            if (this.nodesById.has(ancestorId)) {
+                this.selectNode(ancestorId, null, { reveal: true, focusRow: true });
+                return;
+            }
+        }
+        if (this.rootNode?.id !== undefined)
+            this.selectNode(this.rootNode.id, null, { reveal: true, focusRow: true });
+    }
+
+    handleMutation(mutation) {
+        if (!mutation)
+            return;
+        // If our selected node was removed, trigger Ghost Snapshot immediately!
+        if (mutation.removed && mutation.removed.includes(this.selectedId)) {
+            this.nodesById.delete(this.selectedId);
+            this.activateGhostSnapshot();
+        }
+        // Coalesced refresh from backend so tree stays exact.
+        this.scheduleRefresh();
+    }
+
+    scheduleRefresh() {
+        if (this.refreshTimer)
+            return;
+        this.refreshTimer = setTimeout(() => {
+            this.refreshTimer = null;
+            this.app.refreshDomTree();
+        }, 60);
+    }
+
+    buildFlatRows(node, depth = 0, out = []) {
+        if (!node)
+            return out;
+        if (node.type === "text" && !this.app.prefs.showWhitespace && !(node.text || "").trim())
+            return out;
+
+        const key = this.nodeKey(node);
+        const children = (node.children || []).filter(
+            c => c.type !== "text" || this.app.prefs.showWhitespace || (c.text || "").trim().length > 0
+        );
+        const hasChildren = children.length > 0;
+        const isExpanded = this.expanded.has(key);
+
+        out.push({ node, key, depth, hasChildren, isExpanded, isClosing: false });
+
+        if (hasChildren && isExpanded) {
+            for (const child of children)
+                this.buildFlatRows(child, depth + 1, out);
+            if (node.type === "element")
+                out.push({ node, key: `${key}:close`, depth, hasChildren: false, isExpanded: false, isClosing: true });
+        }
+        return out;
+    }
+
+    render() {
+        this.treeEl.textContent = "";
+        if (!this.rootNode) {
+            this.treeEl.appendChild(el("div", { class: "dom-row muted", text: "Waiting for document…" }));
+            return;
+        }
+
+        this.flatRows = this.buildFlatRows(this.rootNode, 0, []);
+        const frag = document.createDocumentFragment();
+        const matchSet = new Set(this.searchMatches);
+
+        for (let i = 0; i < this.flatRows.length; i++) {
+            const row = this.flatRows[i];
+            const node = row.node;
+            const isSelected = !row.isClosing && node.id === this.selectedId && (node["pseudo-element"] || null) === this.selectedPseudo;
+            const rowEl = el("div", {
+                class: [
+                    "dom-row",
+                    isSelected ? "selected" : "",
+                    matchSet.has(node.id) && !row.isClosing ? "search-match" : "",
+                    this.hiddenNodeIds.has(node.id) ? "hidden-node" : "",
+                ].filter(Boolean).join(" "),
+                role: "treeitem",
+                "aria-level": row.depth + 1,
+                "aria-selected": isSelected ? "true" : "false",
+                "aria-expanded": row.hasChildren ? (row.isExpanded ? "true" : "false") : undefined,
+                dataset: { index: i, nodeId: node.id ?? "" },
+            });
+            rowEl.style.paddingLeft = `${8 + row.depth * 14}px`;
+
+            if (row.hasChildren) {
+                const twisty = el("button", {
+                    class: "dom-twisty",
+                    type: "button",
+                    tabindex: -1,
+                    "aria-label": row.isExpanded ? "Collapse" : "Expand",
+                    text: row.isExpanded ? "▾" : "▸",
+                    onClick: e => {
+                        e.stopPropagation();
+                        this.toggleExpand(row.key, e.altKey);
+                    },
+                });
+                rowEl.appendChild(twisty);
+            } else {
+                rowEl.appendChild(el("span", { class: "dom-twisty" }));
+            }
+
+            if (row.isClosing) {
+                rowEl.appendChild(el("span", { class: "dom-tag", text: `</${String(node.name || "").toLowerCase()}>` }));
+            } else {
+                this.renderRowContent(rowEl, node, row.hasChildren && !row.isExpanded);
+            }
+
+            rowEl.addEventListener("click", () => {
+                if (row.isClosing)
+                    return;
+                this.selectNode(node.id ?? node["parent-id"], node["pseudo-element"] || null, { reveal: false });
+            });
+            rowEl.addEventListener("dblclick", () => {
+                if (!row.isClosing && node.type === "text")
+                    this.beginInlineTextEdit(rowEl, node);
+            });
+            rowEl.addEventListener("mouseenter", () => {
+                if (!this.app.state.loupeLatched && node.id)
+                    sendCommand("highlightNode", { nodeId: node.id, pseudoElement: node["pseudo-element"] || "" }).catch(() => {});
+            });
+            rowEl.addEventListener("contextmenu", e => {
+                e.preventDefault();
+                if (row.isClosing)
+                    return;
+                this.selectNode(node.id ?? node["parent-id"], node["pseudo-element"] || null, { reveal: false });
+                this.showNodeContextMenu(e.clientX, e.clientY, node);
+            });
+
+            frag.appendChild(rowEl);
+        }
+
+        this.treeEl.appendChild(frag);
+    }
+
+    renderRowContent(rowEl, node, showEllipsis) {
+        if (node.type === "document") {
+            rowEl.appendChild(el("span", { class: "muted", text: "#document" }));
+            if (node.url)
+                rowEl.appendChild(el("span", { class: "muted", text: ` (${node.url})` }));
+            return;
+        }
+        if (node.type === "shadow-root") {
+            rowEl.appendChild(el("span", { class: "dom-pseudo", text: `#shadow-root (${node.mode || "open"})` }));
+            return;
+        }
+        if (node.type === "pseudo-element") {
+            rowEl.appendChild(el("span", { class: "dom-pseudo", text: node.name || `::${node["pseudo-element"]}` }));
+            return;
+        }
+        if (node.type === "comment") {
+            rowEl.appendChild(el("span", { class: "dom-comment", text: `<!-- ${node.text || ""} -->` }));
+            return;
+        }
+        if (node.type === "text") {
+            const text = (node.text || "").replace(/\s+/g, " ").trim();
+            rowEl.appendChild(el("span", { class: "dom-text", text: `"${text}"` }));
+            return;
+        }
+
+        const tagName = String(node.name || "").toLowerCase();
+        const tagSpan = el("span", { class: "dom-tag", text: `<${tagName}` });
+        tagSpan.addEventListener("dblclick", e => {
+            e.stopPropagation();
+            this.beginInlineTagEdit(tagSpan, node);
+        });
+        rowEl.appendChild(tagSpan);
+
+        if (node.attributes && typeof node.attributes === "object") {
+            for (const [attrName, attrVal] of Object.entries(node.attributes)) {
+                rowEl.appendChild(document.createTextNode(" "));
+                const nameSpan = el("span", { class: "dom-attr-name", text: attrName });
+                rowEl.appendChild(nameSpan);
+                rowEl.appendChild(document.createTextNode('="'));
+                const valSpan = el("span", { class: "dom-attr-val", text: String(attrVal) });
+                valSpan.addEventListener("dblclick", e => {
+                    e.stopPropagation();
+                    this.beginInlineAttrEdit(valSpan, node, attrName, String(attrVal));
+                });
+                rowEl.appendChild(valSpan);
+                rowEl.appendChild(document.createTextNode('"'));
+            }
+        }
+        rowEl.appendChild(el("span", { class: "dom-tag", text: showEllipsis ? ">…<" + `/${tagName}>` : ">" }));
+
+        // Badges with destinations (grid, flex, scroll, extension attribution, etc.)
+        const display = String(node.display || "");
+        if (display.includes("grid")) {
+            const active = this.app.state.activeGridOverlays.has(node.id);
+            rowEl.appendChild(el("button", {
+                class: `node-badge ${active ? "active" : ""}`,
+                type: "button",
+                text: display.includes("subgrid") ? "subgrid" : "grid",
+                title: "Toggle grid overlay",
+                onClick: e => {
+                    e.stopPropagation();
+                    this.app.toggleGridOverlay(node.id);
+                },
+            }));
+        } else if (display.includes("flex")) {
+            const active = this.app.state.activeFlexOverlays.has(node.id);
+            rowEl.appendChild(el("button", {
+                class: `node-badge ${active ? "active" : ""}`,
+                type: "button",
+                text: "flex",
+                title: "Toggle flex overlay",
+                onClick: e => {
+                    e.stopPropagation();
+                    this.app.toggleFlexOverlay(node.id);
+                },
+            }));
+        }
+        if (node.scrollable) {
+            rowEl.appendChild(el("span", { class: "node-badge", text: "scroll", title: "Scrollable container" }));
+        }
+        if (node.insertedBy) {
+            rowEl.appendChild(el("span", {
+                class: "node-badge ext",
+                text: `ext:${node.insertedBy}`,
+                title: `Inserted by ${node.insertedBy}`,
+            }));
+        }
+    }
+
+    renderBreadcrumbs() {
+        this.breadcrumbsEl.textContent = "";
+        if (!this.selectedId)
+            return;
+        const chain = [];
+        let cur = this.selectedId;
+        while (cur !== undefined && this.nodesById.has(cur)) {
+            const n = this.nodesById.get(cur);
+            if (n.type === "element" || n.type === "shadow-root")
+                chain.unshift(n);
+            cur = this.parentById.get(cur);
+        }
+        chain.forEach((n, idx) => {
+            if (idx > 0)
+                this.breadcrumbsEl.appendChild(el("span", { class: "muted", text: " › " }));
+            const label = this.describeNodeShort(n);
+            this.breadcrumbsEl.appendChild(el("button", {
+                class: `crumb-btn ${n.id === this.selectedId ? "active" : ""}`,
+                type: "button",
+                text: label,
+                onClick: () => this.selectNode(n.id, null, { reveal: true, focusRow: true }),
+            }));
+        });
+    }
+
+    describeNodeShort(node) {
+        if (!node)
+            return "";
+        if (node.type === "shadow-root")
+            return "#shadow-root";
+        let label = String(node.name || "").toLowerCase();
+        if (node.attributes?.id)
+            label += `#${node.attributes.id}`;
+        if (node.attributes?.class) {
+            const classes = String(node.attributes.class).trim().split(/\s+/).filter(Boolean).slice(0, 2);
+            if (classes.length)
+                label += `.${classes.join(".")}`;
+        }
+        return label;
+    }
+
+    computeUniqueSelector(nodeId) {
+        const parts = [];
+        let cur = nodeId;
+        while (cur !== undefined && this.nodesById.has(cur)) {
+            const n = this.nodesById.get(cur);
+            if (n.type !== "element")
+                break;
+            if (n.attributes?.id) {
+                parts.unshift(`#${CSS.escape(String(n.attributes.id))}`);
+                break;
+            }
+            let part = String(n.name || "").toLowerCase();
+            if (n.attributes?.class) {
+                const classes = String(n.attributes.class).trim().split(/\s+/).filter(Boolean);
+                if (classes.length)
+                    part += `.${classes.map(c => CSS.escape(c)).join(".")}`;
+            }
+            const parentId = this.parentById.get(cur);
+            if (parentId !== undefined) {
+                const parent = this.nodesById.get(parentId);
+                const sameTagSiblings = (parent?.children || []).filter(c => c.type === "element" && c.name === n.name);
+                if (sameTagSiblings.length > 1) {
+                    const pos = sameTagSiblings.findIndex(c => c.id === cur) + 1;
+                    part += `:nth-of-type(${pos})`;
+                }
+            }
+            parts.unshift(part);
+            cur = parentId;
+        }
+        return parts.join(" > ");
+    }
+
+    computeXPath(nodeId, full = false) {
+        const parts = [];
+        let cur = nodeId;
+        while (cur !== undefined && this.nodesById.has(cur)) {
+            const n = this.nodesById.get(cur);
+            if (n.type !== "element")
+                break;
+            if (!full && n.attributes?.id) {
+                parts.unshift(`//*[@id="${String(n.attributes.id).replace(/"/g, '\\"')}"]`);
+                return parts.join("/");
+            }
+            const tag = String(n.name || "").toLowerCase();
+            const parentId = this.parentById.get(cur);
+            const parent = parentId !== undefined ? this.nodesById.get(parentId) : null;
+            const sameTag = (parent?.children || []).filter(c => c.type === "element" && String(c.name || "").toLowerCase() === tag);
+            const idx = sameTag.length > 1 ? `[${sameTag.findIndex(c => c.id === cur) + 1}]` : "";
+            parts.unshift(`${tag}${idx}`);
+            cur = parentId;
+        }
+        return `/${parts.join("/")}`;
+    }
+
+    toggleExpand(key, recursive = false) {
+        if (this.expanded.has(key)) {
+            this.expanded.delete(key);
+        } else {
+            this.expanded.add(key);
+            if (recursive) {
+                const node = this.nodesById.get(Number(key));
+                const walk = n => {
+                    if (!n)
+                        return;
+                    this.expanded.add(this.nodeKey(n));
+                    for (const c of n.children || [])
+                        walk(c);
+                };
+                walk(node);
+            }
+        }
+        this.render();
+    }
+
+    handleKeyDown(e) {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")
+            return;
+
+        const selectable = this.flatRows.filter(r => !r.isClosing);
+        const curIdx = selectable.findIndex(r => r.node.id === this.selectedId && (r.node["pseudo-element"] || null) === this.selectedPseudo);
+
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            const next = selectable[Math.min(selectable.length - 1, Math.max(0, curIdx + 1))];
+            if (next)
+                this.selectNode(next.node.id ?? next.node["parent-id"], next.node["pseudo-element"] || null, { reveal: false, focusRow: true });
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            const prev = selectable[Math.max(0, curIdx - 1)];
+            if (prev)
+                this.selectNode(prev.node.id ?? prev.node["parent-id"], prev.node["pseudo-element"] || null, { reveal: false, focusRow: true });
+        } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            const cur = selectable[curIdx];
+            if (cur?.hasChildren) {
+                if (!cur.isExpanded)
+                    this.toggleExpand(cur.key, e.altKey);
+                else if (selectable[curIdx + 1])
+                    this.selectNode(selectable[curIdx + 1].node.id, null, { reveal: false, focusRow: true });
+            }
+        } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            const cur = selectable[curIdx];
+            if (cur?.hasChildren && cur.isExpanded) {
+                this.toggleExpand(cur.key);
+            } else if (cur && this.parentById.has(cur.node.id)) {
+                this.selectNode(this.parentById.get(cur.node.id), null, { reveal: false, focusRow: true });
+            }
+        } else if (e.key === "F2") {
+            e.preventDefault();
+            if (this.selectedId && this.nodesById.has(this.selectedId))
+                this.openOuterHtmlEditor(this.nodesById.get(this.selectedId));
+        } else if (e.key === "Delete" || e.key === "Backspace") {
+            const node = this.nodesById.get(this.selectedId);
+            if (node && node.type === "element" && !this.ghostSnapshot) {
+                e.preventDefault();
+                sendCommand("removeNode", { nodeId: node.id, label: this.describeNodeShort(node) }).catch(() => {});
+            }
+        } else if (e.key.toLowerCase() === "h" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            if (this.selectedId && !this.ghostSnapshot) {
+                e.preventDefault();
+                this.toggleHideNode(this.selectedId);
+            }
+        }
+    }
+
+    beginInlineTagEdit(targetSpan, node) {
+        const before = String(node.name || "").toLowerCase();
+        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
+        targetSpan.replaceWith(input);
+        input.focus();
+        input.select();
+        const finish = commit => {
+            const next = input.value.trim().toLowerCase();
+            if (commit && next && next !== before) {
+                sendCommand("setNodeTag", { nodeId: node.id, tag: next, beforeTag: before }).then(() => {
+                    announce(`Changed tag to ${next}`);
+                }).catch(() => {});
+            }
+            this.render();
+        };
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); finish(true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener("blur", () => finish(true), { once: true });
+    }
+
+    beginInlineAttrEdit(targetSpan, node, attrName, beforeVal) {
+        const input = el("input", { class: "dom-inline-input", type: "text", value: beforeVal });
+        targetSpan.replaceWith(input);
+        input.focus();
+        input.select();
+        const finish = commit => {
+            const next = input.value;
+            if (commit && next !== beforeVal) {
+                sendCommand("setAttribute", {
+                    nodeId: node.id,
+                    name: attrName,
+                    newName: attrName,
+                    value: next,
+                    beforeValue: beforeVal,
+                    label: this.describeNodeShort(node),
+                }).then(() => announce(`Updated ${attrName}`)).catch(() => {});
+            }
+            this.render();
+        };
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); finish(true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener("blur", () => finish(true), { once: true });
+    }
+
+    beginInlineTextEdit(rowEl, node) {
+        const before = node.text || "";
+        const input = el("input", { class: "dom-inline-input", type: "text", value: before });
+        rowEl.textContent = "";
+        rowEl.appendChild(input);
+        input.focus();
+        input.select();
+        const finish = commit => {
+            if (commit && input.value !== before) {
+                sendCommand("setNodeText", { nodeId: node.id, text: input.value, beforeText: before }).catch(() => {});
+            }
+            this.render();
+        };
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); finish(true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener("blur", () => finish(true), { once: true });
+    }
+
+    async openOuterHtmlEditor(node) {
+        try {
+            const res = await sendCommand("getNodeHtml", { nodeId: node.id, outer: true });
+            const beforeHtml = res?.html || "";
+            const row = this.treeEl.querySelector(`.dom-row[data-node-id="${node.id}"]`);
+            if (!row)
+                return;
+            const ta = el("textarea", { class: "dom-html-editor" });
+            ta.value = beforeHtml;
+            row.insertAdjacentElement("afterend", ta);
+            ta.focus();
+            const commit = () => {
+                const updated = ta.value;
+                ta.remove();
+                if (updated !== beforeHtml) {
+                    sendCommand("setNodeOuterHtml", {
+                        nodeId: node.id,
+                        html: updated,
+                        beforeHtml,
+                        label: this.describeNodeShort(node),
+                    }).then(() => announce("Updated element HTML")).catch(() => {});
+                }
+            };
+            ta.addEventListener("keydown", e => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    commit();
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    ta.remove();
+                }
+            });
+            ta.addEventListener("blur", commit, { once: true });
+        } catch {
+            // ignore
+        }
+    }
+
+    toggleHideNode(nodeId) {
+        const hidden = this.hiddenNodeIds.has(nodeId);
+        if (hidden)
+            this.hiddenNodeIds.delete(nodeId);
+        else
+            this.hiddenNodeIds.add(nodeId);
+        sendEngineCommand("setNodeHidden", { nodeId, hidden: !hidden }).catch(() => {
+            // Fallback via inline style visibility toggle
+            sendCommand("consoleEvaluate", {
+                expression: `($0 && ($0.style.visibility = ${!hidden ? "'hidden'" : "''"}))`,
+            }).catch(() => {});
+        });
+        this.render();
+    }
+
+    openSearch() {
+        this.searchBarEl.classList.remove("hidden");
+        this.searchInputEl.focus();
+        this.searchInputEl.select();
+    }
+
+    closeSearch() {
+        this.searchBarEl.classList.add("hidden");
+        this.searchMatches = [];
+        this.searchIndex = -1;
+        this.searchCountEl.textContent = "0 / 0";
+        this.render();
+        this.treeEl.focus();
+    }
+
+    async runSearch(query) {
+        const q = query.trim();
+        if (!q) {
+            this.searchMatches = [];
+            this.searchIndex = -1;
+            this.searchCountEl.textContent = "0 / 0";
+            this.render();
+            return;
+        }
+
+        // First try engine search (handles CSS selectors, XPath, shadow DOM, frames!).
+        let ids = [];
+        try {
+            const res = await sendEngineCommand("searchDom", { query: q });
+            if (Array.isArray(res?.nodeIds))
+                ids = res.nodeIds;
+        } catch {
+            // Fallback local substring match across indexed DOM tree
+            const lower = q.toLowerCase();
+            for (const [id, node] of this.nodesById.entries()) {
+                const hay = [
+                    node.name || "",
+                    node.text || "",
+                    ...Object.entries(node.attributes || {}).flatMap(([k, v]) => [k, String(v)]),
+                ].join(" ").toLowerCase();
+                if (hay.includes(lower))
+                    ids.push(id);
+            }
+        }
+
+        this.searchMatches = ids;
+        this.searchIndex = ids.length > 0 ? 0 : -1;
+        this.updateSearchDisplay();
+    }
+
+    stepSearch(delta) {
+        if (this.searchMatches.length === 0)
+            return;
+        this.searchIndex = (this.searchIndex + delta + this.searchMatches.length) % this.searchMatches.length;
+        this.updateSearchDisplay();
+    }
+
+    updateSearchDisplay() {
+        const total = this.searchMatches.length;
+        this.searchCountEl.textContent = total ? `${this.searchIndex + 1} / ${total}` : "0 / 0";
+        announce(total ? `${total} matches` : "No matches");
+        if (this.searchIndex >= 0) {
+            this.selectNode(this.searchMatches[this.searchIndex], null, { reveal: true, focusRow: true });
+        } else {
+            this.render();
+        }
+    }
+
+    showNodeContextMenu(x, y, node) {
+        const isElement = node.type === "element";
+        const isDetached = !!this.ghostSnapshot;
+        const selector = this.computeUniqueSelector(node.id);
+        const items = [
+            { label: "Add attribute", disabled: !isElement || isDetached, run: () => this.promptAddAttribute(node) },
+            { label: "Edit as HTML (F2)", disabled: !isElement || isDetached, run: () => this.openOuterHtmlEditor(node) },
+            { label: "Duplicate element", disabled: !isElement || isDetached, run: () => sendCommand("cloneNode", { nodeId: node.id }) },
+            { label: "Delete element", disabled: !isElement || isDetached, run: () => sendCommand("removeNode", { nodeId: node.id, label: this.describeNodeShort(node) }) },
+            { label: this.hiddenNodeIds.has(node.id) ? "Show element (H)" : "Hide element (H)", disabled: !isElement || isDetached, run: () => this.toggleHideNode(node.id) },
+            { sep: true },
+            { label: "Force state…", disabled: !isElement || isDetached, run: () => this.app.stylesPane.openForcedStateSubdrawer() },
+            { label: "Break on subtree modifications", disabled: !isElement || isDetached, run: () => sendCommand("setDomBreakpoint", { nodeId: node.id, type: "subtree-modified", nodePath: selector }) },
+            { label: "Break on attribute modifications", disabled: !isElement || isDetached, run: () => sendCommand("setDomBreakpoint", { nodeId: node.id, type: "attribute-modified", nodePath: selector }) },
+            { label: "Break on node removal", disabled: !isElement || isDetached, run: () => sendCommand("setDomBreakpoint", { nodeId: node.id, type: "node-removed", nodePath: selector }) },
+            { sep: true },
+            { label: "Scroll into view", disabled: !isElement || isDetached, run: () => sendCommand("consoleEvaluate", { expression: "$0 && $0.scrollIntoView({ block: 'center' })" }) },
+            { label: "Focus", disabled: !isElement || isDetached, run: () => sendCommand("consoleEvaluate", { expression: "$0 && $0.focus()" }) },
+            { label: "Store as global variable", disabled: isDetached, run: () => sendCommand("consoleEvaluate", { expression: "window.temp1 = $0; temp1" }) },
+            { label: "Capture node screenshot", disabled: !isElement || isDetached, run: () => this.captureNodeScreenshot(node) },
+            { sep: true },
+            { label: "Copy outerHTML", disabled: !isElement, run: () => this.copyHtml(node, true) },
+            { label: "Copy selector", disabled: !isElement, run: () => sendCommand("copyText", { text: selector }) },
+            { label: "Copy JS path", disabled: !isElement, run: () => sendCommand("copyText", { text: `document.querySelector(${JSON.stringify(selector)})` }) },
+            { label: "Copy XPath", disabled: !isElement, run: () => sendCommand("copyText", { text: this.computeXPath(node.id, false) }) },
+            { label: "Copy full XPath", disabled: !isElement, run: () => sendCommand("copyText", { text: this.computeXPath(node.id, true) }) },
+            { sep: true },
+            { label: "Create Cosmetic Filter…", disabled: !isElement || isDetached, run: () => this.app.stylesPane.openCosmeticFilterDrawer(selector) },
+        ];
+        this.app.showContextMenu(x, y, items);
+    }
+
+    async promptAddAttribute(node) {
+        const row = this.treeEl.querySelector(`.dom-row[data-node-id="${node.id}"]`);
+        if (!row)
+            return;
+        const input = el("input", { class: "dom-inline-input", type: "text", placeholder: 'name="value"' });
+        row.appendChild(input);
+        input.focus();
+        const finish = commit => {
+            const raw = input.value.trim();
+            input.remove();
+            if (!commit || !raw)
+                return;
+            const eq = raw.indexOf("=");
+            const name = (eq >= 0 ? raw.slice(0, eq) : raw).trim();
+            const val = eq >= 0 ? raw.slice(eq + 1).trim().replace(/^["']|["']$/g, "") : "";
+            if (name) {
+                sendCommand("setAttribute", {
+                    nodeId: node.id,
+                    name,
+                    newName: name,
+                    value: val,
+                    isNew: true,
+                    label: this.describeNodeShort(node),
+                }).catch(() => {});
+            }
+        };
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); finish(true); }
+            else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener("blur", () => finish(true), { once: true });
+    }
+
+    async copyHtml(node, outer) {
+        try {
+            const res = await sendCommand("getNodeHtml", { nodeId: node.id, outer });
+            if (res?.html !== undefined)
+                await sendCommand("copyText", { text: res.html });
+        } catch {
+            // ignore
+        }
+    }
+
+    async captureNodeScreenshot(node) {
+        try {
+            const res = await sendCommand("takeNodeScreenshot", { nodeId: node.id });
+            if (res?.path)
+                this.app.showToast(`Saved node screenshot to ${res.path}`);
+        } catch (err) {
+            this.app.showToast(err.message);
+        }
+    }
+}
