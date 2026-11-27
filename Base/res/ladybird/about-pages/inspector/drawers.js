@@ -287,7 +287,7 @@ export class DrawersController {
         host.appendChild(el(
             "div",
             { class: "pane-toolbar" },
-            el("span", { class: "muted", text: `Flight Recorder (${entries.length} edits${this.editJournal.truncated ? ", oldest evicted" : ""})` }),
+            el("span", { class: "muted", text: `Flight Recorder (${entries.length} ${entries.length === 1 ? "edit" : "edits"}${this.editJournal.truncated ? ", truncated" : ""})` }),
             el("button", { class: "chip-btn", type: "button", text: "Copy changes", disabled: entries.length === 0, onClick: copyPatch })
         ));
 
@@ -307,10 +307,11 @@ export class DrawersController {
 
         for (const [groupKey, list] of groups.entries()) {
             const block = el("div", { class: "section-block" });
+            const groupTitle = /^\d+$/.test(groupKey) ? "Stylesheet" : groupKey;
             block.appendChild(el(
                 "div",
                 { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px" },
-                el("h3", { class: "monospace", text: `${groupKey} (${list[0].isWritableSource ? "writable source" : "live document"})` })
+                el("h3", { class: "monospace", text: `${groupTitle} (${list[0].isWritableSource ? "writable source" : "live document"})` })
             ));
             for (const item of list) {
                 block.appendChild(el("div", { class: "muted", style: "font-size:11px;margin-top:4px", text: `${item.kind} · ${item.targetLabel}${item.undone ? " (undone)" : ""}` }));

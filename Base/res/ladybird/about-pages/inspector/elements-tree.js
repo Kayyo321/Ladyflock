@@ -406,30 +406,42 @@ export class ElementsTreeController {
             return;
         }
 
+        if (node.type === "doctype") {
+            rowEl.appendChild(el("span", { class: "muted", text: `<!DOCTYPE ${node.name}>` }));
+            return;
+        }
+        if (node.type !== "element") {
+            rowEl.appendChild(el("span", { class: "muted", text: node.name || "Node" }));
+            return;
+        }
+
+        const markup = el("span");
         const tagName = String(node.name || "").toLowerCase();
         const tagSpan = el("span", { class: "dom-tag", text: `<${tagName}` });
         tagSpan.addEventListener("dblclick", e => {
             e.stopPropagation();
             this.beginInlineTagEdit(tagSpan, node);
         });
-        rowEl.appendChild(tagSpan);
+        markup.appendChild(tagSpan);
 
         if (node.attributes && typeof node.attributes === "object") {
             for (const [attrName, attrVal] of Object.entries(node.attributes)) {
-                rowEl.appendChild(document.createTextNode(" "));
+                markup.appendChild(document.createTextNode(" "));
                 const nameSpan = el("span", { class: "dom-attr-name", text: attrName });
-                rowEl.appendChild(nameSpan);
-                rowEl.appendChild(document.createTextNode('="'));
+                markup.appendChild(nameSpan);
+                markup.appendChild(document.createTextNode('="'));
                 const valSpan = el("span", { class: "dom-attr-val", text: String(attrVal) });
                 valSpan.addEventListener("dblclick", e => {
                     e.stopPropagation();
                     this.beginInlineAttrEdit(valSpan, node, attrName, String(attrVal));
                 });
-                rowEl.appendChild(valSpan);
-                rowEl.appendChild(document.createTextNode('"'));
+                markup.appendChild(valSpan);
+                markup.appendChild(document.createTextNode('"'));
             }
         }
-        rowEl.appendChild(el("span", { class: "dom-tag", text: showEllipsis ? ">…<" + `/${tagName}>` : ">" }));
+        markup.appendChild(el("span", { class: "dom-tag", text: showEllipsis ? ">…<" + `/${tagName}>` : ">" }));
+
+        rowEl.appendChild(markup);
 
         // Badges with destinations (grid, flex, scroll, extension attribution, etc.)
         const display = String(node.display || "");

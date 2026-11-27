@@ -3299,6 +3299,8 @@ void Node::serialize_tree_as_json(JsonObjectSerializer<Utf16StringBuilder>& obje
 
         auto text_node = static_cast<DOM::Text const*>(this);
         MUST(object.add("text"sv, text_node->data().utf16_view()));
+    } else if (is_document_type()) {
+        MUST(object.add("type"sv, "doctype"sv));
     } else if (is_comment()) {
         MUST(object.add("type"sv, "comment"sv));
         MUST(object.add("data"sv, static_cast<DOM::Comment const&>(*this).data().utf16_view()));
