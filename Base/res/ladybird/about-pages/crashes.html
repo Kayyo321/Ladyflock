@@ -36,6 +36,12 @@
                 padding: 0 14px;
             }
 
+            #submission-disabled-note {
+                margin: 0 0 14px;
+                color: var(--muted);
+                font-size: 13px;
+            }
+
             #reports {
                 display: flex;
                 flex-direction: column;
@@ -321,6 +327,10 @@
                 <button id="send-all" class="primary-button">Send all</button>
             </div>
         </header>
+        <p id="submission-disabled-note" class="hidden">
+            Sending crash reports is disabled in this build of Ladyflock. Saved reports stay on this computer so you can
+            review, copy, or delete them.
+        </p>
         <div id="reports"></div>
         <div id="empty" class="hidden">No crash reports waiting</div>
         <a id="settings" href="about:settings#feedback">Crash report settings</a>
@@ -352,7 +362,7 @@
                     <pre class="report-text hidden"></pre>
                     <div class="report-footer">
                         <span class="report-included">
-                            Crash details, Ladybird version and platform.
+                            Crash details, Ladyflock version and platform.
                             <button class="report-show">Show report</button>
                         </span>
                         <button class="quiet-button report-delete">Delete</button>
@@ -364,6 +374,7 @@
 
         <script type="module">
             const reportsElement = document.querySelector("#reports");
+            const submissionDisabledNote = document.querySelector("#submission-disabled-note");
             const emptyElement = document.querySelector("#empty");
             const countElement = document.querySelector("#count");
             const actionsElement = document.querySelector("#actions");
@@ -375,6 +386,7 @@
             const cards = new Map();
             const collapsedByUser = new Set();
             let groups = [];
+            let sendingEnabled = false;
 
             const minute = 60 * 1000;
             const hour = 60 * minute;
@@ -523,10 +535,13 @@
                 status.textContent = group.isSending ? "Sending…" : group.couldNotSend ? "Couldn’t send" : "";
                 status.classList.toggle("failed", !group.isSending && group.couldNotSend);
 
-                card.querySelectorAll(".report-delete, .report-send").forEach(button => {
+                card.querySelectorAll(".report-delete").forEach(button => {
                     button.disabled = group.isSending;
                 });
-                card.querySelector("textarea").disabled = group.isSending;
+                card.querySelectorAll(".report-send").forEach(button => {
+                    button.disabled = !sendingEnabled || group.isSending;
+                });
+                card.querySelector("textarea").disabled = !sendingEnabled || group.isSending;
 
                 updateWebsites(card, group);
 
@@ -557,11 +572,12 @@
 
                 const reportCount = groups.reduce((count, group) => count + group.names.length, 0);
                 const allSending = groups.every(group => group.isSending);
+                submissionDisabledNote.classList.toggle("hidden", sendingEnabled);
                 countElement.textContent = reportCount > 0 ? `${reportCount} not sent` : "";
                 actionsElement.classList.toggle("hidden", reportCount === 0);
                 emptyElement.classList.toggle("hidden", reportCount > 0);
                 deleteAllButton.disabled = allSending;
-                sendAllButton.disabled = allSending;
+                sendAllButton.disabled = !sendingEnabled || allSending;
             }
 
             deleteAllButton.addEventListener("click", () => {
@@ -581,7 +597,10 @@
             });
 
             document.addEventListener("WebUIMessage", event => {
-                if (event.detail.name === "loadReports") {
+                if (event.detail.name === "reportSubmissionState") {
+                    sendingEnabled = Boolean(event.detail.data);
+                    render();
+                } else if (event.detail.name === "loadReports") {
                     groups = event.detail.data;
                     render();
                 } else if (event.detail.name === "showReport") {

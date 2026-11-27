@@ -53,7 +53,7 @@ export const WIDGET_CATALOG = [
         network: false,
         privateAllowed: true,
         description: "Pinned shortcuts and your most visited sites.",
-        sample: "Ladybird · MDN · GitHub · Docs",
+        sample: "Ladyflock · MDN · GitHub · Docs",
         defaultConfig: () => ({}),
     },
     {

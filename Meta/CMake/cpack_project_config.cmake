@@ -13,6 +13,9 @@ endif()
 # Debian packages like Ubuntu's backports do, RPM packages with the dist tag of rpmbuild. Builds for several versions
 # of a distribution can then share a repository, and upgrading the distribution also moves Ladybird to the build for it.
 if (CPACK_GENERATOR STREQUAL "DEB")
+    if (NOT CPACK_DEBIAN_PACKAGE_MAINTAINER MATCHES "^[^<> \t\r\n][^<>\r\n]* <[^<>()@/: \t\r\n]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+>$")
+        message(FATAL_ERROR "Set LADYFLOCK_DEBIAN_MAINTAINER to the Debian maintainer's name and email, in the form Name <email>.")
+    endif()
     file(STRINGS /etc/os-release os_release REGEX "^(ID|VERSION_ID)=")
     foreach (line IN LISTS os_release)
         if (line MATCHES "^(ID|VERSION_ID)=\"?([^\"]*)\"?$")
@@ -21,5 +24,5 @@ if (CPACK_GENERATOR STREQUAL "DEB")
     endforeach()
     set(CPACK_DEBIAN_PACKAGE_RELEASE "1~${os_release_ID}${os_release_VERSION_ID}")
     set(CPACK_DEBIAN_DEBUGSYMBOLS_PACKAGE_DEPENDS
-        "ladybird (= ${CPACK_PACKAGE_VERSION}-${CPACK_DEBIAN_PACKAGE_RELEASE})")
+        "ladyflock (= ${CPACK_PACKAGE_VERSION}-${CPACK_DEBIAN_PACKAGE_RELEASE})")
 endif()

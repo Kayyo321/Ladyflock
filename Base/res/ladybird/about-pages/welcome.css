@@ -26,10 +26,49 @@ header {
     text-align: center;
 }
 
+:root {
+    --mark-light-light: #c674f8;
+    --mark-light-back: #9c50da;
+    --mark-light-mid: #742dc5;
+    --mark-light-deep: #4d0b9e;
+    --mark-light-bird: #4e1599;
+    --mark-light-solid: #4b22ad;
+
+    --mark-dark-light: #e2b4ff;
+    --mark-dark-back: #c68cff;
+    --mark-dark-mid: #a567f5;
+    --mark-dark-deep: #7d43dc;
+    --mark-dark-bird: #d3b8ff;
+    --mark-dark-solid: #b496ff;
+
+    --mark-light: var(--mark-light-light);
+    --mark-back: var(--mark-light-back);
+    --mark-mid: var(--mark-light-mid);
+    --mark-deep: var(--mark-light-deep);
+    --mark-bird: var(--mark-light-bird);
+    --mark-solid: var(--mark-light-solid);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --mark-light: var(--mark-dark-light);
+        --mark-back: var(--mark-dark-back);
+        --mark-mid: var(--mark-dark-mid);
+        --mark-deep: var(--mark-dark-deep);
+        --mark-bird: var(--mark-dark-bird);
+        --mark-solid: var(--mark-dark-solid);
+    }
+}
+
 .logomark {
     width: 56px;
-    height: 46.8px;
-    color: var(--brand);
+    height: 45.7px;
+}
+
+@media (prefers-contrast: more) {
+    .logomark path {
+        fill: var(--mark-solid);
+    }
 }
 
 header h1 {

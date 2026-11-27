@@ -89,7 +89,7 @@ def _load_ladybird_script_class():
     # First load the script_utilities submodule, then "script" — which imports it via a relative "from .script_utilities
     # import Utilities". Register both under a package name so the relative import resolves.
     package_name = "ladybird_orca_script_under_test"
-    ladybird_dir = LADYBIRD_ORCA_SCRIPTS_SRC / "Ladybird"
+    ladybird_dir = LADYBIRD_ORCA_SCRIPTS_SRC / "Ladyflock"
 
     # Pre-create the package by registering a synthetic module whose __path__ is the directory — then the relative
     # imports inside it resolve.

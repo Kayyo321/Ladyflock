@@ -12,12 +12,12 @@ namespace Ladybird {
 
 class VersionPage final : public WebUIPage {
 public:
-    explicit VersionPage(u64 web_ui_id)
-        : WebUIPage(web_ui_id)
-    {
-    }
+    explicit VersionPage(u64 web_ui_id);
+    virtual ~VersionPage() override;
 
     virtual void received_message(String const& name, JsonValue const& data) override;
+
+    static void notify_accent_changed();
 
 private:
     void load_version_info();

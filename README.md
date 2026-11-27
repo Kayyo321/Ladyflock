@@ -4,7 +4,19 @@ Ladyflock is an independent browser project based on [Ladybird](https://github.c
 
 ## Project status
 
-Ladyflock is a development browser. The executable, build commands, and artwork still use the upstream Ladybird name and assets.
+Ladyflock is a development browser built on the Ladybird engine. It ships with its own Ladyflock branding, artwork, executable name, platform application ID (`io.github.kayyo321.Ladyflock`), and separate default profiles so it can run side by side with Ladybird.
+
+### Upgrading from a build branded Ladybird
+
+Ladyflock starts with a fresh profile. Your previous build still opens its existing data under `Ladybird/Profiles/<name>`. The usual profile names are `developer` for development builds and `default` for releases. Named profiles use the name you supplied.
+
+| Platform | Previous settings root | Previous data root |
+| --- | --- | --- |
+| macOS | `~/Library/Preferences` | `~/Library/Application Support` |
+| Linux | `$XDG_CONFIG_HOME` (default `~/.config`) | `$XDG_DATA_HOME` (default `~/.local/share`) |
+| Windows | `%APPDATA%` | `%LOCALAPPDATA%` |
+
+Append `Ladybird/Profiles/<name>` to each root to find the old profile. Ladyflock creates the same layout under `Ladyflock`. On macOS, explicit XDG overrides also take precedence. If you previously used `--profile-path`, close the old browser, copy the entire custom profile directory, and pass the copy’s absolute path to Ladyflock. Default profiles split their files across OS roots and need to stay with the previous build.
 
 ## Firefox extensions
 
@@ -14,13 +26,13 @@ Launch with `--enable-amo-catalog` to try search and installation from Mozilla A
 
 The Add-ons page lists supported manifest keys, permissions, and APIs. The **Tested in Ladyflock** label applies to a specific package version and hash. For uBlock Origin and uBlock Origin Lite, the test covers signed installation from Mozilla Add-ons, default network ad blocking, and hiding ad elements with bundled cosmetic filters. The test uses Lite's **Complete** mode for generic cosmetic filtering. Advanced rule modes have limited support. Extensions run in regular profiles.
 
-To repeat the live check with a built browser, run `python3 Tests/LibWebView/test-amo-ublock.py /path/to/Ladybird`. It uses separate disposable profiles and a loopback HTTP server.
+To repeat the live check with a built browser, run `python3 Tests/LibWebView/test-amo-ublock.py /path/to/Ladyflock`. It uses separate disposable profiles and a loopback HTTP server.
 
 [Firefox Extension Compatibility](Documentation/Extensions/Compatibility.md) covers the rest. It explains how the install check follows Firefox's rules, what each API does here, and its limits. It also has the results of checking and starting the 100 most-used extensions on Mozilla Add-ons, with the gaps that remain.
 
 ## Build from source
 
-Follow the [inherited build instructions](Documentation/BuildInstructionsLadybird.md). They still refer to Ladybird. See [Documentation](Documentation/) for the upstream engine and browser architecture.
+Follow the [Ladyflock build instructions](Documentation/BuildInstructionsLadybird.md). The build helper retains its upstream name, `Meta/ladybird.py`. See [Documentation](Documentation/) for the upstream engine and browser architecture.
 
 ## Upstream and license
 

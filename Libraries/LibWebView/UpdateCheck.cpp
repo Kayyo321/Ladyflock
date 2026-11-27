@@ -14,6 +14,7 @@
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/BrowserVersion.h>
+#include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
 #include <LibCore/Timer.h>
@@ -30,6 +31,10 @@
 #include <LibWebView/Settings.h>
 #include <LibWebView/UpdateCheck.h>
 #include <LibWebView/Utilities.h>
+
+#if defined(LADYBIRD_HAS_UPDATE_CHECK)
+#    include <LibWebView/UpdateConfiguration.h>
+#endif
 
 #if defined(AK_OS_MACOS)
 #    include <sys/sysctl.h>
@@ -58,6 +63,28 @@ static constexpr auto VERSION_KEY = "version"sv;
 static constexpr auto FIRST_START_KEY = "firstStart"sv;
 static constexpr auto LAST_CHECK_KEY = "lastCheck"sv;
 static constexpr auto SKIPPED_VERSION_KEY = "skippedVersion"sv;
+
+static bool is_upstream_ladybird_host(StringView host)
+{
+    if (host.ends_with('.'))
+        host = host.substring_view(0, host.length() - 1);
+    return host.equals_ignoring_ascii_case("ladybird.org"sv)
+        || host.ends_with(".ladybird.org"sv, CaseSensitivity::CaseInsensitive);
+}
+
+Optional<URL::URL> configured_releases_feed_url()
+{
+    auto configured = Core::Environment::get("LADYFLOCK_UPDATE_FEED_URL"sv);
+    auto raw_url = (configured.has_value() ? *configured : StringView { LADYFLOCK_UPDATE_FEED_URL, __builtin_strlen(LADYFLOCK_UPDATE_FEED_URL) }).trim_whitespace();
+    if (raw_url.is_empty())
+        return {};
+    auto url = URL::Parser::basic_parse(raw_url);
+    if (!url.has_value() || (url->scheme() != "https"sv && url->scheme() != "http"sv))
+        return {};
+    if (is_upstream_ladybird_host(url->serialized_host()))
+        return {};
+    return url;
+}
 
 Optional<Vector<u64>> parse_version(StringView version)
 {
@@ -473,7 +500,8 @@ static ByteString update_check_header(SystemDescription const& system, StringVie
 
 String release_page_url(StringView version)
 {
-    return MUST(String::formatted("https://github.com/LadybirdBrowser/ladybird/releases/tag/{}", version));
+    static constexpr StringView base_url = LADYFLOCK_RELEASE_NOTES_BASE_URL ""sv;
+    return MUST(String::formatted("{}/{}", base_url.ends_with('/') ? base_url.substring_view(0, base_url.length() - 1) : base_url, version));
 }
 
 static AK::Duration update_check_interval()
@@ -549,7 +577,7 @@ UnixDateTime UpdateChecker::next_check_waits_from() const
 
 void UpdateChecker::start()
 {
-    if (!BROWSER_IS_RELEASE_BUILD)
+    if (!BROWSER_IS_RELEASE_BUILD || !configured_releases_feed_url().has_value())
         return;
     m_started = true;
 
@@ -606,6 +634,12 @@ void UpdateChecker::check(UpdateCheckTrigger trigger)
         return;
     }
 
+    auto feed_url = configured_releases_feed_url();
+    if (!feed_url.has_value()) {
+        report({ .kind = UpdateCheckResult::Kind::Failed, .update = {} }, trigger);
+        return;
+    }
+
     if (!Application::privacy_policy_coordinator().allows_network_egress(Application::default_session())
         || (trigger == UpdateCheckTrigger::Automatic && !Application::privacy_policy_coordinator().allows_background_services(Application::default_session()))) {
         report({ .kind = UpdateCheckResult::Kind::Failed, .update = {} }, trigger);
@@ -636,8 +670,8 @@ void UpdateChecker::check(UpdateCheckTrigger trigger)
 
     auto headers = HTTP::HeaderList::create();
     headers->set({ "User-Agent"sv, Web::default_user_agent });
-    headers->set({ "Ladybird-Update-Check"sv, update_check_header(describe_current_system(), BROWSER_VERSION ""sv, counted) });
-    m_request = client.value()->start_request("GET"sv, URL::Parser::basic_parse(RELEASES_FEED_URL).release_value(), {}, *headers, {},
+    headers->set({ "Ladyflock-Update-Check"sv, update_check_header(describe_current_system(), BROWSER_VERSION ""sv, counted) });
+    m_request = client.value()->start_request("GET"sv, *feed_url, {}, *headers, {},
         HTTP::CacheMode::NoStore, HTTP::Cookie::IncludeCredentials::No);
     if (!m_request) {
         finish(Error::from_string_literal("Unable to start the request for releases.json"));

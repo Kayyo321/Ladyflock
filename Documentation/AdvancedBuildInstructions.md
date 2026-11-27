@@ -33,8 +33,10 @@ There are some optional features that can be enabled during compilation that are
 - `ENABLE_ALL_THE_DEBUG_MACROS`: used for checking whether debug code compiles on CI. This should not be set normally, as it clutters the console output and makes the system run very slowly. Instead, enable only the needed debug macros, as described below.
 - `ENABLE_COMPILETIME_FORMAT_CHECK`: checks for the validity of `std::format`-style format string during compilation. Enabled by default.
 - `ENABLE_JS_JIT`: builds the optimizing JIT for JavaScript. Enabled by default on x86-64 and AArch64 Linux and macOS and on x86-64 Windows, the platforms it generates code for. Without it, LibJS runs JavaScript in its interpreter alone, and the interpreter is built without the feedback collection and tier-up checks that only the JIT needs. See [the configuration of the JIT](../Libraries/LibJS/JIT/ARCHITECTURE.md#13-configuration).
-- `LADYBIRD_ENABLE_UPDATE_CHECK`: checks whether a newer release of Ladybird is available. Enabled by default. Without it, Ladybird never downloads the list of releases and has no menu item or notice about updates, and its setting in `about:settings` says that updates are managed externally. Turning it off also turns off `LADYBIRD_ENABLE_SPARKLE`.
-- `LADYBIRD_ENABLE_SPARKLE`: updates the macOS app with [Sparkle](https://sparkle-project.org). Enabled by default. Without it, vcpkg doesn't build Sparkle, which needs Xcode, and Ladybird links to the release page of a newer version instead of installing it.
+- `LADYBIRD_ENABLE_UPDATE_CHECK` enables Ladyflock’s binary release checker. It defaults to off. An update-enabled release needs a Ladyflock-owned `LADYFLOCK_UPDATE_FEED_URL`. Binary updates are independent of [merging engine updates from Ladybird](../UPSTREAM.md).
+- `LADYBIRD_ENABLE_SPARKLE` enables macOS installation through [Sparkle](https://sparkle-project.org). It defaults to off and requires the release checker, a Ladyflock appcast in `LADYBIRD_SPARKLE_FEED_URL`, and its signing key in `LADYBIRD_SPARKLE_PUBLIC_KEY`.
+- `LADYFLOCK_REPORTS_ENDPOINT` sets the collector for crash and web compatibility reports. It defaults to empty, which keeps reports local. The environment variable of the same name overrides the build setting.
+- `LADYFLOCK_DEBIAN_MAINTAINER` sets the public Debian package maintainer. Ladyflock packages use `Koyak <s@koyak.net>` by default.
 - `LADYBIRD_BASELINE_CPU_TARGET`: builds C++ and Rust for a common CPU target instead of the build machine. Disabled by default and enabled by the `Distribution` preset; explicitly set `-DLADYBIRD_BASELINE_CPU_TARGET=ON` when packaging binaries for older machines with another configuration. On x86-64 this is x86-64-v2 (SSE4.2 and POPCNT), so distributed binaries run without AVX, AVX2, BMI or LZCNT. Both the JavaScript and WebAssembly JITs remain available; WebAssembly selects newer instructions at runtime when supported.
 - `INCLUDE_WASM_SPEC_TESTS`: downloads and includes the WebAssembly spec testsuite tests. In order to use this option, you will need to install `prettier` and `wasm-tools`.
 - `BUILD_BROWSER_TESTS_ONLY`: only builds the tests that run the browser's own executables, such as the LibWeb test suite and the WebDriver tests, and leaves out the test programs for individual libraries. Enabled by the `Distribution` preset.
@@ -52,7 +54,7 @@ There are some optional features that can be enabled during compilation that are
 - `LADYBIRD_ENABLE_CPPTRACE`: uses cpptrace for stack traces when it is available, and `backtrace.h` otherwise. Enabled by default.
 - `LADYBIRD_GENERATE_SYMBOL_FILES`: builds with debug information and writes the symbols of the installed executables to separate files. Enabled by the `Distribution` preset. Not supported with MSVC-style toolchains.
 - `LADYBIRD_GENERATE_DSYM`: generates dSYM bundles for executables and libraries on macOS.
-- `LADYBIRD_VERSION`: sets the version of a release, such as `2026.46.0`. Empty for development builds.
+- `LADYFLOCK_VERSION` sets the product release version, such as `2026.46.0`. Leave it empty for a development build. `LADYBIRD_VERSION` is a legacy alias. `LADYBIRD_COMPATIBILITY_VERSION` selects the engine version exposed to websites.
 - `ENABLE_INSTALL_HEADERS`: installs the headers of the libraries. Enabled by default.
 - `ENABLE_INSTALL_FREEDESKTOP_FILES`: installs the desktop entry, D-Bus service, icon and AppStream metainfo files. Enabled by default on Linux and the BSDs.
 
@@ -118,22 +120,38 @@ By default, ccache will include the plugins themselves in file hashes. So if a p
 will change, and you will be stuck with an uncached build. This setting will prevent ccache from using plugins in the
 file hashes.
 
+## Verifying a macOS package
+
+Start with a fresh install directory. Installing or stripping binaries can invalidate earlier signatures. The test bundler collects the dependencies, restores helper entitlements, signs the staged application ad hoc, and checks the complete bundle before archiving it.
+
+```sh
+stage=$(mktemp -d)
+cmake --install Build/release --prefix "$stage/install" --component ladybird_Runtime --strip
+python3 Meta/package-macos-test-bundle.py --build-dir Build/release --install-dir "$stage/install" --output "$stage/Ladyflock.tar.gz"
+mkdir "$stage/unpacked"
+tar -xzf "$stage/Ladyflock.tar.gz" -C "$stage/unpacked"
+codesign --verify --deep --strict "$stage/unpacked/Ladyflock.app"
+"$stage/unpacked/Ladyflock.app/Contents/MacOS/Ladyflock" --help
+```
+
+Some local compilers link an absolute toolchain dependency such as `libomp.dylib`. If it belongs in the test archive, pass its exact install name to the bundler with `--include-dylib /absolute/path/to/libomp.dylib` when packaging a fresh stage. Inspect a **public release** after all packaging and signing steps by extracting the actual delivery artifact on a clean Mac. Check the app and helper signatures, verify the expected Developer ID and TeamIdentifier with `codesign -dv --verbose=4 Ladyflock.app`, assess it with `spctl --assess --type execute --verbose Ladyflock.app`, and launch it with a disposable profile. Record the artifact digest and results.
+
 ## Building the Flatpak
 
-Ladybird has an in-tree Flatpak manifest that can be used to build a Flatpak package for Ladybird. The recommended way
+Ladyflock ships an in-tree Flatpak manifest. The recommended way
 to build the Flatpak is to use the `flatpak-builder` tool, which is available in most distributions. See the
 [Flatpak setup documentation](https://flatpak.org/setup/) on how to configure your environment for user Flatpak
-builds, and to configure the Flathub repo. The Ladybird Flatpak manifest at
-`Meta/CMake/flatpak/org.ladybird.Ladybird.json` can be built with the following command:
+builds, and to configure the Flathub repo. The Ladyflock Flatpak manifest at
+`Meta/CMake/flatpak/io.github.kayyo321.Ladyflock.json` can be built with the following command:
 
 ```bash
 flatpak-builder --user --force-clean --install-deps-from=flathub \
   --ccache --repo=Build/repo --install Build/flatpak \
-  Meta/CMake/flatpak/org.ladybird.Ladybird.json
+  Meta/CMake/flatpak/io.github.kayyo321.Ladyflock.json
 ```
 
 This command will build the Flatpak bundle and install it into the local Flatpak repository at `Build/repo`. Expect this
-to take a long time, as it will download and build all the dependencies of Ladybird as well. `flatpak-builder` will drop
+to take a long time, as it will download and build all the dependencies of Ladyflock as well. `flatpak-builder` will drop
 caches and build files in `.flatpak-builder`, as well as in the two subfolders `Build/repo` and `Build/flatpak`.
 
 `flatpak-builder` 1.4.5 and newer record the license files of the dependencies, which the `LICENSES.txt` of the
@@ -142,14 +160,14 @@ Flatpak reproduces. With an older version, `LICENSES.txt` only names the depende
 The Flatpak can be run with the following command:
 
 ```bash
-flatpak run --user org.ladybird.Ladybird
+flatpak run --user io.github.kayyo321.Ladyflock
 ```
 
 In order to debug the Flatpak, you can pass the `--devel` and `--command=sh` flags to `flatpak run`. This will drop you
 into a shell in the Flatpak sandbox:
 
 ```bash
-flatpak run --user --command=sh --devel org.ladybird.Ladybird
+flatpak run --user --command=sh --devel io.github.kayyo321.Ladyflock
 ```
 
 ## Debugging without any optimizations
@@ -217,7 +235,7 @@ cmake -B Build/release -DVULKAN_VALIDATION_LAYERS_DEBUG=ON
 
 and then build normally.
 
-When running Ladybird the message `Vulkan validation layers: active` will be visible during the creation of the VulkanContext if the Vulkan validation layers are properly setup.
+When running Ladyflock the message `Vulkan validation layers: active` will be visible during the creation of the VulkanContext if the Vulkan validation layers are properly setup.
 
 If instead `Vulkan validation layers: not available` appears then the system is most likely missing the validation layers. On Ubuntu adding the package `vulkan-validationlayers` will add them in, other distros may also have a package but the name could be different (for example, on Arch, Fedora and NixOS the name is `vulkan-validation-layers`.
 

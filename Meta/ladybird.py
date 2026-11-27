@@ -33,7 +33,7 @@ def main():
     platform = Platform()
     (default_cc, default_cxx) = platform.default_compiler()
 
-    parser = argparse.ArgumentParser(description="Ladybird")
+    parser = argparse.ArgumentParser(description="Ladyflock (Ladybird)")
     subparsers = parser.add_subparsers(dest="command")
 
     preset_parser = argparse.ArgumentParser(add_help=False)
@@ -161,15 +161,22 @@ def main():
         print("ladybird.py must be run from a Visual Studio enabled environment", file=sys.stderr)
         sys.exit(1)
 
+    build_target = None
+    executable_target = None
     if "target" in args:
-        if platform.host_system != HostSystem.Windows and args.target == "ladybird":
-            args.target = "Ladybird"
-        if not args.target and args.command not in ("build", "rebuild"):
-            args.target = "ladybird" if platform.host_system == HostSystem.Windows else "Ladybird"
+        requested_target = args.target
+        if not requested_target and args.command not in ("build", "rebuild"):
+            requested_target = "ladybird"
+        if requested_target in ("ladybird", "Ladybird", "Ladyflock"):
+            build_target = "ladybird"
+            executable_target = "Ladyflock"
+        else:
+            build_target = requested_target
+            executable_target = requested_target
 
     if args.command == "build":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target, args.args)
+        build_main(build_dir, args.jobs, build_target, args.args)
     elif args.command == "test":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
         build_main(build_dir, args.jobs)
@@ -189,19 +196,19 @@ def main():
             build_dir, _ = configure_build_env(platform, args.preset, args.jobs)
         else:
             build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-            build_main(build_dir, args.jobs, args.target)
-        run_main(platform.host_system, build_dir, args.target, args.args)
+            build_main(build_dir, args.jobs, build_target)
+        run_main(platform.host_system, build_dir, executable_target, args.args)
     elif args.command == "debug":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target, args.args)
-        debug_main(platform.host_system, build_dir, args.target, args.debugger, args.cmd)
+        build_main(build_dir, args.jobs, build_target, args.args)
+        debug_main(platform.host_system, build_dir, executable_target, args.debugger, args.cmd)
     elif args.command == "profile":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target)
-        profile_main(platform.host_system, build_dir, args.target, args.args)
+        build_main(build_dir, args.jobs, build_target)
+        profile_main(platform.host_system, build_dir, executable_target, args.args)
     elif args.command == "install":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target, args.args)
+        build_main(build_dir, args.jobs, build_target, args.args)
         build_main(build_dir, args.jobs, "install", args.args)
     elif args.command == "deps":
         if platform.host_system == HostSystem.Windows:
@@ -219,11 +226,11 @@ def main():
     elif args.command == "rebuild":
         clean_main(platform, args.preset)
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target, args.args)
+        build_main(build_dir, args.jobs, build_target, args.args)
     elif args.command == "addr2line":
         build_dir = configure_main(platform, args.preset, args.cc, args.cxx, args.jobs)
-        build_main(build_dir, args.jobs, args.target)
-        addr2line_main(build_dir, args.target, args.program, args.addresses)
+        build_main(build_dir, args.jobs, build_target)
+        addr2line_main(build_dir, executable_target, args.program, args.addresses)
 
 
 def configure_main(platform: Platform, preset: str, cc: str, cxx: str, jobs: Optional[str]) -> Path:
@@ -460,13 +467,20 @@ def run_main(host_system: HostSystem, build_dir: Path, target: str, args: list[s
     run_args = []
 
     if host_system == HostSystem.macOS and target in (
+        "AudioServer",
+        "Compositor",
+        "Hub",
         "ImageDecoder",
-        "Ladybird",
+        "Ladyflock",
+        "MediaServer",
+        "ProcessReaper",
         "RequestServer",
+        "SystemProbe",
+        "VideoDecoderServer",
         "WebContent",
         "WebDriver",
     ):
-        run_args.append(str(build_dir.joinpath("bin", "Ladybird.app", "Contents", "MacOS", target)))
+        run_args.append(str(build_dir.joinpath("bin", "Ladyflock.app", "Contents", "MacOS", target)))
     else:
         run_args.append(str(build_dir.joinpath("bin", target)))
 
@@ -489,8 +503,8 @@ def debug_main(host_system: HostSystem, build_dir: Path, target: str, debugger: 
     for cmd in debugger_commands:
         gdb_args.extend(["-ex" if debugger == "gdb" else "-o", cmd])
 
-    if target == "Ladybird" and host_system == HostSystem.macOS:
-        gdb_args.append(str(build_dir.joinpath("bin", "Ladybird.app")))
+    if target == "Ladyflock" and host_system == HostSystem.macOS:
+        gdb_args.append(str(build_dir.joinpath("bin", "Ladyflock.app")))
     elif host_system == HostSystem.Windows:
         gdb_args.append(str(build_dir.joinpath("bin", target + ".exe")))
     else:
@@ -506,8 +520,8 @@ def profile_main(host_system: HostSystem, build_dir: Path, target: str, args: li
 
     valgrind_args = ["valgrind", "--tool=callgrind", "--instr-atstart=yes"]
 
-    if target == "Ladybird" and host_system == HostSystem.macOS:
-        valgrind_args.append(str(build_dir.joinpath("bin", "Ladybird.app")))
+    if target == "Ladyflock" and host_system == HostSystem.macOS:
+        valgrind_args.append(str(build_dir.joinpath("bin", "Ladyflock.app")))
     else:
         valgrind_args.append(str(build_dir.joinpath("bin", target)))
 

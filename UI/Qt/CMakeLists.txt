@@ -300,6 +300,7 @@ endif()
 create_ladybird_bundle(ladybird)
 
 if (WIN32)
+    include(WindowsVersionResource.cmake)
     ladybird_windows_bin(ladybird CONSOLE)
     qt_generate_deploy_script(
         TARGET ladybird

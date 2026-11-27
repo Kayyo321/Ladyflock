@@ -5,6 +5,7 @@
  */
 
 #include <AK/StringBuilder.h>
+#include <LibCore/BrowserVersion.h>
 #include <LibWebView/NotificationAttribution.h>
 #include <LibWebView/NotificationFreedesktopArguments.h>
 
@@ -69,9 +70,9 @@ static FreedesktopImageData image_data_for(Gfx::Bitmap const& bitmap)
 FreedesktopNotifyArguments build_notify_arguments(PlatformNotification const& notification, FreedesktopCapabilities const& capabilities, u32 replaces_daemon_id)
 {
     FreedesktopNotifyArguments arguments;
-    arguments.app_name = "Ladybird"_string;
+    arguments.app_name = BROWSER_BRAND_NAME ""_string;
     arguments.replaces_id = replaces_daemon_id;
-    arguments.app_icon = "org.ladybird.Ladybird"_string;
+    arguments.app_icon = BROWSER_APPLICATION_ID ""_string;
     auto title = platform_text(notification.data.title);
     auto body = platform_text(notification.data.body);
 
@@ -101,7 +102,7 @@ FreedesktopNotifyArguments build_notify_arguments(PlatformNotification const& no
     bool quiet_replacement = notification.replaces.has_value() && !notification.data.renotify;
     if (notification.data.silent == true || quiet_replacement)
         arguments.hints.append({ "suppress-sound"_string, true });
-    arguments.hints.append({ "desktop-entry"_string, "org.ladybird.Ladybird"_string });
+    arguments.hints.append({ "desktop-entry"_string, BROWSER_APPLICATION_ID ""_string });
     if (notification.icon && notification.icon->width() <= icon_maximum_side && notification.icon->height() <= icon_maximum_side)
         arguments.hints.append({ "image-data"_string, image_data_for(*notification.icon) });
 

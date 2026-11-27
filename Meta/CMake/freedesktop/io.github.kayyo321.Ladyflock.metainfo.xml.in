@@ -1,22 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Copyright 2025-present, the Ladybird developers. -->
+<!-- Copyright 2026-present, the Ladyflock developers. -->
 <component type="desktop-application">
-  <id>org.ladybird.Ladybird</id>
+  <id>io.github.kayyo321.Ladyflock</id>
 
-  <name>Ladybird</name>
-  <summary>Truly independent web browser</summary>
+  <name>Ladyflock</name>
+  <summary>Independent web browser built on the Ladybird engine</summary>
 
-  <developer id="org.ladybird">
-    <name>Ladybird Browser Initiative</name>
+  <developer id="io.github.kayyo321">
+    <name>Ladyflock developers</name>
   </developer>
 
-  <url type="homepage">https://ladybird.org</url>
-  <url type="bugtracker">https://github.com/LadybirdBrowser/ladybird/issues</url>
-  <url type="faq">https://ladybird.org/#faq</url>
-  <url type="donation">https://donorbox.org/ladybird</url>
-  <url type="contact">https://ladybird.org/organization/#initiative</url>
-  <url type="vcs-browser">https://github.com/LadybirdBrowser/ladybird</url>
-  <url type="contribute">https://ladybird.org/#gi</url>
+  <url type="homepage">https://github.com/Kayyo321/Ladyflock</url>
+  <url type="bugtracker">https://github.com/Kayyo321/Ladyflock/issues</url>
+  <url type="vcs-browser">https://github.com/Kayyo321/Ladyflock</url>
 
   <metadata_license>0BSD</metadata_license>
   <project_license>BSD-2-Clause</project_license>
@@ -24,8 +21,8 @@
 
   <description>
     <p>
-      Ladybird is a brand-new browser and web engine.
-      Driven by a web standards first approach, Ladybird aims to render the modern web with good performance, stability and security.
+      Ladyflock (Ladybird) is an independent web browser built on the Ladybird engine.
+      Driven by a web standards first approach, Ladyflock aims to render the modern web with good performance, stability, security, and Firefox WebExtensions support.
     </p>
   </description>
 
@@ -37,7 +34,7 @@
     <mediatype>x-scheme-handler/https</mediatype>
   </provides>
 
-  <launchable type="desktop-id">org.ladybird.Ladybird.desktop</launchable>
+  <launchable type="desktop-id">io.github.kayyo321.Ladyflock.desktop</launchable>
   <releases>
     <release version="@METAINFO_RELEASE_VERSION@" type="@METAINFO_RELEASE_TYPE@" date="@DATE@">
       <description>

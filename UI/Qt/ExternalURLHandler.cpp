@@ -10,6 +10,7 @@
 #include <AK/Optional.h>
 #include <AK/ScopeGuard.h>
 #include <AK/String.h>
+#include <LibCore/BrowserVersion.h>
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
@@ -21,7 +22,7 @@
 
 namespace Ladybird {
 
-static constexpr auto default_ladybird_desktop_id = "org.ladybird.Ladybird.desktop"sv;
+static constexpr auto default_ladybird_desktop_id = BROWSER_APPLICATION_ID ".desktop"sv;
 static Core::EventLoop* s_main_thread_event_loop;
 
 struct LadybirdAppLaunchContext {

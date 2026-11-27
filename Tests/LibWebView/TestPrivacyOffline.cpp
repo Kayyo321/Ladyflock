@@ -188,13 +188,13 @@ TEST_CASE(milestone1_startup_offline_and_browser_services)
     auto dns_port_str = ByteString::number(dns_observer.port());
     auto report_endpoint = ByteString::formatted("http://reports.example:{}", service_server.port());
 
-    auto previous_reports_endpoint = Core::Environment::get("LADYBIRD_REPORTS_ENDPOINT"sv);
-    MUST(Core::Environment::set("LADYBIRD_REPORTS_ENDPOINT"sv, report_endpoint, Core::Environment::Overwrite::Yes));
+    auto previous_reports_endpoint = Core::Environment::get("LADYFLOCK_REPORTS_ENDPOINT"sv).map([](auto value) { return ByteString { value }; });
+    MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, report_endpoint, Core::Environment::Overwrite::Yes));
     ScopeGuard restore_env = [&] {
         if (previous_reports_endpoint.has_value())
-            (void)Core::Environment::set("LADYBIRD_REPORTS_ENDPOINT"sv, *previous_reports_endpoint, Core::Environment::Overwrite::Yes);
+            (void)Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, *previous_reports_endpoint, Core::Environment::Overwrite::Yes);
         else
-            (void)Core::Environment::unset("LADYBIRD_REPORTS_ENDPOINT"sv);
+            (void)Core::Environment::unset("LADYFLOCK_REPORTS_ENDPOINT"sv);
     };
 
     Test::HeadlessTestEnvironment environment { "Milestone1StartupOffline"sv, 120 };
@@ -228,6 +228,7 @@ TEST_CASE(milestone1_startup_offline_and_browser_services)
     EXPECT(catalog_failed);
 
     // ReportSubmission must fail closed without touching DNS or HTTP.
+    VERIFY(WebView::ReportSubmission::is_configured());
     WebView::ReportSubmission::Payload payload { .manifest = "{\"protocol\":1}", .attachments = {} };
     auto submission = WebView::ReportSubmission::create(move(payload));
     bool report_failed = false;

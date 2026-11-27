@@ -10,6 +10,7 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/ScopeGuard.h>
 #include <LibCore/Directory.h>
 #include <LibCore/Environment.h>
 #include <LibCore/EventLoop.h>
@@ -80,11 +81,44 @@ TEST_CASE(crash_report_submission)
 
     auto app = TRY_OR_FAIL(environment.create_application<TestApplication>());
 
-    ReportServer server;
-    MUST(Core::Environment::set("LADYBIRD_REPORTS_ENDPOINT"sv, server.endpoint(), Core::Environment::Overwrite::Yes));
-
     auto reports_directory = LexicalPath::join(test_directory, "CrashReports"sv).string();
     WebView::CrashReportStore store { reports_directory };
+
+    // A legacy collector setting leaves manual and queued crash reports local.
+    ReportServer legacy_server;
+    configure_legacy_report_endpoint(legacy_server);
+    {
+        size_t post_calls = 0;
+        WebView::ReportSubmission::set_post_function([&](auto const&, auto, auto, auto) -> Function<void()> {
+            ++post_calls;
+            return {};
+        });
+        ScopeGuard clear_post = [] { WebView::ReportSubmission::set_post_function({}); };
+
+        auto local_name = write_report(reports_directory, "2026-10-01T11-00-00Z-WebContent-local1.txt"sv);
+        WebView::CrashReportReview unconfigured_review { store };
+        Outcome unconfigured_outcome;
+        track(unconfigured_review, unconfigured_outcome);
+        MUST(unconfigured_review.open(local_name));
+        VERIFY(!unconfigured_review.send("Local only"_string, {}).has_value());
+        VERIFY(unconfigured_outcome.failure == WebView::ReportSubmission::Failure::Sending);
+        VERIFY(post_calls == 0u);
+        VERIFY(FileSystem::exists(LexicalPath::join(reports_directory, local_name).string()));
+
+        WebView::CrashReportOutbox unconfigured_outbox { store };
+        Vector<WebView::CrashReportOutbox::Report> queued_reports;
+        queued_reports.append({ local_name, "Queued local"_string, {} });
+        unconfigured_outbox.send(move(queued_reports));
+        VERIFY(!unconfigured_outbox.is_sending(local_name));
+        VERIFY(unconfigured_outbox.could_not_send(local_name));
+        VERIFY(post_calls == 0u);
+        VERIFY(FileSystem::exists(LexicalPath::join(reports_directory, local_name).string()));
+        MUST(store.remove_report(local_name));
+    }
+
+    ReportServer server;
+    MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, server.endpoint(), Core::Environment::Overwrite::Yes));
+
     WebView::CrashReportReview review { store };
     Outcome outcome;
     track(review, outcome);
@@ -270,6 +304,18 @@ TEST_CASE(crash_report_submission)
     VERIFY(outbox.failed_attempt(second_name)->description == "I clicked a link"sv);
     VERIFY(outbox.failed_attempt(second_name)->url == "https://example.com/other"sv);
 
+    // A queued report can reach the configured collector when the user tries again.
+    server.requests.clear();
+    server.respond_with(challenge("queued"sv));
+    server.respond_with({ 200, R"({"receipt":"receipt-queued"})", {} });
+    Vector<WebView::CrashReportOutbox::Report> retry_reports;
+    retry_reports.append({ second_name, "I clicked a link"_string, "https://example.com/other"_string });
+    outbox.send(move(retry_reports));
+    Core::EventLoop::current().spin_until([&] { return !outbox.is_sending(second_name); });
+    VERIFY(server.requests.size() == 2);
+    VERIFY(server.requests[1].path == "/api/v1/reports"sv);
+    VERIFY(store.saved_report(second_name).is_error());
+
     // A report that fails after its review went away keeps what the user chose, and its submission ID.
     name = write_report(reports_directory, "2026-10-01T19-00-00Z-WebContent-abc123.txt"sv);
     {
@@ -283,5 +329,6 @@ TEST_CASE(crash_report_submission)
     VERIFY(outbox.failed_attempt(name)->description == "I closed the tab"sv);
     VERIFY(!outbox.failed_attempt(name)->manifest.is_empty());
 
+    VERIFY(legacy_server.requests.is_empty());
     outln("PASS: Crash reports reach the report server in the format it expects");
 }

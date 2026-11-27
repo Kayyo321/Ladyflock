@@ -44,11 +44,8 @@ LGPL_MARKER = "GNU LESSER GENERAL PUBLIC LICENSE"
 
 LGPL_LIBRARIES_PATH = pathlib.PurePosixPath("Meta/CMake/lgpl-libraries.txt")
 
-# Release-tools publishes the source archives of the LGPL ports there, for every release that ships them.
-THIRD_PARTY_SOURCES_URL = "https://download.ladybird.org/third-party"
-
-# Ladybird's vcpkg asset cache, which holds the source downloads of the ports by their SHA-512.
-VCPKG_ASSET_CACHE_URL = "https://vcpkg-assets.ladybird.org/source-assets"
+# Optional Ladyflock-owned base URL where LGPL third-party source archives are published.
+DEFAULT_THIRD_PARTY_SOURCES_URL = ""
 
 GITHUB_SOURCE_PATTERN = re.compile(r"^git\+https://github\.com/(?P<repository>[^/@]+/[^/@]+)@(?P<ref>.+)$")
 UNSAFE_NAME_CHARACTERS = re.compile(r"[^A-Za-z0-9._+-]")
@@ -344,7 +341,7 @@ def download_source(download: SourceDownload, downloads_dir: Optional[pathlib.Pa
         shutil.copyfile(downloads_dir / download.file_name, destination)
         return
 
-    urls = [f"{VCPKG_ASSET_CACHE_URL}/{download.sha512}"]
+    urls = []
     if github := GITHUB_SOURCE_PATTERN.match(download.location):
         urls.append(f"https://github.com/{github['repository']}/archive/{github['ref']}.tar.gz")
     elif download.location.startswith("https://"):
@@ -380,7 +377,7 @@ def write_port_archive(
     root = source.archive_name().removesuffix(".tar")
     readme = "\n".join(
         [
-            f"The source code of {source.port.name} {source.port.version}, as Ladybird builds it with vcpkg.",
+            f"The source code of {source.port.name} {source.port.version}, as Ladyflock builds it with vcpkg.",
             "",
             "port/ holds the vcpkg port of the library: its build scripts and our patches. The other files are the",
             "source archives that the port downloads, unchanged:",
@@ -578,7 +575,7 @@ def write_flatpak_module_archive(
     root = destination.name.removesuffix(".tar")
     readme = "\n".join(
         [
-            f"The source code of {module['name']}, as the Ladybird Flatpak builds it with flatpak-builder.",
+            f"The source code of {module['name']}, as the Ladyflock Flatpak builds it with flatpak-builder.",
             "",
             "flatpak-module.json is the module of the Flatpak manifest that builds the library, and patches/ holds",
             "our patches, which it applies in order. The other files are the sources that it fetches:",
@@ -740,37 +737,38 @@ def generate(args: argparse.Namespace) -> str:
     ]
 
     introduction = [
-        "Ladybird is distributed under the BSD 2-Clause License below. It includes the third-party software listed",
-        "after that, under the licenses reproduced with each of them.",
+        "Ladyflock (built on the Ladybird engine) is distributed under the BSD 2-Clause License below. It includes",
+        "the third-party software listed after that, under the licenses reproduced with each of them.",
     ]
-    if lgpl and args.release:
+    sources_base_url = (args.third_party_sources_url or "").rstrip("/")
+    if lgpl and args.release and sources_base_url:
         introduction += [
             "",
-            "This release of Ladybird uses the following libraries under the GNU Lesser General Public License. The",
+            "This release of Ladyflock uses the following libraries under the GNU Lesser General Public License. The",
             "source code of each, with our patches and build scripts, is at the address below it:",
             "",
         ]
         for library, archive_name in lgpl:
-            introduction += [f"  {library}", f"    {THIRD_PARTY_SOURCES_URL}/{archive_name()}"]
+            introduction += [f"  {library}", f"    {sources_base_url}/{archive_name()}"]
         introduction += [
             "",
-            "The source code of Ladybird at https://github.com/LadybirdBrowser/ladybird contains everything needed to",
+            "The source code of Ladyflock at https://github.com/Kayyo321/Ladyflock contains everything needed to",
             "build it against modified versions of these libraries.",
         ]
     elif lgpl:
         introduction += [
             "",
-            "This build of Ladybird uses the following libraries under the GNU Lesser General Public License:",
+            "This build of Ladyflock uses the following libraries under the GNU Lesser General Public License:",
             "",
             *[f"  {library}" for library, _ in lgpl],
             "",
-            "The source code of Ladybird at https://github.com/LadybirdBrowser/ladybird contains everything needed to",
+            "The source code of Ladyflock at https://github.com/Kayyo321/Ladyflock contains everything needed to",
             "build it against modified versions of these libraries, and the build downloads the source code of each",
             "of them in the version listed here.",
         ]
 
     output = ["\n".join(introduction) + "\n"]
-    output.append(section("Ladybird", read_text(args.source_dir / "LICENSE")))
+    output.append(section("Ladyflock / Ladybird", read_text(args.source_dir / "LICENSE")))
 
     for port in ports:
         output.append(section(f"{port.name} {port.version}", port.copyright))
@@ -787,7 +785,7 @@ def generate(args: argparse.Namespace) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Collects the licenses of Ladybird and of the third-party software a build of it includes"
+        description="Collects the licenses of Ladyflock and of the third-party software a build of it includes"
     )
     parser.add_argument("--output", "-o", type=pathlib.Path)
     parser.add_argument("--source-dir", type=pathlib.Path, default=LADYBIRD_SOURCE_DIR)
@@ -797,7 +795,12 @@ def main() -> int:
     parser.add_argument("--rust-target")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(
-        "--release", action="store_true", help="name where release-tools publishes the source of each LGPL port"
+        "--release", action="store_true", help="name where Ladyflock publishes the source of each LGPL port when --third-party-sources-url is set"
+    )
+    parser.add_argument(
+        "--third-party-sources-url",
+        default=DEFAULT_THIRD_PARTY_SOURCES_URL,
+        help="optional Ladyflock-owned base URL where LGPL third-party source archives are hosted",
     )
     parser.add_argument(
         "--third-party-sources",

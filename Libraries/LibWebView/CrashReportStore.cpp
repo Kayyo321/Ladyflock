@@ -38,7 +38,12 @@ using namespace Core::CrashReportData;
 
 ByteString CrashReportStore::default_directory()
 {
-    return LexicalPath::join(Core::StandardPaths::user_data_directory(), "Ladybird"sv, "CrashReports"sv).string();
+#if defined(AK_OS_WINDOWS)
+    // StandardPaths::user_data_directory() already includes the "Ladyflock" leaf on Windows.
+    return LexicalPath::join(Core::StandardPaths::user_data_directory(), "CrashReports"sv).string();
+#else
+    return LexicalPath::join(Core::StandardPaths::user_data_directory(), "Ladyflock"sv, "CrashReports"sv).string();
+#endif
 }
 
 // The browser's own store. It moves into the profile once the profile is known.

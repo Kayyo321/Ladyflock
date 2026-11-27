@@ -60,6 +60,7 @@ private:
     void update_chrome_style();
     void show_page(QWidget&);
     void show_report_text();
+    void update_submission_availability();
     // Shows the given actions of the status page, with the primary one as the default and focused action.
     void show_status(QString const& title, QString const& message, Vector<QPushButton*> const& actions = {},
         QPushButton* primary = nullptr);
@@ -81,6 +82,8 @@ private:
     QFrame* m_details { nullptr };
     QFormLayout* m_fields { nullptr };
     QPushButton* m_show_report_button { nullptr };
+    QPushButton* m_send_button { nullptr };
+    QLabel* m_submission_disabled_note { nullptr };
     QPlainTextEdit* m_report_text { nullptr };
     QLabel* m_validation { nullptr };
 

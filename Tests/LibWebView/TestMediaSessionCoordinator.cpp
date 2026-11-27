@@ -182,7 +182,7 @@ TEST_CASE(private_media_session_hides_metadata_and_preserves_controls)
     fixture.coordinator.update(private_source, state, "private tab title"_string);
 
     auto const& published = *fixture.updates.last();
-    EXPECT_EQ(published.title, "Ladybird"sv);
+    EXPECT_EQ(published.title, "Ladyflock"sv);
     EXPECT(published.artist.is_empty());
     EXPECT(published.album.is_empty());
     EXPECT(!published.artwork);
@@ -203,7 +203,7 @@ TEST_CASE(private_media_session_hides_metadata_and_preserves_controls)
     fixture.coordinator.update(source_b, state, "public tab title"_string);
     EXPECT(*fixture.updates.last() == state);
     fixture.coordinator.remove(source_b);
-    EXPECT_EQ(fixture.updates.last()->title, "Ladybird"sv);
+    EXPECT_EQ(fixture.updates.last()->title, "Ladyflock"sv);
     fixture.coordinator.remove(private_source);
     EXPECT(!fixture.updates.last().has_value());
 }
@@ -213,10 +213,10 @@ TEST_CASE(private_media_session_does_not_publish_fallback_title)
     CoordinatorFixture fixture;
     MediaSessionSource private_source { 1, Web::PageId { 1 }, true };
     fixture.coordinator.update(private_source, playing_state(), "private tab title"_string);
-    EXPECT_EQ(fixture.updates.last()->title, "Ladybird"sv);
+    EXPECT_EQ(fixture.updates.last()->title, "Ladyflock"sv);
     fixture.coordinator.set_fallback_title(private_source.view_id, "changed private title"_string);
     EXPECT_EQ(fixture.updates.size(), 1u);
-    EXPECT_EQ(fixture.coordinator.now_playing_state()->title, "Ladybird"sv);
+    EXPECT_EQ(fixture.coordinator.now_playing_state()->title, "Ladyflock"sv);
 }
 
 TEST_CASE(media_session_actions_follow_the_selected_source_and_supported_actions)

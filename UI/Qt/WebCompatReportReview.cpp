@@ -232,6 +232,12 @@ WebCompatReportReview::WebCompatReportReview(WebView::WebCompatReport::Page page
     platform_features_layout->addWidget(platform_features_note);
     review_layout->addWidget(platform_features);
 
+    m_submission_disabled_note = create_label(tr("Sending compatibility reports is disabled in this build of Ladyflock. You can still inspect and copy the local report with “See everything”."), m_review_page);
+    m_submission_disabled_note->setObjectName("WebCompatReportSubmissionDisabledNote");
+    m_submission_disabled_note->setForegroundRole(QPalette::PlaceholderText);
+    m_submission_disabled_note->hide();
+    review_layout->addWidget(m_submission_disabled_note);
+
     m_validation = create_label({}, m_review_page);
     m_validation->setObjectName("WebCompatReportValidation");
     m_validation->hide();
@@ -260,9 +266,9 @@ WebCompatReportReview::WebCompatReportReview(WebView::WebCompatReport::Page page
         widget->setFont(font);
     }
 
-    auto* send_button = new QPushButton(tr("Send report"), m_review_page);
-    send_button->setObjectName("WebCompatReportSendButton");
-    send_button->setDefault(true);
+    m_send_button = new QPushButton(tr("Send report"), m_review_page);
+    m_send_button->setObjectName("WebCompatReportSendButton");
+    m_send_button->setDefault(true);
     auto* review_close_button = new QPushButton(tr("Cancel"), m_review_page);
     review_close_button->setObjectName("WebCompatReportReviewCloseButton");
     review_close_button->setAutoDefault(false);
@@ -276,7 +282,7 @@ WebCompatReportReview::WebCompatReportReview(WebView::WebCompatReport::Page page
     contents->addStretch(1);
     review_buttons->addLayout(contents, 1);
     review_buttons->addWidget(review_close_button);
-    review_buttons->addWidget(send_button);
+    review_buttons->addWidget(m_send_button);
     review_layout->addLayout(review_buttons);
     layout->addWidget(m_review_page);
 
@@ -346,7 +352,7 @@ WebCompatReportReview::WebCompatReportReview(WebView::WebCompatReport::Page page
         set_screenshot({});
         m_select_screenshot_button->setFocus(Qt::OtherFocusReason);
     });
-    QObject::connect(send_button, &QPushButton::clicked, this, [this] { send(); });
+    QObject::connect(m_send_button, &QPushButton::clicked, this, [this] { send(); });
     QObject::connect(review_close_button, &QPushButton::clicked, this, [this] { exit(); });
     QObject::connect(m_retry_button, &QPushButton::clicked, this, [this] {
         show_progress(WebView::ReportSubmission::Stage::Preparing);
@@ -371,6 +377,12 @@ WebCompatReportReview::WebCompatReportReview(WebView::WebCompatReport::Page page
     };
     m_report.on_sent = [this] { show_sent(); };
     m_report.on_failed = [this](auto failure, String const& reason) { show_failure(failure, reason); };
+
+    auto can_send = WebView::ReportSubmission::is_configured();
+    m_send_button->setEnabled(can_send);
+    m_send_button->setDefault(can_send);
+    m_retry_button->setEnabled(can_send);
+    m_submission_disabled_note->setVisible(!can_send);
 
     set_screenshot(AK::move(screenshot));
     update_chrome_style();
@@ -416,6 +428,9 @@ WebView::WebCompatReport::IncludePlatformFeatures WebCompatReportReview::include
 
 void WebCompatReportReview::send()
 {
+    if (!WebView::ReportSubmission::is_configured())
+        return;
+
     auto description = ak_string_from_qstring(m_description_edit->toPlainText());
     if (auto error = WebView::WebCompatReport::validate(description); error.has_value()) {
         m_validation->setText(qstring_from_ak_string(*error));
@@ -494,7 +509,7 @@ void WebCompatReportReview::show_retry(String const& reason, u32 retry_number, u
 void WebCompatReportReview::show_sent()
 {
     m_progress->setValue(100);
-    show_status(tr("Report sent"), tr("Thanks for helping make the web work in Ladybird."), { m_back_to_site_button, m_close_button }, nullptr);
+    show_status(tr("Report sent"), tr("Thanks for helping make the web work in Ladyflock."), { m_back_to_site_button, m_close_button }, nullptr);
     m_progress->hide();
     auto sent_color = Theme::is_dark() ? QColor(0x30b14f) : QColor(0x208a3a);
     m_status_icon->setPixmap(create_chrome_icon(ChromeIcon::CheckCircle, sent_color).pixmap(QSize(40, 40), devicePixelRatioF()));

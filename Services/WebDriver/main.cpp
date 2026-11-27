@@ -178,7 +178,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     Optional<ByteString> temporary_profile_path;
     if (!profile_name.has_value() && !profile_path.has_value()) {
         auto profile_parent_directory = profiles_directory.has_value() ? ByteString { *profiles_directory } : Core::StandardPaths::tempfile_directory();
-        temporary_profile_path = LexicalPath::join(profile_parent_directory, ByteString::formatted("ladybird-webdriver-profile-{:016x}-{:016x}", get_random<u64>(), get_random<u64>())).string();
+        temporary_profile_path = LexicalPath::join(profile_parent_directory, ByteString::formatted("ladyflock-webdriver-profile-{:016x}-{:016x}", get_random<u64>(), get_random<u64>())).string();
         profile_path = temporary_profile_path->view();
     }
 
@@ -207,7 +207,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
         auto launch_browser_callback = [&](ByteString const& webdriver_endpoint, bool headless, Optional<ByteString> const& proxy_autoconfig_url) {
             auto arguments = create_arguments(webdriver_endpoint, profile_name, profile_path, headless, expose_experimental_interfaces, expose_internals_object, force_cpu_painting, disable_sandbox, debug_process, default_time_zone, resource_substitution_map_path, proxy_autoconfig_url);
-            return launch_process("Ladybird"sv, arguments.span());
+            return launch_process("Ladyflock"sv, arguments.span());
         };
 
         auto maybe_client = WebDriver::Client::try_create(maybe_buffered_socket.release_value(), move(launch_browser_callback));

@@ -414,12 +414,12 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool file_scheme_urls_have_tuple_origins = false;
 
     Core::ArgsParser args_parser;
-    args_parser.set_general_help("The Ladybird web browser :^)");
+    args_parser.set_general_help("Ladyflock (Ladybird) web browser");
     args_parser.add_positional_argument(raw_urls, "URLs to open", "url", Core::ArgsParser::Required::No);
 
     args_parser.add_option(Core::ArgsParser::Option {
         .argument_mode = Core::ArgsParser::OptionArgumentMode::Optional,
-        .help_string = "Run Ladybird without a browser window. Mode may be 'screenshot' (default), 'layout-tree', 'text', 'manual', or 'terminal'.",
+        .help_string = "Run Ladyflock without a browser window. Mode may be 'screenshot' (default), 'layout-tree', 'text', 'manual', or 'terminal'.",
         .long_name = "headless",
         .value_name = "mode",
         .accept_value = [&](StringView value) {
@@ -924,12 +924,12 @@ ErrorOr<void> Application::create_profile([[maybe_unused]] Optional<StringView> 
         .temporary = Core::StandardPaths::tempfile_directory(),
     };
 #if defined(AK_OS_WINDOWS)
-    // These StandardPaths values already contain "Ladybird" on Windows. Use their parents as the platform roots for profile layouts.
+    // These StandardPaths values already contain "Ladyflock" on Windows. Use their parents as the platform roots for profile layouts.
     profile_roots.data = LexicalPath { profile_roots.data }.parent().string();
     profile_roots.cache = LexicalPath { profile_roots.cache }.parent().string();
 #endif
 
-    m_instance_data_directory = LexicalPath::join(profile_roots.data, "Ladybird"sv).string();
+    m_instance_data_directory = LexicalPath::join(profile_roots.data, "Ladyflock"sv).string();
 
 #if defined(AK_OS_ANDROID)
     m_profile = TRY(Profile::create_legacy(profile_roots));
@@ -2099,7 +2099,7 @@ ErrorOr<void> Application::launch_services()
         // between the preflight and an apply above, none of them may persist this session, even if
         // an earlier store already migrated. Otherwise, we would keep writing to a vetoed database.
         if (cookies_outcome != Database::MigrationOutcome::Success || hsts_outcome != Database::MigrationOutcome::Success || storage_outcome != Database::MigrationOutcome::Success || downloads_outcome != Database::MigrationOutcome::Success || extensions_outcome != Database::MigrationOutcome::Success) {
-            warnln("Browsing database was created by a newer Ladybird version; cookies, web storage, HSTS policies and unfinished downloads will not be persisted this session");
+            warnln("Browsing database was created by a newer Ladyflock version; cookies, web storage, HSTS policies and unfinished downloads will not be persisted this session");
             cookies_outcome = Database::MigrationOutcome::DatabaseTooNew;
             hsts_outcome = Database::MigrationOutcome::DatabaseTooNew;
             storage_outcome = Database::MigrationOutcome::DatabaseTooNew;
@@ -2312,7 +2312,7 @@ void Application::system_facts_arrived(SystemFacts const& facts)
     // RequestServer leaves curl's TLS configuration alone in this case, rather than corrupt memory, but the user can only
     // fix it by rebuilding Ladybird.
     if (facts.openssl.has_value() && facts.openssl->curl_uses_another_openssl()) {
-        warnln("The system's curl uses OpenSSL {}, but Ladybird was built against OpenSSL {}. Rebuild Ladybird against the system's OpenSSL.",
+        warnln("The system's curl uses OpenSSL {}, but Ladyflock was built against OpenSSL {}. Rebuild Ladyflock against the system's OpenSSL.",
             *facts.openssl->curl_version, facts.openssl->linked_version);
         display_openssl_mismatch(*facts.openssl);
     }

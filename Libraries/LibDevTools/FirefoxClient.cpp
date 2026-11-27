@@ -28,7 +28,7 @@
 namespace DevTools {
 
 #if defined(AK_OS_LINUX)
-static constexpr auto PROFILE_NAME = "LadybirdDevTools"sv;
+static constexpr auto PROFILE_NAME = "LadyflockDevTools"sv;
 #endif
 
 static constexpr auto PROFILE_PREFS = R"~~~(
@@ -60,7 +60,12 @@ static constexpr auto USER_CHROME_CSS = R"~~~(
 
 static LexicalPath const& profile_directory()
 {
-    static NeverDestroyed<LexicalPath> path = LexicalPath::join(Core::StandardPaths::user_data_directory(), "Ladybird"sv, "DevTools"sv, "firefox-profile"sv);
+#if defined(AK_OS_WINDOWS)
+    // StandardPaths::user_data_directory() already includes the "Ladyflock" leaf on Windows.
+    static NeverDestroyed<LexicalPath> path = LexicalPath::join(Core::StandardPaths::user_data_directory(), "DevTools"sv, "firefox-profile"sv);
+#else
+    static NeverDestroyed<LexicalPath> path = LexicalPath::join(Core::StandardPaths::user_data_directory(), "Ladyflock"sv, "DevTools"sv, "firefox-profile"sv);
+#endif
     return *path;
 }
 

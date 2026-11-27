@@ -49,7 +49,7 @@ Serve two local pages: one whose URL matches the fixture manifest and one that d
 
 Read the [platform prerequisites](Documentation/BuildInstructionsLadybird.md), [build options](Documentation/AdvancedBuildInstructions.md), and [test guide](Documentation/Testing.md). Inherited target names still use Ladybird. Use a clean build directory and an isolated test profile when launching a development browser.
 
-For a Ladyflock development build, disable the inherited Ladybird release checker at configure time; this also disables Sparkle. This is separate from Git source sync.
+Ladyflock development builds default to binary update checks and Sparkle off. Set the checker explicitly when reusing a CMake cache. For an engine update, follow [UPSTREAM.md](UPSTREAM.md).
 
 ```sh
 cmake --preset Release -B Build/ladyflock -DLADYBIRD_ENABLE_UPDATE_CHECK=OFF

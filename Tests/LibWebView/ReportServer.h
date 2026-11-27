@@ -16,10 +16,13 @@
 #include <AK/JsonValue.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Vector.h>
+#include <LibCore/Environment.h>
 #include <LibCore/Socket.h>
 #include <LibCore/TCPServer.h>
 #include <LibCrypto/Hash/Hash.h>
+#include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/ReportSubmission.h>
 
 namespace ReportServerTest {
 
@@ -141,6 +144,24 @@ private:
     Vector<NonnullOwnPtr<Connection>> m_connections;
     Vector<Response> m_responses;
 };
+
+inline void configure_legacy_report_endpoint(ReportServer const& legacy_server)
+{
+    using WebView::ReportSubmission;
+
+    MUST(Core::Environment::unset("LADYFLOCK_REPORTS_ENDPOINT"sv));
+    bool has_compiled_collector = ReportSubmission::is_configured();
+    MUST(Core::Environment::set("LADYBIRD_REPORTS_ENDPOINT"sv, legacy_server.endpoint(), Core::Environment::Overwrite::Yes));
+
+    auto legacy_challenge_url = URL::Parser::basic_parse(ByteString::formatted("{}/api/v1/challenges", legacy_server.endpoint())).value();
+    VERIFY(!ReportSubmission::is_report_server_url(legacy_challenge_url));
+    VERIFY(ReportSubmission::is_configured() == has_compiled_collector);
+
+    // In builds with a compiled collector, an explicit empty override exercises local-only behavior.
+    if (has_compiled_collector)
+        MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, ""sv, Core::Environment::Overwrite::Yes));
+    VERIFY(!ReportSubmission::is_configured());
+}
 
 inline ByteString sha256_hex(StringView text)
 {

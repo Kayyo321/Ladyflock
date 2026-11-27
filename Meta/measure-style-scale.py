@@ -11,6 +11,7 @@ import math
 import socket
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -18,7 +19,11 @@ import urllib.request
 
 from pathlib import Path
 
-DEFAULT_WEBDRIVER = "Build/release/bin/Ladybird.app/Contents/MacOS/WebDriver"
+DEFAULT_WEBDRIVER = (
+    "Build/release/bin/Ladyflock.app/Contents/MacOS/WebDriver"
+    if sys.platform == "darwin"
+    else "Build/release/bin/WebDriver"
+)
 
 MATCHING_COUNTERS = [
     "normalizedUniqueKeys",

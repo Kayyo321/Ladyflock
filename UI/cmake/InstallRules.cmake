@@ -5,7 +5,7 @@ include(GNUInstallDirs)
 set(package Ladybird)
 
 if (APPLE)
-    set(ladybird_executable_install_dir bundle/Ladybird.app/Contents/MacOS)
+    set(ladybird_executable_install_dir bundle/Ladyflock.app/Contents/MacOS)
     set(ladybird_helper_install_dir ${ladybird_executable_install_dir})
 else()
     set(ladybird_executable_install_dir ${CMAKE_INSTALL_BINDIR})
@@ -70,14 +70,28 @@ list(REMOVE_DUPLICATES all_required_lagom_libraries)
 # Remove ladybird shlib if it exists
 list(REMOVE_ITEM all_required_lagom_libraries ladybird)
 
+install(TARGETS ${all_required_lagom_libraries}
+  EXPORT ladybirdTargets
+  ${vcpkg_runtime_dependencies}
+  COMPONENT ladybird_Runtime
+  LIBRARY
+    COMPONENT ladybird_Runtime
+    NAMELINK_COMPONENT ladybird_Development
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  FILE_SET server
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILE_SET ladybird
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
 if (APPLE)
     # Fixup the app bundle and copy:
-    #   - Shared libraries from lib/ to Ladybird.app/Contents/lib
+    #   - Shared libraries from lib/ to Ladyflock.app/Contents/lib
     # Static libraries are linked into the executables, so nothing loads them from the bundle.
     # CMake strips every executable it installs except the one inside an application bundle, so strip that one here.
     # Remove the symlink we created at build time for the lib directory first
     install(CODE "
-    set(contents_dir \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bundle/Ladybird.app/Contents)
+    set(contents_dir \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bundle/Ladyflock.app/Contents)
     file(REMOVE \${contents_dir}/lib)
     set(lib_dir \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
     if (IS_ABSOLUTE ${CMAKE_INSTALL_LIBDIR})
@@ -97,30 +111,16 @@ if (APPLE)
             COMPONENT ladybird_Runtime)
 
     install(FILES "${LADYBIRD_SOURCE_DIR}/Meta/Entitlements.plist" DESTINATION entitlements
-        RENAME Ladybird.release.entitlements COMPONENT ladybird_Runtime)
+        RENAME Ladyflock.release.entitlements COMPONENT ladybird_Runtime)
 endif()
-
-install(TARGETS ${all_required_lagom_libraries}
-  EXPORT ladybirdTargets
-  ${vcpkg_runtime_dependencies}
-  COMPONENT ladybird_Runtime
-  LIBRARY
-    COMPONENT ladybird_Runtime
-    NAMELINK_COMPONENT ladybird_Development
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  FILE_SET server
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-  FILE_SET ladybird
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
 
 if (vcpkg_runtime_dependencies)
     set(vcpkg_library_install_dir ${CMAKE_INSTALL_LIBDIR})
     set(qt_plugins "")
     if (APPLE)
-        set(vcpkg_library_install_dir bundle/Ladybird.app/Contents/lib)
-        set(qt_plugins_dir bundle/Ladybird.app/Contents/PlugIns)
-        set(qt_conf_dir bundle/Ladybird.app/Contents/Resources)
+        set(vcpkg_library_install_dir bundle/Ladyflock.app/Contents/lib)
+        set(qt_plugins_dir bundle/Ladyflock.app/Contents/PlugIns)
+        set(qt_conf_dir bundle/Ladyflock.app/Contents/Resources)
         set(qt_conf_plugins PlugIns)
 
         get_target_property(qt_core_type Qt6::Core TYPE)
@@ -166,7 +166,7 @@ if (vcpkg_runtime_dependencies)
             xcbglintegrations/QXcbGlxIntegrationPlugin
         )
         install(DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/sbom/"
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/ladybird/qt
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/ladyflock/qt
             COMPONENT ladybird_Runtime
             FILES_MATCHING PATTERN "qt*.spdx"
         )
@@ -316,81 +316,81 @@ if (ENABLE_INSTALL_FREEDESKTOP_FILES OR LINUX)
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
     endif()
-    if (LADYBIRD_VERSION STREQUAL "")
+    if (LADYFLOCK_RELEASE_VERSION STREQUAL "")
         set(METAINFO_RELEASE_VERSION "${CMAKE_PROJECT_VERSION}-snapshot-${GIT_HASH}")
         set(METAINFO_RELEASE_TYPE "snapshot")
         set(METAINFO_RELEASE_DESCRIPTION "Development snapshot.")
-    elseif (LADYBIRD_RELEASE_STAGE STREQUAL "")
-        set(METAINFO_RELEASE_VERSION "${LADYBIRD_VERSION}")
+    elseif (LADYFLOCK_RELEASE_STAGE STREQUAL "")
+        set(METAINFO_RELEASE_VERSION "${LADYFLOCK_RELEASE_VERSION}")
         set(METAINFO_RELEASE_TYPE "stable")
         set(METAINFO_RELEASE_DESCRIPTION "Stable release.")
     else()
-        set(METAINFO_RELEASE_VERSION "${LADYBIRD_VERSION}")
+        set(METAINFO_RELEASE_VERSION "${LADYFLOCK_RELEASE_VERSION}")
         set(METAINFO_RELEASE_TYPE "development")
-        set(METAINFO_RELEASE_DESCRIPTION "${LADYBIRD_RELEASE_STAGE} release.")
+        set(METAINFO_RELEASE_DESCRIPTION "${LADYFLOCK_RELEASE_STAGE} release.")
     endif()
-    configure_file("${FREEDESKTOP_RESOURCE_DIR}/org.ladybird.Ladybird.metainfo.xml.in" "${CMAKE_CURRENT_BINARY_DIR}/org.ladybird.Ladybird.metainfo.xml" @ONLY)
+    configure_file("${FREEDESKTOP_RESOURCE_DIR}/${LADYFLOCK_APPLICATION_ID}.metainfo.xml.in" "${CMAKE_CURRENT_BINARY_DIR}/${LADYFLOCK_APPLICATION_ID}.metainfo.xml" @ONLY)
 endif()
 
 # The archives and Linux packages leave these out: an archive can be unpacked anywhere, and the Linux packages carry
 # copies in /usr that point at the installed command.
 if (ENABLE_INSTALL_FREEDESKTOP_FILES)
     install(FILES
-        "${FREEDESKTOP_RESOURCE_DIR}/org.ladybird.Ladybird.svg"
+        "${FREEDESKTOP_RESOURCE_DIR}/${LADYFLOCK_APPLICATION_ID}.svg"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
         COMPONENT ladybird_Freedesktop
     )
     install(FILES
-        "${FREEDESKTOP_RESOURCE_DIR}/org.ladybird.Ladybird.desktop"
+        "${FREEDESKTOP_RESOURCE_DIR}/${LADYFLOCK_APPLICATION_ID}.desktop"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
         COMPONENT ladybird_Freedesktop
     )
     install(FILES
-        "${FREEDESKTOP_RESOURCE_DIR}/org.ladybird.Ladybird.service"
+        "${FREEDESKTOP_RESOURCE_DIR}/${LADYFLOCK_APPLICATION_ID}.service"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/dbus-1/services"
         COMPONENT ladybird_Freedesktop
     )
     install(FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/org.ladybird.Ladybird.metainfo.xml"
+        "${CMAKE_CURRENT_BINARY_DIR}/${LADYFLOCK_APPLICATION_ID}.metainfo.xml"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
         COMPONENT ladybird_Freedesktop
     )
 endif()
 
-# Linux packages install Ladybird into LADYBIRD_PACKAGE_INSTALL_PREFIX, and only add a command, the desktop integration
+# Linux packages install Ladyflock into LADYBIRD_PACKAGE_INSTALL_PREFIX, and only add a command, the desktop integration
 # and the debug symbols to the rest of the system.
 if (LINUX)
     set(system_integration_dir "${CMAKE_CURRENT_BINARY_DIR}/system_integration")
-    set(packaged_ladybird "${LADYBIRD_PACKAGE_INSTALL_PREFIX}/bin/Ladybird")
-    foreach (file IN ITEMS org.ladybird.Ladybird.desktop org.ladybird.Ladybird.service)
+    set(packaged_ladyflock "${LADYBIRD_PACKAGE_INSTALL_PREFIX}/bin/Ladyflock")
+    foreach (file IN ITEMS ${LADYFLOCK_APPLICATION_ID}.desktop ${LADYFLOCK_APPLICATION_ID}.service)
         file(READ "${FREEDESKTOP_RESOURCE_DIR}/${file}" contents)
-        string(REGEX REPLACE "Exec=Ladybird( |\n|$)" "Exec=${packaged_ladybird}\\1" contents "${contents}")
+        string(REGEX REPLACE "Exec=Ladyflock( |\n|$)" "Exec=${packaged_ladyflock}\\1" contents "${contents}")
         file(WRITE "${system_integration_dir}/${file}" "${contents}")
     endforeach()
     file(MAKE_DIRECTORY "${system_integration_dir}/bin")
-    file(CREATE_LINK "${packaged_ladybird}" "${system_integration_dir}/bin/ladybird" SYMBOLIC)
+    file(CREATE_LINK "${packaged_ladyflock}" "${system_integration_dir}/bin/ladyflock" SYMBOLIC)
 
-    install(FILES "${system_integration_dir}/bin/ladybird"
+    install(FILES "${system_integration_dir}/bin/ladyflock"
         DESTINATION /usr/bin
         COMPONENT ladybird_SystemIntegration
         EXCLUDE_FROM_ALL
     )
-    install(FILES "${system_integration_dir}/org.ladybird.Ladybird.desktop"
+    install(FILES "${system_integration_dir}/${LADYFLOCK_APPLICATION_ID}.desktop"
         DESTINATION /usr/share/applications
         COMPONENT ladybird_SystemIntegration
         EXCLUDE_FROM_ALL
     )
-    install(FILES "${system_integration_dir}/org.ladybird.Ladybird.service"
+    install(FILES "${system_integration_dir}/${LADYFLOCK_APPLICATION_ID}.service"
         DESTINATION /usr/share/dbus-1/services
         COMPONENT ladybird_SystemIntegration
         EXCLUDE_FROM_ALL
     )
-    install(FILES "${FREEDESKTOP_RESOURCE_DIR}/org.ladybird.Ladybird.svg"
+    install(FILES "${FREEDESKTOP_RESOURCE_DIR}/${LADYFLOCK_APPLICATION_ID}.svg"
         DESTINATION /usr/share/icons/hicolor/scalable/apps
         COMPONENT ladybird_SystemIntegration
         EXCLUDE_FROM_ALL
     )
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/org.ladybird.Ladybird.metainfo.xml"
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${LADYFLOCK_APPLICATION_ID}.metainfo.xml"
         DESTINATION /usr/share/metainfo
         COMPONENT ladybird_SystemIntegration
         EXCLUDE_FROM_ALL

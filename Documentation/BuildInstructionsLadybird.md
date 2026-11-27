@@ -1,4 +1,4 @@
-# Ladybird browser build instructions
+# Ladyflock browser build instructions
 
 ## Build Prerequisites
 
@@ -133,7 +133,7 @@ building with Nix, please create an issue there.
 
 ### macOS:
 
-Xcode 26 or newer is required to build Ladybird. Install it from the App Store, open it once to finish its setup, and
+Xcode 26 or newer is required to build Ladyflock. Install it from the App Store, open it once to finish its setup, and
 then install the other dependencies:
 
 ```
@@ -152,7 +152,7 @@ brew install llvm@22
 
 ### Windows:
 
-WSL2 is the supported way to build Ladybird on Windows. A native build is also possible, however it is still experimental,
+WSL2 is the supported way to build Ladyflock on Windows. A native build is also possible, however it is still experimental,
 and there are several issues.
 
 #### WSL2
@@ -194,10 +194,10 @@ pkg install autoconf-archive automake autoconf bash cmake ccache curl gmake gn l
 
 ### Using ladybird.py
 
-The simplest way to build and run ladybird is via the ladybird.py script:
+The simplest way to build and run Ladyflock is via the `Meta/ladybird.py` script:
 
 ```bash
-# From /path/to/ladybird
+# From the Ladyflock checkout
 ./Meta/ladybird.py run
 ```
 
@@ -211,7 +211,7 @@ You may also choose to start it in `gdb` using:
 ./Meta/ladybird.py gdb ladybird
 ```
 
-The above commands will build a Release version of Ladybird. To instead build a Debug version, run the
+The above commands will build a Release version of Ladyflock. To instead build a Debug version, run the
 `Meta/ladybird.py` script with the value of the `BUILD_PRESET` environment variable set to `Debug`, like this:
 
 ```bash
@@ -237,7 +237,7 @@ including sanitizer options. It does not update the binary or change its build c
 
 ### The User Interfaces
 
-Ladybird is built with a [Qt](https://doc.qt.io/qt-6/) browser frontend on all platforms.
+Ladyflock is built with a [Qt](https://doc.qt.io/qt-6/) browser frontend on all platforms.
 
 ### Build error messages you may encounter
 
@@ -271,7 +271,7 @@ for more information.
 
 ### Resource files
 
-Ladybird requires resource files from the ladybird/Base/res directory in order to properly load
+Ladyflock requires resource files from the checkout’s `Base/res` directory in order to properly load
 icons, fonts, and other theming information. These files are copied into the build directory by
 special CMake rules. The expected location of resource files can be tweaked by packagers using
 the standard CMAKE_INSTALL_DATADIR variable. CMAKE_INSTALL_DATADIR is expected to be a path relative
@@ -293,7 +293,7 @@ The script Meta/ladybird.py and the Release preset in CMakePresets.json both def
 CMake build directory.
 
 The install rules in UI/cmake/InstallRules.cmake define which binaries and libraries will be
-installed into the configured CMAKE_PREFIX_PATH or path passed to ``cmake --install``.
+installed into the configured CMAKE_INSTALL_PREFIX or path passed to ``cmake --install``.
 
 Note that when using a custom build directory rather than Meta/ladybird.py, the user may need to provide a suitable C++
 compiler (see [Build Prerequisites](BuildInstructionsLadybird.md#build-prerequisites)) via the CMAKE_C_COMPILER and
@@ -302,8 +302,8 @@ CMAKE_CXX_COMPILER cmake options.
 ```
 cmake --preset Release -B MyBuildDir
 # optionally, add -DCMAKE_CXX_COMPILER=<suitable compiler> -DCMAKE_C_COMPILER=<matching c compiler>
-cmake --build --preset Release MyBuildDir
-ninja -C MyBuildDir run-ladybird
+cmake --build MyBuildDir
+ninja -C MyBuildDir run
 ```
 
 ### Building with limited system memory
@@ -319,33 +319,32 @@ cmake --preset Release -B MyBuildDir -DLAGOM_LINK_POOL_SIZE=2
 
 ### Running manually
 
-The Meta/ladybird.py script will execute the `run-ladybird` and `debug-ladybird` custom targets.
-If you don't want to use the ladybird.py script to run the application, you can run the following commands:
+After building, launch Ladyflock directly from the checkout root or run its debugger target.
 
-To automatically run in gdb:
+To run in LLDB on macOS or GDB on Linux:
 ```
 ninja -C Build/release debug-ladybird
 ```
 
 To run without ninja rule on non-macOS systems:
 ```
-./Build/release/bin/Ladybird
+./Build/release/bin/Ladyflock
 ```
 
 To run without ninja rule on macOS:
 ```
-open -W --stdout $(tty) --stderr $(tty) ./Build/release/bin/Ladybird.app
+open -W --stdout "$(tty)" --stderr "$(tty)" ./Build/release/bin/Ladyflock.app
 
 # Or to launch with arguments:
-open -W --stdout $(tty) --stderr $(tty) ./Build/release/bin/Ladybird.app --args https://ladybird.dev
+open -W --stdout "$(tty)" --stderr "$(tty)" ./Build/release/bin/Ladyflock.app --args about:version
 ```
 
 ### Debugging with CLion
 
-Ladybird should be built with debug symbols first. This can be done by adding `-DCMAKE_BUILD_TYPE=Debug` to the cmake command line,
+Ladyflock should be built with debug symbols first. This can be done by adding `-DCMAKE_BUILD_TYPE=Debug` to the cmake command line,
 or selecting the Build Type Debug in the CLion CMake profile.
 
-After running Ladybird as suggested above with `./Meta/ladybird.py run ladybird`, you can now in CLion use Run -> Attach to Process to connect. If debugging layout or rendering issues, filter the listing that opens for `WebContent` and attach to that.
+After running Ladyflock as suggested above with `./Meta/ladybird.py run ladybird`, you can now in CLion use Run -> Attach to Process to connect. If debugging layout or rendering issues, filter the listing that opens for `WebContent` and attach to that.
 
 Now breakpoints, stepping and variable inspection will work.
 
@@ -357,7 +356,7 @@ Simply run the `ladybird.py` script as normal with a debug-style build. The buil
 with the entitlements from `Meta/DebugEntitlements.plist`, which includes `get-task-allow` for debugger and Instruments
 attachment.
 
-Now you can open the Instruments app and point it to the Ladybird app bundle.
+Now you can open the Instruments app and point it to the Ladyflock app bundle.
 
 Building the project with Xcode is not supported. The Xcode project generated by CMake does not properly execute custom
 targets, and does not handle all target names in the project.

@@ -169,7 +169,7 @@ static Optional<HelperSignature> signature_of_helper(StringView name)
 {
     // The helpers live in the application bundle next to the test executables.
     auto test_directory = LexicalPath::dirname(MUST(Core::System::current_executable_path()));
-    auto path = ByteString::formatted("{}/Ladybird.app/Contents/MacOS/{}", test_directory, name);
+    auto path = ByteString::formatted("{}/Ladyflock.app/Contents/MacOS/{}", test_directory, name);
     struct stat metadata {};
     if (stat(path.characters(), &metadata) != 0)
         return {};

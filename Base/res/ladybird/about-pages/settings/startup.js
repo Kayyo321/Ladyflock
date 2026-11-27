@@ -37,9 +37,9 @@ const syncNewTabModeControls = url => {
 };
 
 const DEFAULT_BROWSER_STATUS = {
-    default: "Links from other apps open in Ladybird.",
+    default: "Links from other apps open in Ladyflock.",
     "not-default": "Links from other apps open in another browser.",
-    unavailable: "Ladybird cannot determine or set the default browser on this system.",
+    unavailable: "Ladyflock cannot determine or set the default browser on this system.",
 };
 
 let defaultBrowser;

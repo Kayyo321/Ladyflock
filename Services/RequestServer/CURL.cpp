@@ -108,7 +108,7 @@ static bool curl_uses_openssl()
         // The Browser tells the user about this as well, from what the system probe found.
         auto our_openssl_version = ByteString::formatted("{}.{}.{}", OPENSSL_version_major(), OPENSSL_version_minor(), OPENSSL_version_patch());
         if (*curl_openssl_version != our_openssl_version) {
-            warnln("RequestServer: curl uses OpenSSL {}, but Ladybird uses OpenSSL {}. Ladybird has to be rebuilt against the OpenSSL that curl uses, until then it leaves curl's TLS configuration as it is.",
+            warnln("RequestServer: curl uses OpenSSL {}, but Ladyflock uses OpenSSL {}. Ladyflock has to be rebuilt against the OpenSSL that curl uses, until then it leaves curl's TLS configuration as it is.",
                 *curl_openssl_version, our_openssl_version);
             return false;
         }

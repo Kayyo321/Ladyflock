@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
 #include <AK/Vector.h>
+#include <LibCore/Environment.h>
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Settings.h>
@@ -144,8 +146,22 @@ TEST_CASE(the_full_report_is_shown_in_place_of_the_review)
     EXPECT(text.toPlainText().contains("BlockContainer <html>"));
 }
 
+static ScopeGuard<Function<void()>> with_report_endpoint(StringView endpoint)
+{
+    auto previous = Core::Environment::get("LADYFLOCK_REPORTS_ENDPOINT"sv).map([](auto value) { return ByteString { value }; });
+    MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, endpoint, Core::Environment::Overwrite::Yes));
+    return ScopeGuard { Function<void()> { [previous = move(previous)] {
+        if (previous.has_value())
+            MUST(Core::Environment::set("LADYFLOCK_REPORTS_ENDPOINT"sv, *previous, Core::Environment::Overwrite::Yes));
+        else
+            MUST(Core::Environment::unset("LADYFLOCK_REPORTS_ENDPOINT"sv));
+    } } };
+}
+
 TEST_CASE(a_report_needs_a_description)
 {
+    auto endpoint_guard = with_report_endpoint("http://127.0.0.1:1"sv);
+
     WebCompatReportReview review { test_page(), {}, nullptr };
     review.show();
 
@@ -154,6 +170,22 @@ TEST_CASE(a_report_needs_a_description)
     EXPECT(validation.isVisible());
     EXPECT_EQ(validation.text(), "Describe what is wrong with this website.");
     EXPECT(!child<QLabel>(review, "WebCompatReportStatusTitle").isVisible());
+}
+
+TEST_CASE(without_a_configured_collector_sending_is_disabled_and_local_review_works)
+{
+    auto endpoint_guard = with_report_endpoint(""sv);
+
+    WebCompatReportReview review { test_page(), {}, nullptr };
+    review.show();
+
+    EXPECT(!child<QPushButton>(review, "WebCompatReportSendButton").isEnabled());
+    EXPECT(child<QLabel>(review, "WebCompatReportSubmissionDisabledNote").isVisible());
+
+    child<QPushButton>(review, "WebCompatReportShowReportButton").click();
+    auto& text = child<QPlainTextEdit>(review, "ReportText");
+    EXPECT(text.isVisible());
+    EXPECT(text.toPlainText().contains("Ladyflock (Ladybird) web compatibility report, format 1"));
 }
 
 TEST_CASE(leaving_the_review_closes_its_tab)

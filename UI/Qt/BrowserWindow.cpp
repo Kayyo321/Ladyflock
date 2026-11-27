@@ -339,7 +339,7 @@ static QIcon const& app_icon(WebView::IsPrivate is_private)
     auto& cached_icon = is_private == WebView::IsPrivate::Yes ? private_icon : icon;
     if (cached_icon.isNull()) {
         QPixmap pixmap;
-        pixmap.load(is_private == WebView::IsPrivate::Yes ? ":/Icons/ladybird-private.png" : ":/Icons/ladybird.png");
+        pixmap.load(is_private == WebView::IsPrivate::Yes ? ":/Icons/ladyflock-private.png" : ":/Icons/ladyflock.png");
         cached_icon = QIcon(pixmap);
     }
     return cached_icon;

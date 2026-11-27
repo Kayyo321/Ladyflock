@@ -5,6 +5,7 @@
  */
 
 #include <AK/AtomicRefCounted.h>
+#include <LibCore/BrowserVersion.h>
 
 #import <Cocoa/Cocoa.h>
 #import <UI/Qt/Conversions.h>
@@ -82,11 +83,11 @@ void resolve_external_url_handler(URL::URL const& url, WebView::ExternalURLHandl
     if (application_name == nil)
         application_name = [[application_url lastPathComponent] stringByDeletingPathExtension];
 
-    // A development build counts the release as Ladybird too.
+    // A development build counts the release as Ladyflock too, while keeping upstream Ladybird separate.
     bool is_ladybird = false;
     if (auto* bundle_identifier = [[NSBundle bundleWithURL:application_url] bundleIdentifier]; bundle_identifier != nil) {
         auto* own_identifier = [[NSBundle mainBundle] bundleIdentifier];
-        is_ladybird = [bundle_identifier caseInsensitiveCompare:@"org.ladybird.Ladybird"] == NSOrderedSame
+        is_ladybird = [bundle_identifier caseInsensitiveCompare:@(BROWSER_APPLICATION_ID)] == NSOrderedSame
             || (own_identifier != nil && [bundle_identifier caseInsensitiveCompare:own_identifier] == NSOrderedSame);
     }
 

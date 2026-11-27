@@ -12,6 +12,7 @@
 #include <LibURL/Parser.h>
 #include <LibWebView/CrashReportDiagnostics.h>
 #include <LibWebView/CrashReportStore.h>
+#include <LibWebView/ReportSubmission.h>
 #include <LibWebView/WebUI/CrashReportsUI.h>
 
 namespace WebView {
@@ -34,7 +35,7 @@ static StringView plain_process_name(StringView process)
         return "Video decoder"sv;
     if (process == "WebRTCClient"sv)
         return "WebRTC process"sv;
-    return "Ladybird"sv;
+    return "Ladyflock"sv;
 }
 
 static Optional<String> website_host(String const& website)
@@ -199,12 +200,13 @@ void CrashReportsUI::load_reports()
         serialized_groups.must_append(move(serialized_group));
     }
 
+    async_send_message("reportSubmissionState"sv, ReportSubmission::is_configured());
     async_send_message("loadReports"sv, move(serialized_groups));
 }
 
 void CrashReportsUI::send_reports(JsonValue const& data)
 {
-    if (!data.is_array())
+    if (!ReportSubmission::is_configured() || !data.is_array())
         return;
 
     Vector<CrashReportOutbox::Report> reports;

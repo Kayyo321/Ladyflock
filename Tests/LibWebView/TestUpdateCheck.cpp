@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
+#include <LibCore/Environment.h>
 #include <LibTest/TestCase.h>
 #include <LibWebView/UpdateCheck.h>
 
@@ -218,5 +220,33 @@ TEST_CASE(a_check_is_due_once_the_interval_has_passed)
 
 TEST_CASE(the_release_page_is_the_tag_on_github)
 {
-    EXPECT_EQ(WebView::release_page_url("2026.46.2"sv), "https://github.com/LadybirdBrowser/ladybird/releases/tag/2026.46.2"sv);
+    EXPECT_EQ(WebView::release_page_url("2026.46.2"sv), "https://github.com/Kayyo321/Ladyflock/releases/tag/2026.46.2"sv);
+}
+
+TEST_CASE(update_feed_rejects_empty_and_upstream_ladybird_hosts)
+{
+    auto previous = Core::Environment::get("LADYFLOCK_UPDATE_FEED_URL"sv);
+    ScopeGuard restore = [&] {
+        if (previous.has_value())
+            (void)Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, *previous, Core::Environment::Overwrite::Yes);
+        else
+            (void)Core::Environment::unset("LADYFLOCK_UPDATE_FEED_URL"sv);
+    };
+
+    MUST(Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, ""sv, Core::Environment::Overwrite::Yes));
+    EXPECT(!WebView::configured_releases_feed_url().has_value());
+
+    MUST(Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, "https://download.ladybird.org/releases.json"sv, Core::Environment::Overwrite::Yes));
+    EXPECT(!WebView::configured_releases_feed_url().has_value());
+
+    MUST(Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, "https://ladybird.org/releases.json"sv, Core::Environment::Overwrite::Yes));
+    EXPECT(!WebView::configured_releases_feed_url().has_value());
+
+    MUST(Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, "https://user@Download.Ladybird.org./releases.json"sv, Core::Environment::Overwrite::Yes));
+    EXPECT(!WebView::configured_releases_feed_url().has_value());
+
+    MUST(Core::Environment::set("LADYFLOCK_UPDATE_FEED_URL"sv, "http://127.0.0.1:8080/releases.json"sv, Core::Environment::Overwrite::Yes));
+    auto local_feed = WebView::configured_releases_feed_url();
+    EXPECT(local_feed.has_value());
+    EXPECT_EQ(local_feed->serialize(), "http://127.0.0.1:8080/releases.json"sv);
 }
