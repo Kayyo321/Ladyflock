@@ -10302,24 +10302,32 @@ Optional<Utf16String> Document::get_style_sheet_source(CSS::StyleSheetIdentifier
             return {};
         }
 
-        for (auto& style_sheet : m_style_scope.style_sheets()) {
+        // NB: A link names its element, which finds its sheet wherever the link is, including in a shadow tree.
+        if (identifier.type == CSS::StyleSheetIdentifier::Type::LinkElement && identifier.dom_element_unique_id.has_value()) {
+            if (auto* node = Node::from_unique_id(*identifier.dom_element_unique_id); node && node->is_html_link_element()) {
+                if (auto sheet = as<HTML::HTMLLinkElement>(*node).sheet())
+                    return sheet->source_text();
+            }
+        }
+
+        // An imported sheet is known only by its URL, and the sheet importing it can be in the document or in any
+        // shadow tree.
+        Optional<Utf16String> result;
+        auto search = [&](CSS::StyleSheetState& style_sheet) {
+            if (result.has_value())
+                return;
             if (auto match = find_style_sheet_with_url(identifier.url.value(), style_sheet); match.has_value())
-                return match->source_text();
-        }
-
-        if (m_adopted_style_sheets) {
-            Optional<Utf16String> result;
-            for_each_adopted_style_sheet(*m_adopted_style_sheets, [&](auto& style_sheet) {
-                if (result.has_value())
-                    return;
-
-                if (auto match = find_style_sheet_with_url(identifier.url.value(), style_sheet); match.has_value())
-                    result = match->source_text();
-            });
-            return result;
-        }
-
-        return {};
+                result = match->source_text();
+        };
+        for (auto& style_sheet : m_style_scope.style_sheets())
+            search(style_sheet);
+        if (m_adopted_style_sheets)
+            for_each_adopted_style_sheet(*m_adopted_style_sheets, [&](auto& style_sheet) { search(style_sheet); });
+        // NB: Only what applies in a shadow tree can have been shown, so its active sheets are the ones to search.
+        for_each_shadow_root([&](ShadowRoot const& shadow_root) {
+            shadow_root.for_each_active_css_style_sheet([&](auto& style_sheet) { search(style_sheet); });
+        });
+        return result;
     }
     case CSS::StyleSheetIdentifier::Type::UserAgent:
         return CSS::StyleComputer::user_agent_style_sheet_source(identifier.url->utf16_view());

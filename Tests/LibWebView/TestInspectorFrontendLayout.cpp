@@ -1046,6 +1046,35 @@ TEST_CASE(inspector_edits_the_applied_copy_of_a_sheet_included_twice)
     EXPECT_EQ(fixture.target->title().to_byte_string(), "Sheets:rgb(3, 3, 3)/rgb(4, 4, 4)/rgb(3, 3, 3) rgb(4, 4, 4)"sv);
 }
 
+constexpr auto shadow_link_html = R"HTML(<!doctype html><title>Shadow link</title>
+<div id="host"></div>
+<script>
+  const root = document.getElementById("host").attachShadow({ mode: "open" });
+  root.innerHTML = `<link rel="stylesheet" href="data:text/css,.linked%20%7B%20color%3A%20rgb(7%2C%207%2C%207)%3B%20%7D"><span class="linked" id="linked">Linked</span>`;
+  root.querySelector("link").onload = () => document.title = "Shadow link ready";
+</script>
+)HTML"sv;
+
+// A stylesheet linked from a shadow tree is in that tree's sheets, not the document's, and its source is still found.
+TEST_CASE(inspector_reads_the_source_of_a_sheet_linked_in_a_shadow_tree)
+{
+    Test::HeadlessTestEnvironment environment { "TestInspectorShadowLink"sv };
+    auto app = TRY_OR_FAIL(environment.create_application());
+    auto fixture = open_inspector({ 1000, 620 }, { shadow_link_html, "Shadow link ready"sv, 5 });
+
+    expect_holds(*fixture.frontend, "The linked sheet's source is found"sv, R"JS(
+        const { sendCommand } = await import("resource://ladybird/about-pages/inspector/bridge.js");
+        const linkedRule = () => app.stylesPane.rules.find(r => (r.selectors || []).includes(".linked"));
+        await until(() => findElement(n => n.attributes?.id === "linked"));
+        await select(n => n.attributes?.id === "linked", () => linkedRule());
+        const rule = linkedRule();
+        if (rule.ruleId?.type !== "LinkElement")
+            return rule;
+        const outcome = await sendCommand("getStyleSheetSource", rule.ruleId).then(result => result?.source, error => error.message);
+        return outcome === ".linked { color: rgb(7, 7, 7); }" ? null : { outcome, ruleId: rule.ruleId };
+    )JS"sv);
+}
+
 // The CSS overview reads the page as it is now, shadow trees included, even while the page is not rendering.
 TEST_CASE(inspector_css_overview_reads_current_styles)
 {
