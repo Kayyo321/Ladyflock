@@ -6052,16 +6052,16 @@ void ViewImplementation::download_url(URL::URL const& url, PromptForPath prompt_
 
     if (prompt_for_path == PromptForPath::No) {
         if (auto download_path = Application::the().default_path_for_downloaded_file(suggested_filename); !download_path.is_error())
-            Application::the().file_downloader().download_file(is_private(), url, download_path.release_value(), FileDownloader::MayReplaceDestination::No);
+            Application::the().file_downloader().download_file(FileDownloader::owner_for(session()), url, download_path.release_value(), FileDownloader::MayReplaceDestination::No);
         return;
     }
 
-    Application::the().path_for_downloaded_file(suggested_filename)->when_resolved([is_private = is_private(), url](auto const& download_path) {
+    Application::the().path_for_downloaded_file(suggested_filename)->when_resolved([owner = FileDownloader::owner_for(session()), url](auto const& download_path) {
         // NB: A file at a path the user chose was there when the user chose to replace it, as saving asks before replacing.
         auto may_replace_destination = FileSystem::exists(download_path.string())
             ? FileDownloader::MayReplaceDestination::Yes
             : FileDownloader::MayReplaceDestination::No;
-        Application::the().file_downloader().download_file(is_private, url, download_path, may_replace_destination);
+        Application::the().file_downloader().download_file(owner, url, download_path, may_replace_destination);
     });
 }
 

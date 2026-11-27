@@ -23,6 +23,7 @@
 #include <LibTest/TestCase.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/FileDownloader.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/IdentityManager.h>
 #include <LibWebView/PrivacyPolicyCoordinator.h>
@@ -501,6 +502,71 @@ TEST_CASE(a_tor_routed_identity_without_a_tor_endpoint_has_no_network)
     EXPECT(!refused.committed);
     EXPECT_EQ(refused.reason, Privacy::PolicyReason::MandatoryRouteUnavailable);
     EXPECT_EQ(coordinator.network_mode(WebView::Application::default_session()), Privacy::NetworkMode::Allow);
+
+    EXPECT_EQ(dns_observer.query_count(), 0u);
+    EXPECT_EQ(destination.connection_count(), 0u);
+}
+
+// A download runs in the browser process, on behalf of the tab that started it. It must use that tab's identity's
+// network: a Tor-routed identity's download goes over Tor, never through the default identity's direct connection.
+TEST_CASE(a_download_uses_the_network_of_the_identity_it_belongs_to)
+{
+    PrivacyTest::IndependentDNSObserver dns_observer;
+    PrivacyTest::IndependentHTTPServer destination(PrivacyTest::IndependentHTTPServer::Protocol::HTTP);
+    PrivacyTest::MockRouteServer tor(PrivacyTest::MockRouteServer::Mode::SOCKS5);
+
+    auto dns_port = ByteString::number(dns_observer.port());
+    auto tor_route = ByteString::formatted("--privacy-tor-proxy=socks5h://127.0.0.1:{}", tor.port());
+    Test::HeadlessTestEnvironment environment { "Milestone5DownloadRoute"sv, 120 };
+    Array arguments {
+        "--temporary-profile"sv,
+        "--disable-http-disk-cache"sv,
+        "--dns-server"sv,
+        "127.0.0.1"sv,
+        "--dns-port"sv,
+        dns_port.view(),
+        "--privacy-network-mode=allow"sv,
+        tor_route.view(),
+    };
+    auto app = TRY_OR_FAIL(environment.create_application<ProxyRouteApplication>(arguments));
+    auto& downloader = WebView::Application::the().file_downloader();
+
+    auto download = [&](WebView::FileDownloader::Owner owner, StringView name) {
+        auto url = URL::Parser::basic_parse(ByteString::formatted("http://fixture.example:{}/{}", destination.port(), name)).release_value();
+        auto id = downloader.download_file(move(owner), url, LexicalPath { LexicalPath::join(environment.directory(), name).string() });
+
+        bool timed_out = false;
+        auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(15), [&] { timed_out = true; });
+        timer->start();
+        Core::EventLoop::current().spin_until([&] {
+            return timed_out || !WebView::FileDownloader::status_is_active(downloader.download(id)->status);
+        });
+        VERIFY(!timed_out);
+        return *downloader.download(id);
+    };
+
+    // Positive control: the default identity downloads directly from the destination.
+    auto direct = download(WebView::FileDownloader::owner_for(WebView::Application::default_session()), "direct.txt"sv);
+    EXPECT_EQ(direct.status, WebView::FileDownloader::DownloadStatus::Completed);
+    EXPECT(destination.connection_count() >= 1u);
+    destination.reset_counts();
+    dns_observer.reset_counts();
+
+    // The Tor-routed identity's download goes to its route, which resolves the name itself.
+    auto tor_session = TRY_OR_FAIL(WebView::IdentityManager::the().create_identity(Privacy::IdentityDescriptor::tor_routed("tor-reader"_string, "Tor Reader"_string)));
+    auto streams_before = tor.streams().size();
+    auto routed = download(WebView::FileDownloader::owner_for(*tor_session), "routed.txt"sv);
+    EXPECT_EQ(routed.status, WebView::FileDownloader::DownloadStatus::Completed);
+    EXPECT_EQ(routed.identity_id, "tor-reader"sv);
+    EXPECT(tor.streams().size() > streams_before);
+    EXPECT_EQ(tor.streams().last().host, "fixture.example"sv);
+
+    // A download whose identity is gone fails, rather than use another identity's network.
+    EXPECT(WebView::IdentityManager::the().destroy_identity("tor-reader"sv));
+    auto streams_after = tor.streams().size();
+    auto orphaned = download(WebView::FileDownloader::Owner { WebView::IsPrivate::No, "tor-reader"_string }, "orphaned.txt"sv);
+    EXPECT_EQ(orphaned.status, WebView::FileDownloader::DownloadStatus::Failed);
+    EXPECT_EQ(tor.streams().size(), streams_after);
 
     EXPECT_EQ(dns_observer.query_count(), 0u);
     EXPECT_EQ(destination.connection_count(), 0u);

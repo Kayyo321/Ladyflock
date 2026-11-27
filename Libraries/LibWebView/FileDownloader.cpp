@@ -28,6 +28,7 @@
 #include <LibWebView/DownloadSegmentation.h>
 #include <LibWebView/DownloadStore.h>
 #include <LibWebView/FileDownloader.h>
+#include <LibWebView/IdentityManager.h>
 #include <LibWebView/RequestServerManager.h>
 
 #if defined(AK_OS_MACOS)
@@ -213,9 +214,30 @@ static String status_to_error_string(Optional<Requests::NetworkError> const& net
     return MUST(String::formatted("Received error response code {} while downloading file", *response_code));
 }
 
-u64 FileDownloader::download_file(IsPrivate is_private, URL::URL const& url, LexicalPath destination, MayReplaceDestination may_replace_destination)
+FileDownloader::Owner FileDownloader::owner_for(BrowsingSession const& session)
 {
-    auto download_id = start_download(is_private, url, move(destination), {}, may_replace_destination);
+    // A named identity that keeps nothing, such as a Tor-routed one, is private too, but its network is its own, not
+    // that of the private windows.
+    if (session.identity_id() != Privacy::DEFAULT_IDENTITY_ID && session.identity_id() != Privacy::PRIVATE_IDENTITY_ID)
+        return { session.is_private(), session.identity_id() };
+    return { session.is_private() };
+}
+
+static ErrorOr<NonnullRefPtr<Requests::RequestClient>> request_server_client_for(FileDownloader::Download const& download)
+{
+    if (download.identity_id.is_empty())
+        return Application::request_server_client(download.is_private);
+
+    auto session = IdentityManager::the().find_session(download.identity_id);
+    if (!session)
+        return Error::from_string_literal("The identity this download belongs to is gone");
+    auto instance = TRY(Application::request_server_manager().browser_instance(*session));
+    return instance->ui_client();
+}
+
+u64 FileDownloader::download_file(Owner owner, URL::URL const& url, LexicalPath destination, MayReplaceDestination may_replace_destination)
+{
+    auto download_id = start_download(move(owner), url, move(destination), {}, may_replace_destination);
     auto* active = active_download(download_id);
     if (!active)
         return download_id;
@@ -242,7 +264,7 @@ void FileDownloader::start_download_request(u64 download_id, URL::URL const& url
     auto request_headers = HTTP::HeaderList::create();
     request_headers->set({ "User-Agent"sv, Web::default_user_agent });
 
-    auto client = Application::request_server_client(download->is_private);
+    auto client = request_server_client_for(*download);
     if (client.is_error()) {
         fail_download(download_id, MUST(String::formatted("Unable to launch RequestServer: {}", client.error())));
         return;
@@ -286,7 +308,7 @@ void FileDownloader::follow_download_redirect(u64 download_id, HTTP::HeaderList 
     start_download_request(download_id, redirect_url.release_value());
 }
 
-u64 FileDownloader::adopt_download(IsPrivate is_private, URL::URL const& url, LexicalPath destination, Optional<u64> total_size, HTTP::Cookie::SameSiteContext same_site_context, int request_server_client_id, u64 request_server_request_id, int owner_client_id, ReadonlyBytes initial_data,
+u64 FileDownloader::adopt_download(Owner owner, URL::URL const& url, LexicalPath destination, Optional<u64> total_size, HTTP::Cookie::SameSiteContext same_site_context, int request_server_client_id, u64 request_server_request_id, int owner_client_id, ReadonlyBytes initial_data,
     ResponseFinished on_response_finished)
 {
     ScopeGuard report_failure = [&] {
@@ -294,7 +316,7 @@ u64 FileDownloader::adopt_download(IsPrivate is_private, URL::URL const& url, Le
             on_response_finished(0, nullptr,
                 "Unable to adopt the download response"sv);
     };
-    auto download_id = start_download(is_private, url, move(destination), total_size);
+    auto download_id = start_download(move(owner), url, move(destination), total_size);
     auto* active = active_download(download_id);
     if (!active)
         return download_id;
@@ -631,7 +653,7 @@ void FileDownloader::start_segment_request(u64 download_id, size_t segment_index
 
     segment.request_is_ranged = true;
 
-    auto client = Application::request_server_client(download->is_private);
+    auto client = request_server_client_for(*download);
     if (client.is_error()) {
         fail_download(download_id, MUST(String::formatted("Unable to launch RequestServer: {}", client.error())));
         return;
@@ -948,13 +970,15 @@ void FileDownloader::restart_download_from_zero(u64 download_id, String reason_i
     start_download_request(download_id, active->effective_url);
 }
 
-u64 FileDownloader::start_download(IsPrivate is_private, URL::URL const& url, LexicalPath destination, Optional<u64> total_size, MayReplaceDestination may_replace_destination)
+u64 FileDownloader::start_download(Owner owner, URL::URL const& url, LexicalPath destination, Optional<u64> total_size, MayReplaceDestination may_replace_destination)
 {
     auto download_id = m_next_download_id++;
+    auto is_private = owner.is_private;
 
     m_downloads.append(Download {
         .id = download_id,
         .is_private = is_private,
+        .identity_id = move(owner.identity_id),
         .url = url,
         .destination = move(destination),
         .total_size = total_size,
@@ -1356,6 +1380,9 @@ void FileDownloader::persist_download_snapshot(u64 id, PersistUrgency urgency)
 
     if (download->is_private == IsPrivate::Yes)
         return;
+    // The download store has no identity, and a download resumed from it would use the default identity's network.
+    if (!download->identity_id.is_empty())
+        return;
 
     if (!download->can_resume || !download->total_size.has_value() || !status_is_active(download->status))
         return;
@@ -1479,6 +1506,8 @@ bool FileDownloader::restore_persisted_download(DownloadRecord& record)
     m_downloads.append(Download {
         .id = id,
         .is_private = IsPrivate::No,
+        // Only the default identity's downloads are stored, so a restored one belongs to it.
+        .identity_id = {},
         .url = url.release_value(),
         .destination = LexicalPath { record.destination.to_byte_string() },
         .status = DownloadStatus::Paused,
@@ -1643,13 +1672,25 @@ void FileDownloader::cancel_unresumable_downloads()
         cancel_download(id);
 }
 
+void FileDownloader::cancel_downloads_for_identity(StringView identity_id)
+{
+    Vector<u64> ids;
+    for (auto const& download : m_downloads) {
+        if (download.identity_id == identity_id && status_is_active(download.status))
+            ids.append(download.id);
+    }
+    for (auto id : ids)
+        cancel_download(id);
+}
+
 // A private session leaves no record of its downloads behind for the next one.
 void FileDownloader::discard_private_downloads()
 {
     for (size_t i = m_downloads.size(); i > 0; --i) {
         auto const& download = m_downloads[i - 1];
 
-        if (download.is_private == IsPrivate::No)
+        // The private windows' downloads go with them; a named identity's downloads go with that identity.
+        if (download.is_private == IsPrivate::No || !download.identity_id.is_empty())
             continue;
 
         auto id = download.id;

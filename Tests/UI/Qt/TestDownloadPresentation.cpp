@@ -34,6 +34,7 @@ TEST_CASE(status_text)
     WebView::FileDownloader::Download download {
         .id = 1,
         .is_private = WebView::IsPrivate::No,
+        .identity_id = {},
         .url = URL::about_blank(),
         .destination = LexicalPath { "/tmp/file"sv },
         .status = WebView::FileDownloader::DownloadStatus::InProgress,

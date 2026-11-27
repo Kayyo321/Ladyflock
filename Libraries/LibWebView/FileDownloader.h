@@ -64,6 +64,8 @@ public:
 
         u64 id { 0 };
         IsPrivate is_private { IsPrivate::No };
+        // The named identity the download belongs to, or empty for the default (or private) identity.
+        String identity_id;
         URL::URL url;
         LexicalPath destination;
         DownloadStatus status { DownloadStatus::InProgress };
@@ -89,11 +91,32 @@ public:
         Yes,
     };
 
-    u64 download_file(IsPrivate, URL::URL const&, LexicalPath, MayReplaceDestination = MayReplaceDestination::No);
+    // The identity a download belongs to. Its requests use that identity's RequestServer and route and no other, so a
+    // download in a Tor-routed identity goes over Tor. A download whose identity is gone fails rather than fall back
+    // to another identity's network.
+    struct Owner {
+        Owner(IsPrivate is_private = IsPrivate::No)
+            : is_private(is_private)
+        {
+        }
+
+        Owner(IsPrivate is_private, String identity_id)
+            : is_private(is_private)
+            , identity_id(move(identity_id))
+        {
+        }
+
+        IsPrivate is_private { IsPrivate::No };
+        // Empty for the default identity, and for the private one.
+        String identity_id;
+    };
+    static Owner owner_for(BrowsingSession const&);
+
+    u64 download_file(Owner, URL::URL const&, LexicalPath, MayReplaceDestination = MayReplaceDestination::No);
     using ResponseFinished = Function<void(u64 decoded_body_size, Requests::RequestTimingInfo const*,
         Optional<StringView> error)>;
-    u64 adopt_download(IsPrivate, URL::URL const&, LexicalPath, Optional<u64> total_size, HTTP::Cookie::SameSiteContext, int request_server_client_id, u64 request_server_request_id, int owner_client_id, ReadonlyBytes initial_data = {}, ResponseFinished = {});
-    u64 start_download(IsPrivate, URL::URL const&, LexicalPath, Optional<u64> total_size = {}, MayReplaceDestination = MayReplaceDestination::No);
+    u64 adopt_download(Owner, URL::URL const&, LexicalPath, Optional<u64> total_size, HTTP::Cookie::SameSiteContext, int request_server_client_id, u64 request_server_request_id, int owner_client_id, ReadonlyBytes initial_data = {}, ResponseFinished = {});
+    u64 start_download(Owner, URL::URL const&, LexicalPath, Optional<u64> total_size = {}, MayReplaceDestination = MayReplaceDestination::No);
     bool has_active_downloads() const;
     bool has_unresumable_downloads() const;
     void set_cancel_callback(u64 id, Function<void()>);
@@ -101,6 +124,8 @@ public:
     void finish_download(u64 id);
     void cancel_unresumable_downloads();
     void discard_private_downloads();
+    // Stops every download of a named identity that is being purged. What was downloaded stays where the user saved it.
+    void cancel_downloads_for_identity(StringView identity_id);
     void cancel_download(u64 id);
     void pause_download(u64 id);
     void resume_download(u64 id);

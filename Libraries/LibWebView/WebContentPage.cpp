@@ -11,6 +11,7 @@
 #include <LibCore/EventLoop.h>
 #include <LibCore/StatsLog.h>
 #include <LibHTTP/Cookie/ParsedCookie.h>
+#include <LibPrivacy/Storage/PartitionKey.h>
 #include <LibWebCommon/Geolocation/GeolocationPositionErrorCode.h>
 #include <LibWebCommon/HTML/BrowsingContext.h>
 #include <LibWebCommon/Page/InputEvent.h>
@@ -37,7 +38,6 @@
 #include <LibWebView/PrivacyActivity.h>
 #include <LibWebView/RecordingNotificationBackend.h>
 #include <LibWebView/RequestServerManager.h>
-#include <LibPrivacy/Storage/PartitionKey.h>
 #include <LibWebView/StorageAreaRegistry.h>
 #include <LibWebView/StorageJar.h>
 #include <LibWebView/URL.h>
@@ -3136,7 +3136,7 @@ Messages::WebContentClient::DidStartDownloadResponse WebContentPage::did_start_d
     }
 
     auto& file_downloader = Application::the().file_downloader();
-    auto download_id = file_downloader.adopt_download(client().is_private(), url, destination.release_value(), total_size, same_site_context, request_server_client_id, request_server_request_id, *owner_client_id, initial_data.bytes(),
+    auto download_id = file_downloader.adopt_download(FileDownloader::owner_for(client().session()), url, destination.release_value(), total_size, same_site_context, request_server_client_id, request_server_request_id, *owner_client_id, initial_data.bytes(),
         move(on_response_finished));
     if (!is_download_in_progress(file_downloader, download_id))
         return { Optional<u64> {} };
