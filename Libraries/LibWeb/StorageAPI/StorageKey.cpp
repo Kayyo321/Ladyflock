@@ -70,8 +70,14 @@ bool web_storage_api_obtain_storage_partition_key(HTML::EnvironmentSettingsObjec
     auto top_level_site = URL::Site::serialize_for_partitioning(*environment->top_level_origin);
     if (!top_level_site.has_value())
         return false;
+    auto has_cross_site_ancestor = environment->has_cross_site_ancestor();
+    // AD-HOC: Each file: document has an opaque origin of its own, so a file: frame of a file: page is never same site
+    //         with it. Both have the storage of the one file: origin all the same (see obtain_a_storage_key), so the
+    //         frame's is the page's. The browser process partitions their storage the same way.
+    if (environment->origin().is_opaque_file_origin() && environment->top_level_origin->is_opaque_file_origin())
+        has_cross_site_ancestor = false;
     auto utf8 = top_level_site->to_byte_string();
-    on_partition(ctx, utf8.characters(), utf8.length(), environment->has_cross_site_ancestor());
+    on_partition(ctx, utf8.characters(), utf8.length(), has_cross_site_ancestor);
     return true;
 }
 

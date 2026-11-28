@@ -195,3 +195,46 @@ TEST_CASE(storage_partition_key_and_legacy_classification)
     auto legacy_null = Privacy::classify_legacy_storage_key("null"sv);
     EXPECT_EQ(legacy_null.action, Privacy::LegacyStorageKeyAction::Quarantine);
 }
+
+// The browser process gives file: documents storage, and the frames of file: pages too, as their own process does.
+TEST_CASE(storage_partition_key_for_allowed_file_origins)
+{
+    auto file_page = URL::Parser::basic_parse("file:///tmp/page.html"sv).release_value().origin();
+    auto file_frame = URL::Parser::basic_parse("file:///tmp/other/frame.html"sv).release_value().origin();
+    auto http_frame = URL::Parser::basic_parse("http://localhost:8000/frame"sv).release_value().origin();
+    auto site_a = URL::Parser::basic_parse("https://site-a.example:8443/page"sv).release_value().origin();
+    VERIFY(file_page.is_opaque_file_origin());
+    VERIFY(!file_page.is_same_site(file_frame));
+
+    // A file: page.
+    auto page = Privacy::StoragePartitionKey::from_context(file_page, file_page, false, true);
+    VERIFY(page.has_value());
+    EXPECT_EQ(page->to_storage_key_string(), "p1|file://|file://|0"sv);
+
+    // A file: frame of a file: page is not same site with it, but shares its partition.
+    auto frame = Privacy::StoragePartitionKey::from_context(file_frame, file_page, true, true);
+    VERIFY(frame.has_value());
+    EXPECT_EQ(frame->to_storage_key_string(), "p1|file://|file://|0"sv);
+
+    // An http frame of a file: page is partitioned under the file: top-level site.
+    auto http_under_file = Privacy::StoragePartitionKey::from_context(http_frame, file_page, true, true);
+    VERIFY(http_under_file.has_value());
+    EXPECT_EQ(http_under_file->to_storage_key_string(), "p1|http://localhost:8000|file://|1"sv);
+
+    // A file: frame of an http(s) page keeps that page's site and its cross-site ancestor.
+    auto file_under_site_a = Privacy::StoragePartitionKey::from_context(file_frame, site_a, true, true);
+    VERIFY(file_under_site_a.has_value());
+    EXPECT_EQ(file_under_site_a->to_storage_key_string(), "p1|file://|https://site-a.example|1"sv);
+
+    // Without the opt-in, neither a file: origin nor a file: top-level origin has a partition.
+    EXPECT(!Privacy::StoragePartitionKey::from_context(file_page, file_page, false).has_value());
+    EXPECT(!Privacy::StoragePartitionKey::from_context(http_frame, file_page, true).has_value());
+
+    // The opt-in lets in only the opaque origins of file: URLs.
+    auto opaque = URL::Origin::create_opaque();
+    auto sandboxed_file = URL::Origin::create_opaque(URL::Origin::OpaqueData::Type::SandboxedFile);
+    EXPECT(!Privacy::StoragePartitionKey::from_context(opaque, file_page, true, true).has_value());
+    EXPECT(!Privacy::StoragePartitionKey::from_context(sandboxed_file, file_page, true, true).has_value());
+    EXPECT(!Privacy::StoragePartitionKey::from_context(http_frame, opaque, true, true).has_value());
+    EXPECT(!Privacy::StoragePartitionKey::from_context(http_frame, sandboxed_file, true, true).has_value());
+}

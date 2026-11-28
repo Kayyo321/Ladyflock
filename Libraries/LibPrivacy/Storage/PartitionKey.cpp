@@ -17,18 +17,16 @@ Optional<StoragePartitionKey> StoragePartitionKey::from_context(
     bool has_cross_site_ancestor,
     bool allow_opaque_file_origin)
 {
-    if (origin.is_opaque()) {
-        if (allow_opaque_file_origin && origin.is_opaque_file_origin()) {
-            return StoragePartitionKey {
-                .origin = "file://"_string,
-                .top_level_site = "file://"_string,
-                .has_cross_site_ancestor = has_cross_site_ancestor,
-            };
-        }
-        return {};
-    }
+    // An allowed file: origin, as either origin, is keyed as the one file: origin that file: URLs have when they have
+    // tuple origins.
+    auto is_allowed_file_origin = [&](URL::Origin const& candidate) {
+        return allow_opaque_file_origin && candidate.is_opaque_file_origin();
+    };
 
-    if (!top_level_origin.has_value() || top_level_origin->is_opaque())
+    if (origin.is_opaque() && !is_allowed_file_origin(origin))
+        return {};
+
+    if (!top_level_origin.has_value() || (top_level_origin->is_opaque() && !is_allowed_file_origin(*top_level_origin)))
         return {};
 
     auto top_level_site_utf16 = URL::Site::serialize_for_partitioning(*top_level_origin);
@@ -44,8 +42,13 @@ Optional<StoragePartitionKey> StoragePartitionKey::from_context(
         || !origin_site_utf16.has_value()
         || *origin_site_utf16 != *top_level_site_utf16;
 
+    // Each file: document has an opaque origin of its own, so a file: frame of a file: page is never same site with
+    // it. Both are keyed as the one file: origin all the same, so the frame's storage is the page's.
+    if (is_allowed_file_origin(origin) && is_allowed_file_origin(*top_level_origin))
+        cross_site_ancestor = false;
+
     return StoragePartitionKey {
-        .origin = origin.serialize(),
+        .origin = is_allowed_file_origin(origin) ? "file://"_string : origin.serialize(),
         .top_level_site = move(top_level_site),
         .has_cross_site_ancestor = cross_site_ancestor,
     };

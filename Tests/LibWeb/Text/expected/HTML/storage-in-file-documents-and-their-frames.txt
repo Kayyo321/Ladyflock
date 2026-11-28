@@ -1,0 +1,4 @@
+file: page: sessionStorage: file-page
+file: page: localStorage: file-page
+http: frame: sessionStorage: http-frame, localStorage: http-frame
+file: frame: sessionStorage: file-page, localStorage: file-page

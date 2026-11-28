@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<script>
+    // The parent names a key it wrote before it loaded this frame; this answers with what each storage area holds for it.
+    window.addEventListener("message", event => {
+        const key = event.data;
+        const results = ["sessionStorage", "localStorage"].map(area => {
+            try {
+                return area + ": " + window[area].getItem(key);
+            } catch (error) {
+                return area + ": " + error.name;
+            }
+        });
+        parent.postMessage("file: frame: " + results.join(", "), "*");
+    });
+</script>

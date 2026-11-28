@@ -440,7 +440,8 @@ StorageJar* WebContentPage::storage_jar(Web::StorageAPI::StorageEndpointType sto
 }
 
 // The browser process obtains a partitioned storage key from the canonical environment it hosts.
-// Partition tuple: (origin, top_level_site, has_cross_site_ancestor). Opaque origins return empty.
+// Partition tuple: (origin, top_level_site, has_cross_site_ancestor). Opaque origins return empty, except those of
+// file: URLs.
 Optional<String> WebContentPage::canonical_storage_key(Web::HTML::EnvironmentId const& environment_id) const
 {
     auto environment = hosted_environment(environment_id);
@@ -449,10 +450,14 @@ Optional<String> WebContentPage::canonical_storage_key(Web::HTML::EnvironmentId 
     auto has_cross_site_ancestor = hosted_environment_has_cross_site_ancestor(environment_id);
     if (!has_cross_site_ancestor.has_value())
         return {};
+    // AD-HOC: A file: document has storage, as in other browsers, and so does a frame of a file: page. The page's own
+    //         process offers them storage (see Web::StorageAPI::obtain_a_storage_key), so refusing them a bottle here
+    //         would only make every write fail.
     auto partition_key = Privacy::StoragePartitionKey::from_context(
         environment->origin(),
         environment->top_level_origin(),
-        *has_cross_site_ancestor);
+        *has_cross_site_ancestor,
+        /*allow_opaque_file_origin=*/true);
     if (!partition_key.has_value())
         return {};
     return partition_key->to_storage_key_string();
