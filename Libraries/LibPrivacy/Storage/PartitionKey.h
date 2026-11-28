@@ -28,7 +28,11 @@ struct PRIVACY_API StoragePartitionKey {
     // Obtains a partitioned persistent web-storage key for (origin, top_level_origin, has_cross_site_ancestor).
     // - Ordinary opaque origins ALWAYS return empty (cannot obtain a persistent web-storage key).
     // - Opaque file:// origins return empty unless allow_opaque_file_origin is explicitly requested.
-    // - Missing or opaque top_level_origin returns empty.
+    // - Missing or opaque top_level_origin returns empty, except an opaque file:// one when allow_opaque_file_origin
+    //   is requested.
+    // - An allowed opaque file:// origin is keyed as "file://", the tuple origin file:// URLs otherwise have. One
+    //   under a file:// top-level origin never has a cross-site ancestor: each file:// document's opaque origin is its
+    //   own, so no two of them are same site, but they share the one partition.
     static Optional<StoragePartitionKey> from_context(
         URL::Origin const& origin,
         Optional<URL::Origin> const& top_level_origin,

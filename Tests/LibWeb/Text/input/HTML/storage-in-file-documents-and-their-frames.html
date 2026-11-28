@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    // A file: document gets web storage the way other browsers give it, and so does a frame of a file: page. The
+    // browser process once refused both a bottle, so their own process offered them storage that every write failed
+    // to reach, and each write threw a QuotaExceededError.
+    //
+    // Every file: document keeps its storage in the one bottle of the file: origin, however it nests. A file: frame
+    // of this page is not same site with it (each file: document has an opaque origin of its own), yet it reads what
+    // this page wrote.
+    //
+    // The bottles are shared with every test running at the same time, so each key is this run's own, and each is
+    // removed again.
+    asyncTest(async done => {
+        const key = "storage-in-file-documents-and-their-frames-" + Date.now() + "-" + Math.random();
+        const areas = ["sessionStorage", "localStorage"];
+
+        const answerOf = (name, src, message) =>
+            new Promise(resolve => {
+                const iframe = document.createElement("iframe");
+                window.addEventListener("message", function onMessage(event) {
+                    if (typeof event.data !== "string" || !event.data.startsWith(name + ": "))
+                        return;
+                    window.removeEventListener("message", onMessage);
+                    iframe.remove();
+                    resolve(event.data);
+                });
+                if (message !== undefined)
+                    iframe.onload = () => iframe.contentWindow.postMessage(message, "*");
+                iframe.src = src;
+                document.body.appendChild(iframe);
+            });
+
+        for (const area of areas) {
+            try {
+                window[area].setItem(key, "file-page");
+                println(`file: page: ${area}: ${window[area].getItem(key)}`);
+            } catch (error) {
+                println(`file: page: ${area}: ${error.name}`);
+            }
+        }
+
+        const httpFrameUrl = await httpTestServer().createEcho("GET", "/storage-in-file-documents-http-frame", {
+            status: 200,
+            headers: { "Content-Type": "text/html" },
+            body: `<!DOCTYPE html><script>
+                const results = [];
+                for (const area of ${JSON.stringify(areas)}) {
+                    try {
+                        window[area].setItem(${JSON.stringify(key)}, "http-frame");
+                        results.push(area + ": " + window[area].getItem(${JSON.stringify(key)}));
+                        window[area].removeItem(${JSON.stringify(key)});
+                    } catch (error) {
+                        results.push(area + ": " + error.name);
+                    }
+                }
+                parent.postMessage("http: frame: " + results.join(", "), "*");
+            <\/script>`,
+        });
+        println(await answerOf("http: frame", httpFrameUrl));
+
+        println(await answerOf("file: frame", "../../data/storage-file-frame-reads-key.html", key));
+
+        for (const area of areas) {
+            try {
+                window[area].removeItem(key);
+            } catch {}
+        }
+        done();
+    });
+</script>
