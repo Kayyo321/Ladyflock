@@ -70,12 +70,14 @@ set(ABOUT_SETTINGS_RESOURCES
 list(TRANSFORM ABOUT_SETTINGS_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladybird/about-pages/settings/")
 
 set(ABOUT_DASHBOARD_RESOURCES
+    alignment-guides.css
     app.js
     bridge.js
     dashboard.css
     dot-field.js
     grid-engine.js
     icons.js
+    ladyflock-logo.png
     widget-chrome.js
     widget-picker.js
     widget-registry.js
@@ -99,6 +101,9 @@ set(ABOUT_DASHBOARD_WIDGET_RESOURCES
     feed-reader.js
     focus-timer.js
     habit-tracker.js
+    image.js
+    image-shader-renderer.js
+    ladyflock-logo-shader.js
     now-playing.js
     open-tabs.js
     permissions-audit.js

@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * A tile: the face a widget draws into, plus the handles that appear on it while the
- * board is being edited (pick-up surface, remove badge, options, resize corner).
+ * board is being edited (pick-up surface, remove badge, options, resize corner). A locked
+ * tile shows a lock in place of the remove badge and cannot be picked up or resized.
  */
 
 import { GRID_STEPS_PER_CELL, effectiveSizesForBreakpoint, formatGridSize } from "./grid-engine.js";
@@ -11,6 +12,7 @@ import { icon } from "./icons.js";
 import { SIZE_NAMES, getWidgetShortTitle } from "./widget-registry.js";
 
 const DRAG_THRESHOLD_PX = 4;
+const SELF_EVIDENT = new Set(["search-box", "world-clock"]);
 
 let activeMenuEl = null;
 let activeMenuReturnFocus = null;
@@ -109,10 +111,6 @@ export function createCardElement({ instance, def, handlers }) {
     const head = document.createElement("div");
     head.className = "dash-card-head";
 
-    const glyph = document.createElement("span");
-    glyph.className = "dash-card-glyph";
-    glyph.append(icon(instance.widgetType, 15));
-
     const titleEl = document.createElement("h2");
     titleEl.className = "dash-card-title";
     titleEl.textContent = getWidgetShortTitle(def) || instance.widgetType;
@@ -121,7 +119,12 @@ export function createCardElement({ instance, def, handlers }) {
     const metaEl = document.createElement("span");
     metaEl.className = "dash-card-meta";
 
-    head.append(glyph, titleEl, metaEl);
+    head.append(titleEl, metaEl);
+
+    // A tile whose content says what it is has no caption until the board is being arranged,
+    // when every tile is named.
+    if (SELF_EVIDENT.has(instance.widgetType))
+        section.dataset.plain = "true";
 
     const body = document.createElement("div");
     body.className = "dash-card-body";
@@ -135,10 +138,9 @@ export function createCardElement({ instance, def, handlers }) {
     const dragBtn = document.createElement("button");
     dragBtn.type = "button";
     dragBtn.className = "dash-card-drag";
-    dragBtn.setAttribute(
-        "aria-label",
-        `${fullTitle}. Drag to move. Arrow keys move, Shift plus arrow keys resize, Enter opens options, Delete removes.`
-    );
+    const freeLabel = `${fullTitle}. Drag to move. Arrow keys move, Shift plus arrow keys resize, L locks, Enter opens options, Delete removes.`;
+    const lockedLabel = `${fullTitle}. Locked in place. L unlocks, Enter opens options.`;
+    dragBtn.setAttribute("aria-label", freeLabel);
 
     let suppressClick = false;
     dragBtn.addEventListener("click", e => {
@@ -170,13 +172,21 @@ export function createCardElement({ instance, def, handlers }) {
                 dy = -1;
             else
                 dy = 1;
-            if (e.shiftKey)
+            if (handlers.isLocked(id))
+                handlers.onRefuseLocked(id);
+            else if (e.shiftKey)
                 handlers.onKeyboardResize(id, dx, dy);
             else
                 handlers.onKeyboardMove(id, dx, dy);
         } else if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();
-            handlers.onRemove(id);
+            if (handlers.isLocked(id))
+                handlers.onRefuseLocked(id);
+            else
+                handlers.onRemove(id);
+        } else if ((e.key === "l" || e.key === "L") && !e.ctrlKey && !e.metaKey && !e.altKey && !handlers.isSwapMode()) {
+            e.preventDefault();
+            handlers.onToggleLock(id);
         } else if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             if (handlers.isSwapMode())
@@ -217,6 +227,18 @@ export function createCardElement({ instance, def, handlers }) {
         handlers.onRemove(id);
     });
 
+    // Shown in place of the remove badge while the tile is locked.
+    const lockBtn = document.createElement("button");
+    lockBtn.type = "button";
+    lockBtn.className = "dash-card-lock";
+    lockBtn.append(icon("lock", 14));
+    lockBtn.setAttribute("aria-label", `Unlock ${fullTitle}`);
+    lockBtn.title = "Locked in place. Click to unlock.";
+    lockBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        handlers.onToggleLock(id);
+    });
+
     const resizeBtn = document.createElement("button");
     resizeBtn.type = "button";
     resizeBtn.className = "dash-card-resize";
@@ -228,8 +250,13 @@ export function createCardElement({ instance, def, handlers }) {
     sizeBadge.className = "dash-card-size-badge hidden";
     sizeBadge.setAttribute("aria-hidden", "true");
 
-    section.append(face, dragBtn, menuBtn, removeBtn, resizeBtn, sizeBadge);
-    return { section, face, head, body, metaEl, titleEl, dragBtn, menuBtn, removeBtn, resizeBtn, sizeBadge };
+    const setLocked = locked => {
+        section.classList.toggle("is-locked", locked);
+        dragBtn.setAttribute("aria-label", locked ? lockedLabel : freeLabel);
+    };
+
+    section.append(face, dragBtn, menuBtn, removeBtn, lockBtn, resizeBtn, sizeBadge);
+    return { section, face, head, body, metaEl, titleEl, dragBtn, menuBtn, removeBtn, lockBtn, resizeBtn, sizeBadge, setLocked };
 }
 
 /**
@@ -282,6 +309,7 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
     const id = instance.instanceId;
     const placement = handlers.getPlacement(id);
     const cols = handlers.cols();
+    const locked = handlers.isLocked(id);
 
     const menu = document.createElement("div");
     menu.className = "dash-card-menu";
@@ -326,6 +354,7 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
                 btn.className = "dash-menu-size";
                 btn.setAttribute("role", "menuitemradio");
                 btn.setAttribute("aria-checked", isCurrent ? "true" : "false");
+                btn.disabled = locked && !isCurrent;
                 const name = SIZE_NAMES[size.tier] || "Size";
                 btn.setAttribute("aria-label", `${name}, ${formatGridSize(size, " by ")}`);
                 const label = document.createElement("span");
@@ -346,7 +375,8 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
 
     if (handlers.hasConfigure(id))
         addItem("configure", "Settings…", () => handlers.onOpenConfigure(id));
-    addItem("swap", "Swap with…", () => handlers.onStartSwap(id), { disabled: handlers.cardCount() < 2 });
+    addItem(locked ? "unlock" : "lock", locked ? "Unlock" : "Lock in place", () => handlers.onToggleLock(id));
+    addItem("swap", "Swap with…", () => handlers.onStartSwap(id), { disabled: locked || handlers.movableCount() < 2 });
     addItem("replace", "Replace…", () => handlers.onOpenReplacePicker(id));
     if (handlers.isCustomizeHidden?.()) {
         addSeparator();
@@ -390,6 +420,26 @@ export function attachDragGesture(handleEl, instanceId, mode, handlers, onDragSt
     handleEl.addEventListener("pointerdown", e => {
         if (!handlers.isEditing() || e.button !== 0 || handlers.isSwapMode())
             return;
+        if (handlers.isLocked(instanceId)) {
+            // A locked tile stays put. Trying to drag it shows why.
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const stop = () => {
+                handleEl.removeEventListener("pointermove", onTug);
+                handleEl.removeEventListener("pointerup", stop);
+                handleEl.removeEventListener("pointercancel", stop);
+            };
+            const onTug = me => {
+                if (Math.hypot(me.clientX - startX, me.clientY - startY) < DRAG_THRESHOLD_PX)
+                    return;
+                stop();
+                handlers.onRefuseLocked(instanceId);
+            };
+            handleEl.addEventListener("pointermove", onTug);
+            handleEl.addEventListener("pointerup", stop);
+            handleEl.addEventListener("pointercancel", stop);
+            return;
+        }
         if (mode === "resize")
             e.preventDefault();
         e.stopPropagation();

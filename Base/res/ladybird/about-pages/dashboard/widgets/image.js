@@ -8,9 +8,12 @@ import {
     ASCII_DENSITY_MAX,
     ASCII_DENSITY_MIN,
     ASCII_DENSITY_STEP,
+    BUILT_IN_SHADERS,
     compileImageShader,
     createImageShaderRenderer,
+    isBuiltInShader as builtInShader,
     normalizeAsciiDensity,
+    shaderAllowsAscii,
 } from "./image-shader-renderer.js";
 
 function button(text, className = "dash-btn") {
@@ -49,9 +52,12 @@ function modeControl(title, className, choices, onSelect) {
     row.append(label, buttons);
     return {
         row,
-        update(mode, busy) {
+        // `unavailable` maps a mode that cannot be chosen now to the reason, shown as its tooltip.
+        update(mode, busy, unavailable = {}) {
             for (const choice of buttons.children) {
-                choice.disabled = busy;
+                const reason = unavailable[choice.dataset.mode];
+                choice.disabled = busy || !!reason;
+                choice.title = reason || choices.find(([name]) => name === choice.dataset.mode)[2];
                 choice.setAttribute("aria-pressed", String(mode === choice.dataset.mode));
             }
         },
@@ -74,9 +80,8 @@ function shaderHelp() {
     return details;
 }
 
-function builtInShader(id) {
-    return id === "default" || id === "breeze";
-}
+// The image a tile can show without one being imported. It ships with the browser.
+const LOGO = "ladyflock-logo";
 
 export function mount(root, api) {
     const { instanceId } = api;
@@ -105,6 +110,9 @@ export function mount(root, api) {
     let program = null;
     let shaderError = "";
     let previewDensity = null;
+    let replacingImage = false;
+    const builtInImage = () => (config.image === LOGO ? LOGO : null);
+    const outputMode = () => (config.shaderMode === "ascii" && shaderAllowsAscii(config.shaderId) ? "ascii" : "blit");
     const renderer = createImageShaderRenderer(image, canvas, reportShaderError);
 
     function reportShaderError(error) {
@@ -125,7 +133,7 @@ export function mount(root, api) {
         renderer.update({
             shaderId: builtInShader(shaderId) || program ? shaderId : "default",
             program,
-            renderMode: config.shaderMode === "ascii" ? "ascii" : "blit",
+            renderMode: outputMode(),
             resizeMode,
             asciiDensity: previewDensity ?? normalizeAsciiDensity(config.asciiDensity),
         });
@@ -151,6 +159,9 @@ export function mount(root, api) {
     }
 
     function showImage(dataUrl) {
+        image.alt = builtInImage() ? "Ladyflock" : "Dashboard image";
+        image.toggleAttribute("data-logo", !!builtInImage());
+        canvas.setAttribute("aria-label", image.alt);
         if (dataUrl && dataUrl !== image.getAttribute("src"))
             image.src = dataUrl;
         else if (!dataUrl)
@@ -173,7 +184,11 @@ export function mount(root, api) {
     async function load() {
         const generation = ++loadGeneration;
         try {
-            const { dataUrl } = await api.request("images.load", { instanceId });
+            // The starter's logo tile exists before anything is saved, so it has no stored image to ask for.
+            const logo = builtInImage();
+            const { dataUrl } = logo
+                ? await api.request("images.builtIn", { id: logo })
+                : await api.request("images.load", { instanceId });
             if (mounted && generation === loadGeneration)
                 showImage(dataUrl);
         } catch (err) {
@@ -205,6 +220,8 @@ export function mount(root, api) {
                 loadShader();
             else
                 updateOutput();
+            if ((previous.image || "") !== (config.image || "") && !replacingImage)
+                load();
             refreshSettings();
         },
         renderConfig(container, close) {
@@ -250,6 +267,9 @@ export function mount(root, api) {
                 container.append(form);
             }
 
+            const useLogo = button("Use the Ladyflock logo", "dash-btn ghost image-use-logo");
+            container.append(useLogo);
+
             const modes = modeControl("When resizing", "image-resize-mode", [
                 ["resize", "Resize", "Fit the whole image inside the widget"],
                 ["crop", "Crop", "Fill the widget and crop the edges"],
@@ -268,7 +288,7 @@ export function mount(root, api) {
             const shader = document.createElement("select");
             shader.className = "dash-select dash-grow";
             shader.id = shaderLabel.htmlFor;
-            shader.append(new Option("Default", "default"), new Option("Breeze", "breeze"));
+            shader.append(...BUILT_IN_SHADERS.map(entry => new Option(entry.name, entry.id)));
             const saved = document.createElement("optgroup");
             saved.label = "Saved shaders";
             const shaderFile = document.createElement("input");
@@ -400,7 +420,8 @@ export function mount(root, api) {
             const dialog = container.closest("dialog");
             const isOpen = () => mounted && file.isConnected && dialog.open;
             function updateControls() {
-                file.disabled = url.disabled = importUrl.disabled = remove.disabled = busy;
+                file.disabled = url.disabled = importUrl.disabled = remove.disabled = useLogo.disabled = busy;
+                useLogo.classList.toggle("hidden", !!builtInImage());
                 shader.disabled = importShader.disabled = removeShader.disabled = cancel.disabled = confirm.disabled = busy;
                 const id = config.shaderId || "default";
                 shader.value = id;
@@ -415,8 +436,9 @@ export function mount(root, api) {
                 outputError.classList.toggle("hidden", !shaderError);
                 footer.classList.toggle("hidden", !image.hasAttribute("src"));
                 modes.update(image.dataset.mode, busy);
-                outputModes.update(config.shaderMode === "ascii" ? "ascii" : "blit", busy);
-                densityField.classList.toggle("hidden", config.shaderMode !== "ascii");
+                const fullColorOnly = !shaderAllowsAscii(config.shaderId);
+                outputModes.update(outputMode(), busy, fullColorOnly ? { ascii: `${shader.title} is always drawn in full color` } : {});
+                densityField.classList.toggle("hidden", outputMode() !== "ascii");
                 density.disabled = busy && !savingDensity;
                 showDensity(previewDensity ?? normalizeAsciiDensity(config.asciiDensity));
             }
@@ -572,11 +594,38 @@ export function mount(root, api) {
                     if (!preview.naturalWidth || !preview.naturalHeight)
                         throw new Error("This image has no displayable size.");
                     if (isOpen()) {
-                        const result = await api.request("images.save", { instanceId, base64: dataUrl.slice(index + marker.length) });
+                        const result = await replaceLogo(() => api.request("images.save", { instanceId, base64: dataUrl.slice(index + marker.length) }));
                         finish(result.dataUrl);
                     }
                 }, "Importing image…");
             }
+
+            // An imported image takes the place of the built-in logo, and of the shader made for it.
+            // Saving that choice first also stores a starter tile, which an image cannot be saved to before.
+            async function replaceLogo(save) {
+                const logo = builtInImage();
+                if (!logo)
+                    return save();
+                const before = { image: logo, shaderId: config.shaderId };
+                replacingImage = true;
+                try {
+                    await saveConfig({ image: "", shaderId: config.shaderId === LOGO ? "default" : config.shaderId });
+                    return await save();
+                } catch (err) {
+                    await api.updateConfig(before);
+                    throw err;
+                } finally {
+                    replacingImage = false;
+                }
+            }
+
+            useLogo.addEventListener("click", () => run(async () => {
+                if (image.hasAttribute("src"))
+                    await api.request("images.remove", { instanceId });
+                await saveConfig({ image: LOGO, shaderId: LOGO, shaderMode: "blit", resizeMode: "resize" });
+                if (isOpen())
+                    close();
+            }));
 
             file.addEventListener("change", () => {
                 const selected = file.files[0];
@@ -590,6 +639,12 @@ export function mount(root, api) {
                 }
             });
             remove.addEventListener("click", () => run(async () => {
+                if (builtInImage()) {
+                    await saveConfig({ image: "", shaderId: config.shaderId === LOGO ? "default" : config.shaderId });
+                    if (isOpen())
+                        close();
+                    return;
+                }
                 await api.request("images.remove", { instanceId });
                 finish(null);
             }));

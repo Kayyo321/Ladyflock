@@ -275,6 +275,36 @@
         0 0 0 3px var(--tint-soft);
 }
 
+/* On a tile one row tall the tile is the field: one surface, not a box inside a box. */
+.dashboard-grid:not(.is-editing) .dash-card[data-compact-row="true"] .dash-card-body.search {
+    padding: 0;
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-compact-row="true"] .search-pill {
+    flex: 1;
+    gap: 12px;
+    height: auto;
+    padding-inline: 24px 16px;
+    border-radius: var(--tile-radius);
+    background: none;
+    box-shadow: none;
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-compact-row="true"] .search-pill:focus-within {
+    box-shadow: inset 0 0 0 2px var(--focus-edge);
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-compact-row="true"] .search-input {
+    height: 100%;
+    font-size: 16px;
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-compact-row="true"] .search-go {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+}
+
 .search-lens {
     color: var(--muted);
 }

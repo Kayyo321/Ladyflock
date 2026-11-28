@@ -44,15 +44,12 @@ export function mount(root, api) {
 
     function renderFace() {
         if (!sessions.length) {
-            api.setMeta("Idle");
+            api.setMeta("");
             wrap.classList.add("is-idle");
-            const art = document.createElement("span");
-            art.className = "np-art";
-            art.append(icon("now-playing", tier === "expanded" ? 22 : 16));
             const empty = document.createElement("span");
             empty.className = "np-idle-text";
-            empty.textContent = "No media playing in this session.";
-            wrap.append(art, empty);
+            empty.textContent = "Nothing is playing.";
+            wrap.append(empty);
             return;
         }
         wrap.classList.remove("is-idle");

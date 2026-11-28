@@ -71,7 +71,7 @@ export function mount(root, api) {
         titleInput.classList.toggle("hidden", tier === "compact");
         const unread = items.filter(it => !it.value?.read);
         const finished = items.filter(it => it.value?.read);
-        api.setMeta(`${unread.length} unread`);
+        api.setMeta(items.length === 0 ? "" : unread.length === 0 ? "All read" : `${unread.length} unread`);
         toggleFinishedBtn.textContent = showFinished
             ? `Show unread (${unread.length})`
             : `Finished (${finished.length})`;

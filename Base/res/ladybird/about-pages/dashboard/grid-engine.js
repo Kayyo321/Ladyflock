@@ -145,7 +145,8 @@ export function findFirstFreeSlot(existingPlacements, w, h, cols, minRow = 0) {
 
 /**
  * Deterministic, idempotent placement solver:
- * - Pins `pinnedIds` (clamped inside bounds), verifying they do not overlap each other.
+ * - Pins `pinnedIds` (clamped inside bounds), verifying they do not overlap each other. These are
+ *   the tile being placed and every locked tile: nothing the solver does moves them.
  * - Places remaining cards in their prior stable reading order at their prior column,
  *   shifting downward to the first non-overlapping row >= prior row.
  * - If `compactMode` is true, pulls non-pinned cards upward into legal gaps in reading order.
@@ -169,7 +170,7 @@ export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = fa
             return { ok: false, error: "Layout exceeds maximum grid height." };
         const rect = { instanceId: item.instanceId, col, row, w, h };
         if (collidesWithAny(rect, placed))
-            return { ok: false, error: "Pinned cards overlap." };
+            return { ok: false, error: "A locked tile is in the way." };
         placed.push(rect);
     }
 
@@ -241,9 +242,10 @@ export function projectPlacements(widePlacements, targetCols) {
  * Swaps positions of two placed cards:
  * - Same-size cards exchange coordinates exactly.
  * - Unequal-size cards retain their sizes, pin both anchors,
- *   reject if the two pinned rects overlap or cross bounds, and resolve remaining cards.
+ *   reject if the two pinned rects overlap or cross bounds, and resolve remaining cards
+ *   around them and around `fixedIds`, which stay where they are.
  */
-export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = false, minRow = MIN_GRID_ROW) {
+export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = false, minRow = MIN_GRID_ROW, fixedIds = []) {
     const a = currentPlacements.find(p => p.instanceId === idA);
     const b = currentPlacements.find(p => p.instanceId === idB);
     if (!a || !b || idA === idB)
@@ -268,5 +270,5 @@ export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = 
     });
     if (a.w === b.w && a.h === b.h)
         return { ok: true, placements: sortReadingOrder(next) };
-    return resolveLayout(next, [idA, idB], cols, compactMode, firstRow);
+    return resolveLayout(next, [idA, idB, ...fixedIds], cols, compactMode, firstRow);
 }

@@ -262,46 +262,39 @@ html:not(.is-ready) .dashboard-footer {
     overflow: hidden;
     border-radius: var(--tile-radius);
     background-color: var(--tile-bg);
-    box-shadow: inset 0 0 0 1px var(--tile-edge);
     transition: box-shadow 220ms ease;
 }
 
-/* The eyebrow is one line. Its status text drops to a second, clipped line when the tile is too
+/* A tile at rest is a plain surface. Its outline belongs to arranging, when a tile is a thing
+   to pick up. */
+.dashboard-grid.is-editing .dash-card-face {
+    box-shadow: inset 0 0 0 1px var(--tile-edge);
+}
+
+/* The caption is one quiet line: the tile's name, and what state it is in. The content below
+   it is what the tile is for. The state drops to a second, clipped line when the tile is too
    narrow to show it whole, so it is either readable or absent. */
 .dash-card .dash-card-head {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
     align-content: flex-start;
     gap: 8px;
     flex-shrink: 0;
     box-sizing: content-box;
     height: 24px;
     margin-inline: var(--card-inset);
-    padding-block: var(--head-top) 7px;
-    border-bottom: 1px solid var(--separator-soft);
+    padding-top: var(--head-top);
     overflow: hidden;
-}
-
-.dash-card-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
-    background-color: var(--tint-softer);
-    color: var(--tint-ink);
 }
 
 .dash-card-title {
     flex: 0 1 auto;
     min-width: 0;
-    max-width: calc(100% - 32px);
+    max-width: 100%;
     margin: 0;
     overflow: hidden;
-    color: var(--text);
-    font-size: 13px;
+    color: var(--muted);
+    font-size: 12px;
     font-weight: 600;
     line-height: 24px;
     white-space: nowrap;
@@ -313,7 +306,7 @@ html:not(.is-ready) .dashboard-footer {
     max-width: 100%;
     overflow: hidden;
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: 12px;
     line-height: 24px;
     font-variant-numeric: tabular-nums;
     text-align: end;
@@ -328,7 +321,7 @@ html:not(.is-ready) .dashboard-footer {
     gap: 8px;
     min-width: 0;
     min-height: 0;
-    padding: 10px var(--card-inset) var(--card-inset);
+    padding: 4px var(--card-inset) var(--card-inset);
     overflow-x: hidden;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -339,14 +332,18 @@ html:not(.is-ready) .dashboard-footer {
     --head-top: 6px;
 }
 
-.dash-card[data-compact-row="true"] .dash-card-head {
-    padding-bottom: 0;
-    border: none;
-}
-
 .dash-card[data-compact-row="true"] .dash-card-body {
     gap: 4px;
-    padding: 4px var(--card-inset) 8px;
+    padding: 0 var(--card-inset) 12px;
+}
+
+/* A tile with no caption at rest starts its content where the caption would be. */
+.dashboard-grid:not(.is-editing) .dash-card[data-plain] .dash-card-head {
+    display: none;
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-plain] .dash-card-body {
+    padding-top: var(--card-inset);
 }
 
 /* An image uses the entire placement; the board shows through any unused space. */
@@ -384,6 +381,18 @@ html:not(.is-ready) .dashboard-footer {
 
 .dashboard-image[data-mode="crop"] {
     object-fit: cover;
+}
+
+/* When the logo cannot be drawn with its shader it is shown as it is. Its wordmark is nearly
+   black, so the plain image is turned light on a dark page. */
+@media (prefers-color-scheme: dark) {
+    .dashboard-image[data-logo] {
+        filter: invert(1) hue-rotate(180deg);
+    }
+}
+
+.image-use-logo {
+    justify-self: start;
 }
 
 .dash-card[data-tier="compact"] .image-add {
@@ -534,13 +543,15 @@ html.is-private .image-shader-error {
 
 /* --- A tile while the board is being edited -------------------------------------------- */
 
+/* While arranging, the caption stands between the tile's remove badge and its options button. */
 .dashboard-grid.is-editing .dash-card-head {
-    padding-inline-end: 32px;
+    padding-inline: 32px;
 }
 
 .dashboard-grid.is-editing .dash-card-menu-btn {
     position: absolute;
-    top: var(--head-top);
+    /* --menu-drop moves the button out from under the Edit and Preview switch. */
+    top: calc(var(--head-top) + var(--menu-drop, 0px));
     inset-inline-end: var(--card-inset);
     z-index: 3;
     display: inline-flex;
@@ -570,6 +581,7 @@ html.is-editing .dash-card-body * {
 .dash-card-drag,
 .dash-card-menu-btn,
 .dash-card-remove,
+.dash-card-lock,
 .dash-card-resize {
     display: none;
 }
@@ -604,7 +616,6 @@ html.is-editing .dash-card-body * {
     padding: 0;
     border: none;
     border-radius: 6px;
-    /* Cover the widget glyph until the handle withdraws during a drag or swap. */
     background: linear-gradient(var(--control), var(--control)), var(--tile-bg);
     color: var(--text);
     cursor: pointer;
@@ -614,6 +625,82 @@ html.is-editing .dash-card-body * {
 .dashboard-grid.is-editing .dash-card-remove:hover {
     background: color-mix(in srgb, var(--error) 12%, var(--tile-bg));
     color: var(--error);
+}
+
+/* A locked tile wears a lock where the remove badge was, and has no resize corner. The
+   lock is a button: pressing it unlocks the tile. */
+.dashboard-grid.is-editing .dash-card.is-locked .dash-card-lock {
+    position: absolute;
+    top: var(--head-top);
+    inset-inline-start: var(--card-inset);
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: linear-gradient(var(--tint-soft), var(--tint-soft)), var(--tile-bg);
+    color: var(--tint-ink);
+    cursor: pointer;
+    animation: dash-badge-in 260ms var(--ease-spring) both;
+    transition:
+        background 160ms ease,
+        color 160ms ease,
+        scale 200ms var(--ease-spring);
+}
+
+.dashboard-grid.is-editing .dash-card.is-locked .dash-card-lock:hover {
+    background: linear-gradient(var(--control-hover), var(--control-hover)), var(--tile-bg);
+    color: var(--text);
+}
+
+.dashboard-grid.is-editing .dash-card.is-locked .dash-card-remove,
+.dashboard-grid.is-editing .dash-card.is-locked .dash-card-resize {
+    display: none;
+}
+
+.dashboard-grid.is-editing .dash-card.is-locked .dash-card-drag {
+    cursor: default;
+}
+
+/* Asked to move, a locked tile's lock shakes its head. */
+.dash-card.is-refusing .dash-card-lock .dash-icon {
+    animation: dash-lock-refuse 360ms ease both;
+}
+
+/* A tile carried over a locked one cannot land there. */
+.dash-card.is-blocking .dash-card-face {
+    box-shadow:
+        inset 0 0 0 1px var(--tile-edge),
+        0 0 0 2px rgba(var(--dot-warn-rgb), 0.75);
+}
+
+.dashboard-grid.is-editing .dash-card.is-blocking .dash-card-lock {
+    background: linear-gradient(rgba(var(--dot-warn-rgb), 0.16), rgba(var(--dot-warn-rgb), 0.16)), var(--tile-bg);
+    color: rgb(var(--dot-warn-rgb));
+    scale: 1.2;
+}
+
+@keyframes dash-lock-refuse {
+    0%,
+    100% {
+        translate: 0 0;
+    }
+    20% {
+        translate: -3px 0;
+    }
+    40% {
+        translate: 3px 0;
+    }
+    60% {
+        translate: -2px 0;
+    }
+    80% {
+        translate: 2px 0;
+    }
 }
 
 /* The resize corner: an arc that hugs the tile's rounded corner. */
@@ -685,6 +772,7 @@ html.is-editing .dash-card-body * {
 .dash-card-drag:focus-visible,
 .dash-card-menu-btn:focus-visible,
 .dash-card-remove:focus-visible,
+.dash-card-lock:focus-visible,
 .dash-card-resize:focus-visible {
     outline: none;
     box-shadow:
@@ -1008,6 +1096,101 @@ html.is-editing .dashboard-empty-actions {
     display: none;
 }
 
+/* --- Edit and Preview ---------------------------------------------------------------- */
+
+/* Shown for as long as the board is being customized. Edit is where tiles are arranged;
+   Preview is the board exactly as a new tab shows it. */
+.dash-mode-switch {
+    position: fixed;
+    top: 14px;
+    inset-inline-end: 18px;
+    z-index: 40;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 3px;
+    border-radius: 11px;
+    background-color: var(--float);
+    backdrop-filter: blur(22px) saturate(1.6);
+    box-shadow:
+        0 0 0 1px var(--edge),
+        var(--popover-shadow);
+    animation: dash-switch-in 320ms var(--ease-spring) both;
+    transition: opacity 160ms ease;
+}
+
+/* The thumb slides under whichever view is on. */
+.dash-mode-switch::before {
+    content: "";
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    border-radius: 8px;
+    background-color: var(--segment);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+    transition: translate 280ms var(--ease-spring);
+}
+
+.dash-mode-switch[data-mode="preview"]::before,
+[dir="rtl"] .dash-mode-switch[data-mode="edit"]::before {
+    translate: 100% 0;
+}
+
+[dir="rtl"] .dash-mode-switch[data-mode="preview"]::before {
+    translate: 0 0;
+}
+
+.mode-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 13px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 160ms ease;
+}
+
+.mode-btn:hover,
+.mode-btn[aria-pressed="true"] {
+    color: var(--text);
+}
+
+/* A tile in hand can be carried into the corner the switch sits in. */
+html.is-gesturing .dash-mode-switch {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+@keyframes dash-switch-in {
+    from {
+        translate: 0 -22px;
+        opacity: 0;
+    }
+    to {
+        translate: 0 0;
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dash-mode-switch,
+    .dash-mode-switch::before {
+        animation: none;
+        transition: none;
+    }
+}
+
 /* --- Dock ---------------------------------------------------------------------------- */
 
 .dashboard-footer {
@@ -1047,6 +1230,11 @@ html.is-editing .dashboard-empty-actions {
         0 0 0 1px var(--edge),
         var(--popover-shadow);
     animation: dash-dock-in 320ms var(--ease-spring) both;
+}
+
+/* Previewing, the dock steps back to its Done button. */
+.dash-dock.is-preview > :not(.done) {
+    display: none;
 }
 
 @keyframes dash-dock-in {
@@ -1120,6 +1308,7 @@ html.is-editing .dashboard-empty-actions {
 }
 
 .dock-btn:focus-visible,
+.mode-btn:focus-visible,
 .dash-customize:focus-visible,
 .dashboard-hint-btn:focus-visible,
 .shelf-cat:focus-visible,
@@ -2039,8 +2228,8 @@ html.shelf-peeking .dash-shelf.is-open {
     align-items: flex-start;
     justify-content: center;
     gap: 6px;
-    color: var(--muted);
-    font-size: 12.5px;
+    color: var(--body);
+    font-size: 13px;
 }
 
 .dash-card-error {

@@ -241,7 +241,7 @@ function applyMarkTheme(colorTheme) {
 }
 
 function updateColorTheme() {
-    const colorTheme = settings.appearance.colorTheme || "neutral";
+    const colorTheme = settings.appearance.colorTheme || "lavender";
     for (const input of colorThemeInputs) input.checked = input.value === colorTheme;
     applyMarkTheme(colorTheme);
 }

@@ -76,6 +76,7 @@ private:
     void handle_items_clear_completed(i64 request_id, JsonObject const& params);
 
     void handle_image_load(i64 request_id, JsonObject const& params);
+    void handle_image_built_in(i64 request_id, JsonObject const& params);
     void handle_image_save(i64 request_id, JsonObject const& params);
     void handle_image_remove(i64 request_id, JsonObject const& params);
     void handle_image_fetch_url(i64 request_id, JsonObject const& params);

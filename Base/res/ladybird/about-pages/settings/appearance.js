@@ -30,7 +30,7 @@ const loadSettings = settings => {
     showBookmarksBar.value = APPEARANCE.showBookmarksBar || "never";
     setSegmentedValue(interfaceTheme, APPEARANCE.interfaceTheme || "system");
     setSegmentedValue(websiteColorScheme, APPEARANCE.websiteColorScheme || "system");
-    setSegmentedValue(colorTheme, APPEARANCE.colorTheme || "neutral");
+    setSegmentedValue(colorTheme, APPEARANCE.colorTheme || "lavender");
 };
 
 function saveAppearance() {

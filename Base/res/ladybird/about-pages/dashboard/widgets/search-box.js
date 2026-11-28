@@ -73,8 +73,8 @@ export function mount(root, api) {
         emptyNotice.classList.toggle("hidden", hasEngine);
         engineBar.classList.toggle("hidden", !hasEngine || tier !== "expanded");
 
+        // The field names the engine it will use. Nothing else on the tile repeats it.
         const activeName = selectedEngine || engineState.defaultEngine || "";
-        api.setMeta(tier === "compact" ? "" : activeName);
         input.placeholder = activeName ? `Search with ${activeName}…` : "Search the web…";
 
         engineSelect.replaceChildren();

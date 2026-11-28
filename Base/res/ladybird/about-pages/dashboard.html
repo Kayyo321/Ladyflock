@@ -29,9 +29,24 @@
                 </p>
             </div>
 
+            <div id="mode-switch" class="dash-mode-switch hidden" role="group" aria-label="Dashboard view">
+                <button id="btn-mode-edit" type="button" class="mode-btn" data-icon="customize" aria-pressed="true">Edit</button>
+                <button
+                    id="btn-mode-preview"
+                    type="button"
+                    class="mode-btn"
+                    data-icon="eye"
+                    aria-pressed="false"
+                    title="See the dashboard as a new tab shows it"
+                >
+                    Preview
+                </button>
+            </div>
+
             <main id="dashboard-grid-wrap" class="dashboard-grid-wrap" aria-label="New tab dashboard">
                 <div id="dashboard-board" class="dashboard-board">
                     <canvas id="dashboard-dots" class="dashboard-dots" aria-hidden="true"></canvas>
+                    <div id="dashboard-fold" class="dash-fold" aria-hidden="true" hidden><span>End of the first screen</span></div>
                     <div id="dashboard-landing" class="dash-landing hidden" aria-hidden="true"></div>
                     <div id="dashboard-grid" class="dashboard-grid" role="list"></div>
                     <div id="dashboard-guides" aria-hidden="true"></div>

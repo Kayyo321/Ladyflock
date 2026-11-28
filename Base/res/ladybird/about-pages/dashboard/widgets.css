@@ -119,14 +119,17 @@
 }
 
 .dash-card[data-tier="compact"] .clock-face {
-    flex-direction: row;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+    flex: 1;
+    justify-content: center;
+    gap: 4px;
 }
 
 .dash-card[data-tier="compact"] .clock-date {
     font-size: 12px;
+}
+
+.dashboard-grid:not(.is-editing) .dash-card[data-tier="compact"] .clock-time {
+    font-size: 30px;
 }
 
 /* One bar for the day: dim at night, brightest at noon, with a marker for now. It reads the same in

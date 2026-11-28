@@ -3,6 +3,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+/*
+ * Lines that help with placing a tile while the board is being arranged. All of them
+ * describe the dashboard as a new tab shows it, not the window it is being arranged in.
+ */
+
 #dashboard-guides {
     position: absolute;
     inset: 0;
@@ -10,6 +15,7 @@
     pointer-events: none;
 }
 
+/* A dashed guide runs through the center of a neighbouring tile. */
 .dash-guide {
     position: absolute;
     border-color: rgba(var(--dot-accent-rgb), 0.78);
@@ -17,8 +23,10 @@
     border-width: 0;
 }
 
-.dash-guide.is-viewport {
+/* A solid one is the center of the dashboard itself, and says so. */
+.dash-guide.is-home {
     border-style: solid;
+    border-color: rgb(var(--dot-accent-rgb));
 }
 
 .dash-guide-vertical {
@@ -29,4 +37,57 @@
 .dash-guide-horizontal {
     border-top-width: 1px;
     translate: 0 -50%;
+}
+
+.dash-guide-label {
+    position: absolute;
+    display: none;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background-color: var(--primary);
+    color: #ffffff;
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+}
+
+.dash-guide.is-home .dash-guide-label {
+    display: block;
+}
+
+.dash-guide-vertical .dash-guide-label {
+    top: 12px;
+    left: 0;
+    translate: -50% 0;
+}
+
+.dash-guide-horizontal .dash-guide-label {
+    top: 0;
+    inset-inline-start: 14px;
+    translate: 0 -50%;
+}
+
+/* Where the first screen ends. Tiles below this line are reached by scrolling. */
+.dash-fold {
+    position: absolute;
+    inset-inline: 0;
+    height: 0;
+    border-top: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent);
+    pointer-events: none;
+}
+
+.dash-fold span {
+    position: absolute;
+    top: 0;
+    inset-inline-end: 18px;
+    translate: 0 -50%;
+    padding: 1px 9px;
+    border-radius: 999px;
+    background-color: var(--canvas);
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
 }

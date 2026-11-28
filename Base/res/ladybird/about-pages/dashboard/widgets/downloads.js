@@ -221,16 +221,14 @@ export function mount(root, api) {
                 return d.status === "completed";
             return true;
         });
-        api.setMeta(`${filtered.length} files`);
+        // An empty list says so once, in its own words, without a count of nothing beside it.
+        api.setMeta(filtered.length === 0 ? "" : filtered.length === 1 ? "1 file" : `${filtered.length} files`);
 
         if (filtered.length === 0) {
             heroEl.classList.add("hidden");
             const empty = document.createElement("li");
             empty.className = "dl-empty";
-            empty.append(icon("downloads", tier === "compact" ? 18 : 22));
-            const msg = document.createElement("span");
-            msg.textContent = statusFilter === "all" ? "No downloads in this session." : `No ${statusFilter} downloads.`;
-            empty.append(msg);
+            empty.textContent = statusFilter === "all" ? "Nothing downloaded this session." : `No ${statusFilter} downloads.`;
             listEl.append(empty);
             return;
         }

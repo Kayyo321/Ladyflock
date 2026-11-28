@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+import { ladyflockLogoShader } from "./ladyflock-logo-shader.js";
+
 const defaultSource = `vec4 shade(vec2 uv, vec4 color, float time) { return color; }`;
 export const ASCII_DENSITY_MIN = 80;
 export const ASCII_DENSITY_MAX = 560;
@@ -204,8 +206,15 @@ function graphics() {
                 throw new Error("Couldn’t link the shader. Check its return type.");
             }
             const uniforms = {};
-            for (const name of ["photo", "atlas", "crop", "cells", "seconds", "ascii"])
+            for (const name of ["photo", "atlas", "crop", "cells", "seconds", "ascii", "ink", "aspect"])
                 uniforms[name] = gl.getUniformLocation(program, name);
+            // A built-in's own uniforms are looked up when its state first names them.
+            const own = new Map();
+            uniforms.own = name => {
+                if (!own.has(name))
+                    own.set(name, gl.getUniformLocation(program, name));
+                return own.get(name);
+            };
             compiled = { program, uniforms };
             if (programs.size === 16) {
                 const oldest = programs.keys().next().value;
@@ -241,8 +250,31 @@ function textureForImage(gl, image) {
     return createTexture(gl, sample);
 }
 
-const identity = { source: defaultSource, animated: false };
-const breeze = { source: breezeSource, animated: true };
+// A built-in shader is trusted source, so it may declare helpers and read the uniforms that
+// imported shaders cannot name: ink (the page's text colour) and aspect (the image's width
+// over its height). A built-in with createState() is told before each frame where the pointer
+// is, and answers with the values of the uniforms it declares for itself. frameMs is the wait
+// between an animated shader's frames. One marked fullColor is never drawn as ASCII art.
+const builtIns = new Map([
+    ["default", { name: "Default", source: defaultSource, animated: false }],
+    ["breeze", { name: "Breeze", source: breezeSource, animated: true }],
+    ["ladyflock-logo", { name: "LadyflockLogo", ...ladyflockLogoShader }],
+]);
+
+export const BUILT_IN_SHADERS = [...builtIns].map(([id, shader]) => ({ id, name: shader.name }));
+
+export function isBuiltInShader(id) {
+    return builtIns.has(id);
+}
+
+export function shaderAllowsAscii(id) {
+    return !builtIns.get(id)?.fullColor;
+}
+
+function channels(color) {
+    const parts = color.match(/[\d.]+/g);
+    return parts ? parts.slice(0, 3).map(part => Number(part) / 255) : [0, 0, 0];
+}
 
 export function createImageShaderRenderer(image, canvas, onError) {
     const motion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -253,7 +285,15 @@ export function createImageShaderRenderer(image, canvas, onError) {
     let disposed = false;
     let cachedImage;
     let lastError = "";
+    let ink = null;
+    let stateful = null;
+    let state = null;
+    let pointer = null;
+    let placed = null;
     canvas.hidden = true;
+
+    const selected = () => builtIns.get(config.shaderId) || config.program;
+    const asAscii = () => config.renderMode === "ascii" && shaderAllowsAscii(config.shaderId);
 
     function showOriginal() {
         canvas.hidden = true;
@@ -276,7 +316,7 @@ export function createImageShaderRenderer(image, canvas, onError) {
         stop();
         if (disposed)
             return;
-        if (config.shaderId === "default" && config.renderMode !== "ascii") {
+        if (config.shaderId === "default" && !asAscii()) {
             clearTexture();
             showOriginal();
         } else if (visible && !document.hidden && image.complete && image.naturalWidth && image.hasAttribute("src")) {
@@ -290,7 +330,7 @@ export function createImageShaderRenderer(image, canvas, onError) {
         if (rect.width < 1 || rect.height < 1)
             return;
         try {
-            const shader = config.shaderId === "default" ? identity : config.shaderId === "breeze" ? breeze : config.program;
+            const shader = selected();
             if (!shader)
                 throw new Error("The selected shader is unavailable.");
             const { gl, surface, use, atlases } = graphics();
@@ -334,8 +374,27 @@ export function createImageShaderRenderer(image, canvas, onError) {
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, atlases[glyphWidth < 6 ? 0 : glyphWidth < 12 ? 1 : 2]);
             gl.activeTexture(gl.TEXTURE0);
-            gl.uniform1f(uniforms.seconds, motion.matches ? 0 : time / 1000);
-            gl.uniform1i(uniforms.ascii, config.renderMode === "ascii" ? 1 : 0);
+            const seconds = motion.matches ? 0 : time / 1000;
+            gl.uniform1f(uniforms.seconds, seconds);
+            gl.uniform1i(uniforms.ascii, asAscii() ? 1 : 0);
+            ink ??= channels(getComputedStyle(canvas).color);
+            gl.uniform3f(uniforms.ink, ...ink);
+            gl.uniform1f(uniforms.aspect, image.naturalWidth / image.naturalHeight);
+            // Where the drawn image is on screen, for placing the pointer in image space.
+            placed = {
+                left: rect.left + (rect.width - displayWidth) / 2,
+                top: rect.top + (rect.height - displayHeight) / 2,
+                width: displayWidth,
+                height: displayHeight,
+                crop: [(1 - spanX) / 2, (1 - spanY) / 2, spanX, spanY],
+            };
+            if (stateful !== shader) {
+                stateful = shader;
+                state = shader.createState?.() ?? null;
+            }
+            const own = state?.frame({ seconds, pointer: pointerInImage(), still: motion.matches }) ?? {};
+            for (const [name, value] of Object.entries(own))
+                gl[`uniform${value.length}f`](uniforms.own(name), ...value);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             if (canvas.width !== width)
                 canvas.width = width;
@@ -348,7 +407,7 @@ export function createImageShaderRenderer(image, canvas, onError) {
             image.style.visibility = "hidden";
             lastError = "";
             if (shader.animated && !motion.matches)
-                timer = setTimeout(schedule, 80);
+                timer = setTimeout(schedule, shader.frameMs ?? 80);
         } catch (error) {
             showOriginal();
             if (lastError !== error.message) {
@@ -358,9 +417,32 @@ export function createImageShaderRenderer(image, canvas, onError) {
         }
     }
 
+    function pointerInImage() {
+        if (!pointer || !placed)
+            return null;
+        const [x, y, spanX, spanY] = placed.crop;
+        return [
+            x + (pointer[0] - placed.left) / placed.width * spanX,
+            y + (pointer[1] - placed.top) / placed.height * spanY,
+        ];
+    }
+
+    // An animated shader that heeds the pointer finds it here at its next frame.
+    function pointerMoved(event) {
+        pointer = event.type === "pointermove" ? [event.clientX, event.clientY] : null;
+    }
+
+    function appearanceChanged() {
+        ink = null;
+        schedule();
+    }
+
     function imageChanged() {
         clearTexture();
         showOriginal();
+        // The shaded frame replaces the image. Don't show the unshaded one for the frames before it.
+        if (!lastError && (config.shaderId !== "default" || asAscii()))
+            image.style.visibility = "hidden";
         schedule();
     }
     const observer = new IntersectionObserver(entries => {
@@ -375,10 +457,15 @@ export function createImageShaderRenderer(image, canvas, onError) {
     image.addEventListener("load", imageChanged);
     document.addEventListener("visibilitychange", schedule);
     motion.addEventListener("change", schedule);
+    const scheme = matchMedia("(prefers-color-scheme: dark)");
+    scheme.addEventListener("change", appearanceChanged);
+    window.addEventListener("pointermove", pointerMoved, { passive: true });
+    document.documentElement.addEventListener("pointerleave", pointerMoved);
 
     return {
         update(next) {
             config = next;
+            ink = null;
             if (!image.complete || !image.naturalWidth || (cachedImage && cachedImage.src !== image.getAttribute("src"))) {
                 clearTexture();
                 showOriginal();
@@ -392,6 +479,9 @@ export function createImageShaderRenderer(image, canvas, onError) {
             image.removeEventListener("load", imageChanged);
             document.removeEventListener("visibilitychange", schedule);
             motion.removeEventListener("change", schedule);
+            scheme.removeEventListener("change", appearanceChanged);
+            window.removeEventListener("pointermove", pointerMoved);
+            document.documentElement.removeEventListener("pointerleave", pointerMoved);
             stop();
             clearTexture();
             showOriginal();

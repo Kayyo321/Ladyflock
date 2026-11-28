@@ -78,6 +78,68 @@ for (let i = 3; i < pixels.length; i += 4) {
 return painted.every(count => count > 0);
 """
 
+# How far the weight of the pegs drawn on the first screen sits from the center of that screen, and
+# whether the center itself is marked. The field is the same on both sides of the dashboard's center.
+DOTS_CENTERED = """
+const canvas = document.querySelector('#dashboard-dots');
+const rect = canvas.getBoundingClientRect();
+if (!canvas.width || !canvas.height || !rect.width) return false;
+const root = document.documentElement;
+const scale = canvas.width / rect.width;
+const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+let weight = 0, weightX = 0, weightY = 0, center = 0;
+for (let i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] <= 8) continue;
+    const index = (i - 3) / 4;
+    const x = rect.left + (index % canvas.width + 0.5) / scale;
+    const y = rect.top + (Math.floor(index / canvas.width) + 0.5) / scale;
+    if (y < 0 || y > root.clientHeight) continue;
+    weight += pixels[i];
+    weightX += pixels[i] * x;
+    weightY += pixels[i] * y;
+    if (Math.abs(x - root.clientWidth / 2) < 1 && Math.abs(y - root.clientHeight / 2) < 1) ++center;
+}
+if (!weight) return false;
+return { x: weightX / weight - root.clientWidth / 2, y: weightY / weight - root.clientHeight / 2, center };
+"""
+
+# True once the window has stopped changing size: a resize is not instant, and the board is laid out
+# again at every size on the way.
+# How the starter's tiles are drawn: which have a caption, whether they are outlined, and what the
+# captions hold. Answers false until the search field has been mounted.
+TILE_FACES = """
+const card = type => document.querySelector(`.dash-card[data-widget-type='${type}']`);
+const field = card('search-box')?.querySelector('.search-pill');
+if (!field) return false;
+return {
+    glyphs: document.querySelectorAll('.dash-card-glyph').length,
+    outlined: getComputedStyle(card('downloads').querySelector('.dash-card-face')).boxShadow !== 'none',
+    captions: ['downloads', 'search-box', 'world-clock']
+        .map(type => card(type).querySelector('.dash-card-head').getBoundingClientRect().height > 0),
+    count: card('downloads').querySelector('.dash-card-meta').textContent,
+    fieldIsTile: Math.abs(field.getBoundingClientRect().height - card('search-box').getBoundingClientRect().height) < 1,
+};
+"""
+
+# Whether the page can be scrolled at all.
+PAGE_SCROLLS = "return document.documentElement.scrollHeight > document.documentElement.clientHeight;"
+
+WINDOW_SETTLED = """
+const height = document.documentElement.clientHeight;
+const now = performance.now();
+if (window.__settlingHeight !== height) {
+    window.__settlingHeight = height;
+    window.__settlingSince = now;
+    return false;
+}
+return now - window.__settlingSince > 400 && (%s);
+"""
+
+TILE_CENTER = """
+const tile = document.querySelector(".dash-card[data-widget-type='%s']").getBoundingClientRect();
+return { x: tile.left + tile.width / 2, y: tile.top + tile.height / 2, top: tile.top };
+"""
+
 
 def assert_no_overlap(placements):
     for i, a in enumerate(placements):
@@ -172,18 +234,36 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
             assert mode_state["mode"] == "dashboard", mode_state
             assert mode_state["url"] == "about:dashboard", mode_state
 
-            # 2. Open about:dashboard and verify starter 3 cards (World Clock, Quick Tasks, Scratchpad).
+            # 2. Open about:dashboard and verify the starter: the logo over Downloads, Search Box and World Clock.
             command(port, session, "url", {"url": "about:dashboard"})
             starter_types = wait_for(
                 port,
                 session,
                 """
                 const cards = [...document.querySelectorAll('.dash-card')];
-                if (cards.length !== 3) return false;
+                if (cards.length !== 4) return false;
                 return cards.map(c => c.dataset.widgetType);
                 """,
             )
-            assert starter_types == ["world-clock", "quick-tasks", "scratchpad"], starter_types
+            assert sorted(starter_types) == ["downloads", "image", "search-box", "world-clock"], starter_types
+            starter = command(port, session, "execute/sync", {"script": PLACEMENTS, "args": []})
+            assert {p["type"]: (p["col"], p["row"], p["w"], p["h"]) for p in starter} == {
+                "image": (13, -14, 22, 12),
+                "downloads": (0, -2, 12, 4),
+                "search-box": (12, -2, 24, 4),
+                "world-clock": (36, -2, 12, 4),
+            }, starter
+            # The logo is the image that ships with the dashboard, drawn by its own shader before anything is saved.
+            wait_for(
+                port,
+                session,
+                """
+                const image = document.querySelector('.dashboard-image[data-logo]');
+                const canvas = document.querySelector('.dashboard-image-shader');
+                return image?.naturalWidth === 1536 && image.alt === 'Ladyflock'
+                    && canvas && !canvas.hidden && image.style.visibility === 'hidden';
+                """,
+            )
 
             # The page must not take focus on load: a new tab keeps it in the address field.
             focused = command(
@@ -222,16 +302,58 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 "fillsViewport": True, "hasHeading": False, "customizeInCorner": True, "menuVisible": False,
             }, normal_layout
 
+            # A tile at rest is a plain surface under one quiet caption, with no icon and no outline. The
+            # search field and the clock say what they are, so they have no caption, and the field is the
+            # whole tile. An empty list does not also show a count of nothing.
+            # A profile that has not chosen a color has the Lavender theme, and the dashboard takes its accent.
+            accent = command(port, session, "execute/sync", {
+                "script": "return getComputedStyle(document.documentElement).getPropertyValue('--page-accent-light').trim();",
+                "args": [],
+            })
+            assert accent == "#7563d4", accent
+            faces = wait_for(port, session, TILE_FACES)
+            assert faces == {
+                "glyphs": 0, "outlined": False, "captions": [True, False, False], "count": "", "fieldIsTile": True,
+            }, faces
+
             # 3. Enter Customize mode and test fine resizing and center guides.
+            #    Every tile is on the first screen, so the page does not scroll, arranging or not.
+            assert command(port, session, "execute/sync", {"script": PAGE_SCROLLS, "args": []}) is False
             command(port, session, "execute/sync", {"script": "document.querySelector('#btn-customize').click();", "args": []})
             wait_for(port, session, DOTS_COVER_VIEWPORT)
+            assert command(port, session, "execute/sync", {"script": PAGE_SCROLLS, "args": []}) is False
+            # While arranging, every tile is outlined and named.
+            faces = command(port, session, "execute/sync", {"script": TILE_FACES, "args": []})
+            assert faces["outlined"] and faces["captions"] == [True, True, True] and not faces["fieldIsTile"], faces
             assert command(port, session, "execute/sync", {
                 "script": "return document.querySelector('.dash-card-menu-btn').getBoundingClientRect().height > 0;", "args": [],
             })
+            # The pegs are one lattice around the dashboard's center, which is marked.
+            wait_for(
+                port,
+                session,
+                f"""
+                const dots = (() => {{ {DOTS_CENTERED} }})();
+                return dots && Math.abs(dots.x) < 1 && Math.abs(dots.y) < 1 && dots.center > 0;
+                """,
+            )
+            # Customizing puts an Edit and Preview switch in the top corner of the window.
+            switch = command(port, session, "execute/sync", {
+                "script": """
+                const rect = document.querySelector('#mode-switch').getBoundingClientRect();
+                return {
+                    inCorner: Math.abs(document.documentElement.clientWidth - rect.right - 18) < 1 && Math.abs(rect.top - 14) < 1,
+                    edit: document.querySelector('#btn-mode-edit').getAttribute('aria-pressed'),
+                    preview: document.querySelector('#btn-mode-preview').getAttribute('aria-pressed'),
+                };
+                """,
+                "args": [],
+            })
+            assert switch == {"inCorner": True, "edit": "true", "preview": "false"}, switch
 
             before = command(port, session, "execute/sync", {"script": PLACEMENTS, "args": []})
             clock = next(p for p in before if p["type"] == "world-clock")
-            assert (clock["col"], clock["row"]) == (0, -clock["h"] // 2), before
+            assert (clock["col"], clock["row"]) == (36, -clock["h"] // 2), before
             geometry = command(
                 port,
                 session,
@@ -240,7 +362,7 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                     "script": """
                     const clock = document.querySelector(".dash-card[data-widget-type='world-clock']");
                     const tile = clock.getBoundingClientRect();
-                    const resize = document.querySelector(".dash-card[data-widget-type='scratchpad'] .dash-card-resize").getBoundingClientRect();
+                    const resize = document.querySelector(".dash-card[data-widget-type='search-box'] .dash-card-resize").getBoundingClientRect();
                     const gap = parseFloat(document.querySelector('#dashboard-board').style.getPropertyValue('--tile-gap'));
                     return {
                         x: tile.left + tile.width / 2,
@@ -259,7 +381,7 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
             )
             assert abs(geometry["y"] - geometry["viewportCenterY"]) < 0.1, geometry
             # Shrink by two fine steps while preserving the vertical center shared by the other cards.
-            scratchpad = next(p for p in before if p["type"] == "scratchpad")
+            search = next(p for p in before if p["type"] == "search-box")
             resize_x, resize_y = round(geometry["resizeX"]), round(geometry["resizeY"])
             pointer(
                 port,
@@ -280,7 +402,7 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 port,
                 session,
                 """
-                return document.querySelector(".dash-card[data-widget-type='scratchpad']").classList.contains('is-resizing')
+                return document.querySelector(".dash-card[data-widget-type='search-box']").classList.contains('is-resizing')
                     && !document.querySelector('.dash-guide-horizontal').hidden;
                 """,
             )
@@ -289,15 +411,16 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 port,
                 session,
                 f"""
-                return document.querySelector(".dash-card[data-widget-type='scratchpad']").dataset.w === '{scratchpad["w"] - 2}'
+                return document.querySelector(".dash-card[data-widget-type='search-box']").dataset.w === '{search["w"] - 2}'
                     && document.querySelector('.dash-guide-horizontal').hidden;
                 """,
             )
 
-            # Carry the clock onto the viewport center before dropping one fine column and four fine rows away.
+            # Carry the clock onto the viewport center before dropping one fine column and four fine rows away
+            # from where it started, in the free space below the row.
             unit_y = (geometry["height"] + geometry["gap"]) / clock["h"]
             start_x, start_y = round(geometry["x"]), round(geometry["y"])
-            end_x = round(geometry["x"] + geometry["unitX"] * 1.2)
+            end_x = round(geometry["x"] - geometry["unitX"] * 1.2)
             end_y = round(geometry["y"] + unit_y * 4.1)
             pointer(
                 port,
@@ -320,7 +443,7 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 session,
                 """
                 const guides = [...document.querySelectorAll('.dash-guide')];
-                if (guides.length !== 2 || guides.some(guide => guide.hidden || !guide.classList.contains('is-viewport')))
+                if (guides.length !== 2 || guides.some(guide => guide.hidden || !guide.classList.contains('is-home')))
                     return false;
                 const rect = document.querySelector('#dashboard-landing').getBoundingClientRect();
                 return Math.abs(rect.left + rect.width / 2 - document.documentElement.clientWidth / 2) < 0.1
@@ -347,10 +470,10 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                     : false;
                 """,
             )
-            assert moved == [1, clock["row"] + 4], moved
+            assert moved == [clock["col"] - 1, clock["row"] + 4], moved
             assert_no_overlap(command(port, session, "execute/sync", {"script": PLACEMENTS, "args": []}))
 
-            # Add Calculator from the shelf, verify 4 cards and zero overlaps.
+            # Add Calculator from the shelf, verify 5 cards and zero overlaps.
             command(port, session, "execute/sync", {"script": "document.querySelector('#btn-add-widget').click();", "args": []})
             wait_for(
                 port,
@@ -368,21 +491,21 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                 session,
                 """
                 const cards = [...document.querySelectorAll('.dash-card')];
-                if (cards.length !== 4) return false;
+                if (cards.length !== 5) return false;
                 return cards.map(c => c.dataset.widgetType);
                 """,
             )
             assert "calculator" in types_after_add, types_after_add
             assert_no_overlap(command(port, session, "execute/sync", {"script": PLACEMENTS, "args": []}))
 
-            # 4. Reload and confirm persistence (4 cards survive reload).
+            # 4. Reload and confirm persistence (5 cards survive reload).
             command(port, session, "refresh", {})
             types_after_reload = wait_for(
                 port,
                 session,
                 """
                 const cards = [...document.querySelectorAll('.dash-card')];
-                if (cards.length !== 4) return false;
+                if (cards.length !== 5) return false;
                 return cards.map(c => c.dataset.widgetType);
                 """,
             )
@@ -390,9 +513,160 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
             after_reload = command(port, session, "execute/sync", {"script": PLACEMENTS, "args": []})
             clock = next(p for p in after_reload if p["type"] == "world-clock")
             assert [clock["col"], clock["row"]] == moved, after_reload
-            resized = next(p for p in after_reload if p["type"] == "scratchpad")
-            assert resized["w"] == scratchpad["w"] - 2, after_reload
+            resized = next(p for p in after_reload if p["type"] == "search-box")
+            assert resized["w"] == search["w"] - 2, after_reload
             assert_no_overlap(after_reload)
+
+            def execute(script):
+                return command(port, session, "execute/sync", {"script": script, "args": []})
+
+            def drag(start, *stops):
+                actions = [
+                    {"type": "pointerMove", "origin": "viewport", "x": round(start[0]), "y": round(start[1])},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerMove", "origin": "viewport", "x": round(start[0]) + 8, "y": round(start[1]) + 8,
+                     "duration": 50},
+                ]
+                for x, y in stops:
+                    actions.append({"type": "pointerMove", "origin": "viewport", "x": round(x), "y": round(y), "duration": 120})
+                pointer(port, session, actions)
+
+            def release():
+                pointer(port, session, [{"type": "pointerUp", "button": 0}])
+
+            def tile_center(widget_type):
+                center = execute(TILE_CENTER % widget_type)
+                return center["x"], center["y"]
+
+            # 4a. A locked tile keeps its place: it cannot be picked up, and a tile carried onto it is turned away.
+            execute("document.querySelector('#btn-customize').click();")
+            execute("""document.querySelector(".dash-card[data-widget-type='downloads'] .dash-card-menu-btn").click();""")
+            wait_for(port, session, """
+                const lock = [...document.querySelectorAll('.dash-card-menu .dash-menu-item')]
+                    .find(item => item.textContent === 'Lock in place');
+                if (!lock) return false;
+                lock.click();
+                return true;
+            """)
+            wait_for(port, session, """
+                const tile = document.querySelector(".dash-card[data-widget-type='downloads']");
+                return tile.classList.contains('is-locked')
+                    && tile.querySelector('.dash-card-lock').getBoundingClientRect().height > 0
+                    && tile.querySelector('.dash-card-remove').getBoundingClientRect().height === 0
+                    && tile.querySelector('.dash-card-resize').getBoundingClientRect().height === 0;
+            """)
+            def placement_of(widget_type):
+                return next(p for p in execute(PLACEMENTS) if p["type"] == widget_type)
+
+            locked_before = placement_of("downloads")
+            pad_x, pad_y = tile_center("downloads")
+            drag((pad_x, pad_y), (pad_x + 200, pad_y + 60))
+            assert not execute("return document.querySelector('.dash-card.is-dragging') !== null;")
+            release()
+            drag(tile_center("search-box"), (pad_x, pad_y))
+            wait_for(port, session, """
+                return document.querySelector(".dash-card[data-widget-type='downloads']").classList.contains('is-blocking')
+                    && document.querySelector(".dash-card[data-widget-type='search-box']").classList.contains('is-dragging');
+            """)
+            release()
+            wait_for(port, session, "return !document.querySelector('.dash-card.is-dragging, .dash-card.is-blocking');")
+            assert placement_of("downloads") == locked_before, (execute(PLACEMENTS), locked_before)
+            assert_no_overlap(execute(PLACEMENTS))
+
+            # The lock is saved with the board.
+            command(port, session, "refresh", {})
+            wait_for(port, session, """
+                return document.querySelectorAll('.dash-card').length === 5
+                    && document.querySelector(".dash-card[data-widget-type='downloads']").classList.contains('is-locked');
+            """)
+            assert placement_of("downloads") == locked_before, (execute(PLACEMENTS), locked_before)
+
+            # 4b. The solid guides mark the center of the first screen, which is what a new tab shows, however
+            #     far the page has been scrolled while arranging. The page scrolls only when a tile reaches
+            #     below the first screen, which the clock does once the window is this short.
+            assert execute(PAGE_SCROLLS) is False, "The page scrolls although every tile is on the first screen"
+            command(port, session, "window/rect", {"width": 1240, "height": 580})
+            wait_for(port, session, WINDOW_SETTLED % "height < 560")
+            wait_for(port, session, PAGE_SCROLLS)
+            execute("document.querySelector('#btn-customize').click();")
+            scrolled = wait_for(port, session, """
+                const root = document.documentElement;
+                window.scrollTo(0, 80);
+                // The page's scroll position can be reported before the board has moved.
+                if (window.scrollY !== 80 || document.querySelector('#dashboard-board').getBoundingClientRect().top !== -80)
+                    return false;
+                return { scrollY: window.scrollY, width: root.clientWidth, height: root.clientHeight };
+            """)
+            wait_for(port, session, "return !document.querySelector('#dashboard-fold').hidden;")
+            clock_tile = execute(TILE_CENTER % "world-clock")
+            grab_x, grab_y = clock_tile["x"], clock_tile["top"] + 30
+            assert 0 < grab_y < scrolled["height"] - 90, (clock_tile, scrolled)
+            # The pointer position that puts the tile's center on a point of the window. It has to stay clear
+            # of the window's top edge, where a tile in hand scrolls the page.
+            def carry_center_to(x, y):
+                assert y + grab_y - clock_tile["y"] > 70, (y, clock_tile)
+                return x + grab_x - clock_tile["x"], y + grab_y - clock_tile["y"]
+
+            # Over the middle of the scrolled window nothing says "center": a new tab's center is not there.
+            drag((grab_x, grab_y), carry_center_to(scrolled["width"] / 2, scrolled["height"] / 2))
+            wait_for(port, session, """
+                return document.querySelector(".dash-card[data-widget-type='world-clock']").classList.contains('is-dragging')
+                    && !document.querySelector('.dash-guide-vertical').hidden
+                    && !document.querySelector('.dash-guide-horizontal.is-home:not([hidden])');
+            """)
+            home_x, home_y = carry_center_to(scrolled["width"] / 2, scrolled["height"] / 2 - scrolled["scrollY"])
+            pointer(port, session, [
+                {"type": "pointerMove", "origin": "viewport", "x": round(home_x), "y": round(home_y), "duration": 120},
+            ])
+            wait_for(port, session, """
+                const guides = [...document.querySelectorAll('.dash-guide')];
+                if (guides.some(guide => guide.hidden || !guide.classList.contains('is-home'))) return false;
+                const line = document.querySelector('.dash-guide-horizontal').getBoundingClientRect();
+                return Math.abs(line.top + window.scrollY - document.documentElement.clientHeight / 2) < 1;
+            """)
+            release()
+            wait_for(port, session, """
+                const tile = document.querySelector(".dash-card[data-widget-type='world-clock']");
+                if (tile.classList.contains('is-dragging') || Number(tile.dataset.col) + Number(tile.dataset.w) / 2 !== 24)
+                    return false;
+                // The logo is taller than half of this window, so the board's rows are pushed down and
+                // the middle of the first screen is not row zero. The tile is in that middle all the same.
+                const rect = tile.getBoundingClientRect();
+                return Math.abs(rect.top + rect.height / 2 + window.scrollY - document.documentElement.clientHeight / 2) < 0.1;
+            """)
+            # Dropping on the guide does not move the page under the tile.
+            assert execute("return window.scrollY;") == scrolled["scrollY"]
+            assert placement_of("downloads") == locked_before, (execute(PLACEMENTS), locked_before)
+            assert_no_overlap(execute(PLACEMENTS))
+
+            # 4c. Preview shows the board as a new tab does, from the top, without leaving the session.
+            execute("document.querySelector('#btn-mode-preview').click();")
+            wait_for(port, session, """
+                const root = document.documentElement;
+                if (!root.classList.contains('is-previewing') || root.classList.contains('is-editing') || window.scrollY !== 0)
+                    return false;
+                const tile = document.querySelector(".dash-card[data-widget-type='world-clock']").getBoundingClientRect();
+                const dock = [...document.querySelector('#edit-toolbar').children]
+                    .filter(el => el.getBoundingClientRect().height > 0).map(el => el.id);
+                return Math.abs(tile.left + tile.width / 2 - root.clientWidth / 2) < 0.1
+                    && Math.abs(tile.top + tile.height / 2 - root.clientHeight / 2) < 0.1
+                    && !document.querySelector('.dash-card-face').inert
+                    && document.querySelector('.dash-card-menu-btn').getBoundingClientRect().height === 0
+                    && document.querySelector('#btn-mode-preview').getAttribute('aria-pressed') === 'true'
+                    && document.querySelector('#dashboard-fold').hidden
+                    && dock.length === 1 && dock[0] === 'btn-done-edit';
+            """)
+            wait_for(port, session, f"const painted = (() => {{ {DOT_PIXELS} }})(); return painted === 0;")
+            execute("document.querySelector('#btn-mode-edit').click();")
+            wait_for(port, session, f"""
+                return document.documentElement.classList.contains('is-editing')
+                    && document.querySelector('#btn-add-widget').getBoundingClientRect().height > 0
+                    && Math.abs(window.scrollY - {scrolled["scrollY"]}) < 1;
+            """)
+            execute("document.querySelector('#btn-done-edit').click();")
+            wait_for(port, session, "return document.querySelector('#mode-switch').getBoundingClientRect().height === 0;")
+            command(port, session, "window/rect", {"width": 1240, "height": 864})
+            wait_for(port, session, WINDOW_SETTLED % "height > 700")
 
             # 5. Apply a preset through its confirmation, then open a widget's Settings. The dialog has
             #    to be laid out on screen: it was once left open but invisible after a preset.
@@ -517,8 +791,10 @@ def test_graphical_dashboard_end_to_end(webdriver_binary):
                     && Math.abs(tile.top + tile.height / 2 - viewport.clientHeight / 2) < 0.1;
             """)
             print(
-                "PASS: Graphical Qt full-viewport dashboard, edit-only menus, dot coverage, fine drag and resize, "
-                "center guides, shelf add, reload persistence, widget settings and centered Search Box verified"
+                "PASS: Graphical Qt full-viewport dashboard, plain tile faces, edit-only menus, centered dot lattice, "
+                "fine drag and resize, scrolling only to tiles below the first screen, first-screen center guides "
+                "while scrolled, locked tiles, Edit and Preview, shelf add, reload "
+                "persistence, widget settings and centered Search Box verified"
             )
         finally:
             if session:
@@ -635,7 +911,78 @@ def test_graphical_image_widget(webdriver_binary):
 
             command(port, session, "url", {"url": "about:dashboard"})
             wait("return document.documentElement.classList.contains('is-ready');")
+
+            # The starter's logo tile shows the image that ships with the dashboard through the shader made
+            # for it. The shader writes the near-black wordmark in the page's text color on a dark page.
+            logo_pixels = """
+                const image = document.querySelector('.dashboard-image[data-logo]');
+                const canvas = document.querySelector('.dashboard-image-shader');
+                if (image?.naturalWidth !== 1536 || !canvas || canvas.hidden || !canvas.width) return false;
+                const fit = Math.min(canvas.width / 1536, canvas.height / 512);
+                const at = (u, v) => [...canvas.getContext('2d').getImageData(
+                    Math.round((canvas.width - 1536 * fit) / 2 + u * 1536 * fit),
+                    Math.round((canvas.height - 512 * fit) / 2 + v * 512 * fit), 1, 1).data];
+                const text = getComputedStyle(canvas).color.match(/[\\d.]+/g).slice(0, 3).map(Number);
+                const ink = matchMedia('(prefers-color-scheme: dark)').matches ? text : [21, 3, 34];
+                const stem = at(0.377, 0.5);
+                const ring = at(0.3066, 0.66);
+                return stem[3] > 250 && stem.slice(0, 3).every((channel, i) => Math.abs(channel - ink[i]) <= 8)
+                    && ring[3] > 250 && ring[2] > ring[1] + 60 && at(0.5, 0.05)[3] < 40 && ring.join();
+            """
+            wait(logo_pixels)
+            # The shader is a loop that never rests: the rings keep turning, so their color keeps changing,
+            # while the wordmark stays as it is in every part of the loop.
+            ring_colors = set()
+            for _ in range(8):
+                time.sleep(0.6)
+                ring_color = execute(logo_pixels)
+                assert ring_color, "The logo's wordmark, ring or clear corner is wrong partway through the loop"
+                ring_colors.add(ring_color)
+            assert len(ring_colors) > 2, f"The logo's rings are not turning: {ring_colors}"
             execute("document.querySelector('#btn-customize').click();")
+            open_image_settings()
+            open_advanced()
+            # LadyflockLogo is built in beside Default and Breeze, and is never drawn as ASCII art.
+            assert execute("""
+                const shader = document.querySelector('#image-shader');
+                const ascii = document.querySelector('.image-shader-mode [data-mode=ascii]');
+                return shader.value === 'ladyflock-logo'
+                    && [...shader.options].slice(0, 3).map(option => option.textContent).join() === 'Default,Breeze,LadyflockLogo'
+                    && ascii.disabled && ascii.getAttribute('aria-pressed') === 'false'
+                    && document.querySelector('.image-remove-shader').classList.contains('hidden')
+                    && document.querySelector('.image-use-logo').classList.contains('hidden');
+            """)
+            # An imported image takes the logo's place and is shown as it is, without the logo's shader.
+            # Nothing has been saved in this profile yet, so the import also has to store the starter.
+            interact("#image-file", "value", {"text": str(local_file)})
+            wait_for_image(local_image, 40)
+            wait("""return !document.querySelector('#config-dialog').open
+                && !document.querySelector('.dashboard-image').hasAttribute('data-logo')
+                && document.querySelector('.dashboard-image').alt === 'Dashboard image'
+                && document.querySelector('.dashboard-image-shader').hidden;""")
+            command(port, session, "refresh", {})
+            wait_for_image(local_image, 40)
+            execute("document.querySelector('#btn-customize').click();")
+            open_image_settings()
+            assert execute("return document.querySelector('#image-shader').value;") == "default"
+            # The tile offers the logo again, and the logo replaces the stored image.
+            wait("return document.querySelector('.image-use-logo').getBoundingClientRect().width > 0;")
+            interact(".image-use-logo", "click", {})
+            wait("""return !document.querySelector('#config-dialog').open
+                && document.querySelector('.dashboard-image[data-logo]')?.naturalWidth === 1536
+                && !document.querySelector('.dashboard-image-shader').hidden;""")
+            command(port, session, "refresh", {})
+            wait("""return document.querySelector('.dashboard-image[data-logo]')?.naturalWidth === 1536
+                && !document.querySelector('.dashboard-image-shader').hidden;""")
+            # Remove image takes the logo away.
+            execute("document.querySelector('#btn-customize').click();")
+            open_image_settings()
+            interact(".image-remove", "click", {})
+            wait("""return !document.querySelector('#config-dialog').open && !!document.querySelector('.image-add')
+                && !document.querySelector('.dashboard-image');""")
+            # The rest of this test is about an imported image, so it starts without the logo tile.
+            execute("document.querySelector('.dash-card[data-widget-type=image] .dash-card-remove').click();")
+            wait("return !document.querySelector('.dash-card[data-widget-type=image]');")
             add_image_widget()
             open_advanced(keyboard=True)
             wait("return document.querySelector('#image-shader')?.value === 'default';")
@@ -843,7 +1190,10 @@ def test_graphical_image_widget(webdriver_binary):
             wait(f"return !!document.querySelector({json.dumps(first + ' .image-add')});")
             assert not execute(f"return !!document.querySelector({json.dumps(first + ' .dashboard-image')});")
             check_ascii(inverted=False)
-            print("PASS: Qt image import, fit/crop, shared shaders, Blit RGB, ASCII brightness and density, reload and removal verified")
+            print(
+                "PASS: Qt built-in logo and its shader, image import, fit/crop, shared shaders, Blit RGB, ASCII "
+                "brightness and density, reload and removal verified"
+            )
         finally:
             if session:
                 webdriver.request(port, "DELETE", f"/session/{session}")

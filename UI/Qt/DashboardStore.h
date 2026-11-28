@@ -57,6 +57,8 @@ public:
         String widget_type;
         i64 config_version { 1 };
         JsonObject config;
+        // A locked widget keeps its place while the board is arranged.
+        bool locked { false };
     };
 
     struct Placement {

@@ -13,6 +13,7 @@
 #include <AK/Random.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
+#include <LibCore/Resource.h>
 #include <LibURL/InternalURLs.h>
 #include <LibURL/Parser.h>
 #include <LibWebCommon/MimeSniff/Resource.h>
@@ -600,6 +601,8 @@ void DashboardPage::received_message(String const& name, JsonValue const& data)
         handle_items_clear_completed(request_id, params);
     else if (method == "images.load"sv)
         handle_image_load(request_id, params);
+    else if (method == "images.builtIn"sv)
+        handle_image_built_in(request_id, params);
     else if (method == "images.save"sv)
         handle_image_save(request_id, params);
     else if (method == "images.remove"sv)
@@ -793,6 +796,7 @@ void DashboardPage::handle_commit_layout(i64 request_id, JsonObject const& param
             inst.widget_type = wo.get_string("widgetType"sv).value_or(String {});
             inst.config_version = wo.get_integer<i64>("configVersion"sv).value_or(1);
             inst.config = wo.get_object("config"sv).value_or(JsonObject {});
+            inst.locked = wo.get_bool("locked"sv).value_or(false);
             widgets.append(move(inst));
         }
     }
@@ -1033,6 +1037,28 @@ void DashboardPage::handle_image_load(i64 request_id, JsonObject const& params)
     auto payload = dashboard_image_payload(image->mime_type, image->bytes.bytes());
     if (payload.is_error()) {
         reply_error(request_id, "Couldn’t load the saved image."sv);
+        return;
+    }
+    reply_ok(request_id, payload.release_value());
+}
+
+// A page cannot use a resource: image as a shader texture, because the image is not of the
+// page's origin. The images that ship with the dashboard reach it as data, like stored ones.
+void DashboardPage::handle_image_built_in(i64 request_id, JsonObject const& params)
+{
+    auto id = params.get_string("id"sv).value_or(String {});
+    if (id != "ladyflock-logo"sv) {
+        reply_error(request_id, "This built-in image is unavailable."sv);
+        return;
+    }
+    auto resource = Core::Resource::load_from_uri("resource://ladybird/about-pages/dashboard/ladyflock-logo.png"sv);
+    if (resource.is_error()) {
+        reply_error(request_id, "Couldn’t load the built-in image."sv);
+        return;
+    }
+    auto payload = dashboard_image_payload("image/png"sv, resource.value()->data());
+    if (payload.is_error()) {
+        reply_error(request_id, "Couldn’t load the built-in image."sv);
         return;
     }
     reply_ok(request_id, payload.release_value());

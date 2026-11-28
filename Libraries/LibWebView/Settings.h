@@ -69,7 +69,8 @@ struct Appearance {
     ShowBookmarksBar show_bookmarks_bar { ShowBookmarksBar::Never };
     ThemePreference interface_theme { ThemePreference::System };
     ThemePreference website_color_scheme { ThemePreference::System };
-    ColorTheme color_theme { ColorTheme::Neutral };
+    // A profile that has not chosen a color starts with Lavender, the theme closest to the Ladyflock mark.
+    ColorTheme color_theme { ColorTheme::Lavender };
 };
 
 enum class HostSetting : u8 {

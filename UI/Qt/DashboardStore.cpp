@@ -18,6 +18,7 @@ static constexpr u32 DASHBOARD_SCHEMA_VERSION_1 = 1u;
 static constexpr u32 DASHBOARD_SCHEMA_VERSION_2 = 2u;
 static constexpr u32 DASHBOARD_SCHEMA_VERSION_3 = 3u;
 static constexpr u32 DASHBOARD_SCHEMA_VERSION_4 = 4u;
+static constexpr u32 DASHBOARD_SCHEMA_VERSION_5 = 5u;
 
 ErrorOr<Database::MigrationOutcome> DashboardStore::migrate_schema(Database::Database& database, Database::MigrationMode mode)
 {
@@ -111,6 +112,10 @@ ErrorOr<Database::MigrationOutcome> DashboardStore::migrate_schema(Database::Dat
                 );
             )#"sv,
         },
+        {
+            .version = DASHBOARD_SCHEMA_VERSION_5,
+            .sql = "ALTER TABLE DashboardWidgets ADD COLUMN locked INTEGER NOT NULL DEFAULT 0;"sv,
+        },
     });
 
     return database.migrate("Dashboard"sv, migrations, mode);
@@ -128,9 +133,9 @@ ErrorOr<DashboardStore::Statements> DashboardStore::prepare_statements(Database:
             initialized = excluded.initialized,
             compact_mode = excluded.compact_mode;
     )#"sv));
-    s.list_widgets = TRY(db.prepare_statement("SELECT instance_id, widget_type, config_version, config_json FROM DashboardWidgets WHERE scope_key = ? ORDER BY instance_id ASC;"sv));
+    s.list_widgets = TRY(db.prepare_statement("SELECT instance_id, widget_type, config_version, config_json, locked FROM DashboardWidgets WHERE scope_key = ? ORDER BY instance_id ASC;"sv));
     s.delete_widgets = TRY(db.prepare_statement("DELETE FROM DashboardWidgets WHERE scope_key = ?;"sv));
-    s.insert_widget = TRY(db.prepare_statement("INSERT INTO DashboardWidgets(scope_key, instance_id, widget_type, config_version, config_json) VALUES (?, ?, ?, ?, ?);"sv));
+    s.insert_widget = TRY(db.prepare_statement("INSERT INTO DashboardWidgets(scope_key, instance_id, widget_type, config_version, config_json, locked) VALUES (?, ?, ?, ?, ?, ?);"sv));
     s.list_placements = TRY(db.prepare_statement("SELECT breakpoint, instance_id, col, row, w, h FROM DashboardPlacements WHERE scope_key = ? ORDER BY breakpoint ASC, row ASC, col ASC, instance_id ASC;"sv));
     s.delete_placements = TRY(db.prepare_statement("DELETE FROM DashboardPlacements WHERE scope_key = ?;"sv));
     s.insert_placement = TRY(db.prepare_statement("INSERT INTO DashboardPlacements(scope_key, breakpoint, instance_id, col, row, w, h) VALUES (?, ?, ?, ?, ?, ?, ?);"sv));
@@ -343,34 +348,41 @@ DashboardStore::LayoutSnapshot DashboardStore::build_starter_layout(bool is_ephe
             { "starter-calc"_string, 0, -2, 8, 12 },
         });
     } else {
-        JsonObject tasks_config;
-        tasks_config.set("listFilter"sv, ""_string);
-        snapshot.widgets.append({ "starter-tasks"_string, "quick-tasks"_string, 1, move(tasks_config) });
-
-        JsonObject scratchpad_config;
-        scratchpad_config.set("noteId"sv, "default-note"_string);
-        scratchpad_config.set("preview"sv, false);
-        snapshot.widgets.append({ "starter-scratchpad"_string, "scratchpad"_string, 1, move(scratchpad_config) });
+        // The logo stands over a row of tiles whose middle is the middle of the first screen.
+        // It is the image that ships with the dashboard, drawn with the shader made for it.
+        JsonObject logo_config;
+        logo_config.set("image"sv, "ladyflock-logo"_string);
+        logo_config.set("resizeMode"sv, "resize"_string);
+        logo_config.set("shaderId"sv, "ladyflock-logo"_string);
+        logo_config.set("shaderMode"sv, "blit"_string);
+        snapshot.widgets.append({ "starter-logo"_string, "image"_string, 1, move(logo_config) });
+        snapshot.widgets.append({ "starter-search"_string, "search-box"_string, 1, JsonObject {} });
+        snapshot.widgets.append({ "starter-downloads"_string, "downloads"_string, 1, JsonObject {} });
 
         snapshot.placements.set("wide"_string, Vector<Placement> {
-            { "starter-clock"_string, 0, -5, 16, 10 },
-            { "starter-tasks"_string, 16, -5, 16, 10 },
-            { "starter-scratchpad"_string, 32, -5, 16, 10 },
+            { "starter-logo"_string, 13, -14, 22, 12 },
+            { "starter-downloads"_string, 0, -2, 12, 4 },
+            { "starter-search"_string, 12, -2, 24, 4 },
+            { "starter-clock"_string, 36, -2, 12, 4 },
         });
+        // Downloads, Search Box and World Clock are too wide to share a row below the wide breakpoint.
         snapshot.placements.set("medium"_string, Vector<Placement> {
-            { "starter-clock"_string, 0, -5, 10, 10 },
-            { "starter-tasks"_string, 10, -5, 12, 10 },
-            { "starter-scratchpad"_string, 22, -5, 10, 10 },
+            { "starter-logo"_string, 5, -14, 22, 10 },
+            { "starter-search"_string, 4, -4, 24, 4 },
+            { "starter-downloads"_string, 4, 0, 12, 4 },
+            { "starter-clock"_string, 16, 0, 12, 4 },
         });
         snapshot.placements.set("narrow"_string, Vector<Placement> {
-            { "starter-clock"_string, 0, -14, 16, 8 },
-            { "starter-tasks"_string, 0, -6, 16, 10 },
-            { "starter-scratchpad"_string, 0, 4, 16, 10 },
+            { "starter-logo"_string, 0, -14, 16, 8 },
+            { "starter-search"_string, 0, -6, 16, 4 },
+            { "starter-downloads"_string, 0, -2, 16, 4 },
+            { "starter-clock"_string, 0, 2, 16, 4 },
         });
         snapshot.placements.set("compact"_string, Vector<Placement> {
-            { "starter-clock"_string, 0, -14, 8, 8 },
-            { "starter-tasks"_string, 0, -6, 8, 10 },
-            { "starter-scratchpad"_string, 0, 4, 8, 10 },
+            { "starter-logo"_string, 0, -12, 8, 6 },
+            { "starter-search"_string, 0, -6, 8, 4 },
+            { "starter-downloads"_string, 0, -2, 8, 4 },
+            { "starter-clock"_string, 0, 2, 8, 4 },
         });
     }
 
@@ -405,7 +417,8 @@ DashboardStore::LayoutSnapshot DashboardStore::read_layout_snapshot(String const
             JsonObject config;
             if (auto parsed = JsonValue::from_string(config_str); !parsed.is_error() && parsed.value().is_object())
                 config = parsed.value().as_object();
-            snapshot.widgets.append({ move(instance_id), move(widget_type), config_version, move(config) });
+            auto locked = m_database->result_column<i64>(stmt, 4) != 0;
+            snapshot.widgets.append({ move(instance_id), move(widget_type), config_version, move(config), locked });
             return {};
         },
         scope_key);
@@ -552,7 +565,7 @@ DashboardStore::CommitResult DashboardStore::commit_layout(
 
         for (auto const& w : widgets) {
             auto config_str = JsonValue { w.config }.serialized();
-            TRY(m_database->try_execute_statement(m_statements.insert_widget, {}, scope_key, w.instance_id, w.widget_type, w.config_version, config_str));
+            TRY(m_database->try_execute_statement(m_statements.insert_widget, {}, scope_key, w.instance_id, w.widget_type, w.config_version, config_str, w.locked ? i64 { 1 } : i64 { 0 }));
         }
 
         for (auto const& [bp, bp_placements] : placements) {
@@ -919,6 +932,7 @@ JsonObject DashboardStore::serialize_layout_snapshot(LayoutSnapshot const& snaps
         obj.set("widgetType"sv, w.widget_type);
         obj.set("configVersion"sv, w.config_version);
         obj.set("config"sv, w.config);
+        obj.set("locked"sv, w.locked);
         widgets_arr.must_append(move(obj));
     }
     out.set("widgets"sv, move(widgets_arr));

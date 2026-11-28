@@ -31,16 +31,41 @@ TEST_CASE(dashboard_store_starter_layouts_and_empty_persistence)
 
         auto starter = store->load_or_initialize_layout("default"_string, false);
         EXPECT(!starter.initialized);
-        EXPECT_EQ(starter.widgets.size(), 3uz);
+        EXPECT_EQ(starter.widgets.size(), 4uz);
         EXPECT_EQ(starter.widgets[0].widget_type, "world-clock"_string);
-        EXPECT_EQ(starter.widgets[1].widget_type, "quick-tasks"_string);
-        EXPECT_EQ(starter.widgets[2].widget_type, "scratchpad"_string);
+        EXPECT_EQ(starter.widgets[1].widget_type, "image"_string);
+        EXPECT_EQ(starter.widgets[2].widget_type, "search-box"_string);
+        EXPECT_EQ(starter.widgets[3].widget_type, "downloads"_string);
+        // The logo tile shows the image that ships with the dashboard through the shader made for it.
+        EXPECT_EQ(starter.widgets[1].config.get_string("image"sv).value_or({}), "ladyflock-logo"_string);
+        EXPECT_EQ(starter.widgets[1].config.get_string("shaderId"sv).value_or({}), "ladyflock-logo"_string);
+        EXPECT_EQ(starter.widgets[1].config.get_string("shaderMode"sv).value_or({}), "blit"_string);
+        for (auto const& widget : starter.widgets)
+            EXPECT(!widget.locked);
+
+        // The logo stands over a row of tiles whose middle is row zero, the middle of the first screen.
         auto const wide = starter.placements.get("wide"_string).value();
-        EXPECT_EQ(wide[0].row, -5);
-        EXPECT_EQ(wide[2].row + wide[2].h, 5);
-        auto const compact = starter.placements.get("compact"_string).value();
-        EXPECT_EQ(compact[0].row, -14);
-        EXPECT_EQ(compact[2].row + compact[2].h, 14);
+        EXPECT_EQ(wide.size(), 4uz);
+        EXPECT_EQ(wide[0].instance_id, "starter-logo"_string);
+        EXPECT_EQ(wide[0].col * 2 + wide[0].w, 48);
+        EXPECT_EQ(wide[0].row + wide[0].h, wide[1].row);
+        for (size_t i = 1; i < wide.size(); ++i)
+            EXPECT_EQ(wide[i].row * 2 + wide[i].h, 0);
+        EXPECT_EQ(wide[1].col, 0);
+        EXPECT_EQ(wide[3].col + wide[3].w, 48);
+
+        // Every breakpoint places all four tiles, and the store accepts the starter as it is.
+        for (auto breakpoint : { "wide"sv, "medium"sv, "narrow"sv, "compact"sv })
+            EXPECT_EQ(starter.placements.get(breakpoint).value().size(), 4uz);
+        {
+            QTemporaryDir scratch_dir;
+            VERIFY(scratch_dir.isValid());
+            auto scratch = DashboardStore::open_persistent(ByteString { scratch_dir.path().toUtf8().constData() }, true);
+            auto saved = scratch->commit_layout("default"_string, "op-starter"_string, 0, false, starter.widgets, starter.placements);
+            EXPECT(saved.ok);
+            EXPECT_EQ(saved.snapshot.widgets.size(), 4uz);
+            EXPECT_EQ(saved.snapshot.placements.get("compact"sv).value().size(), 4uz);
+        }
 
         // Save an intentionally empty customized layout.
         HashMap<String, Vector<DashboardStore::Placement>> empty_placements;
@@ -74,10 +99,11 @@ TEST_CASE(dashboard_store_migrates_saved_placements_to_finer_grid)
     auto dir_path = ByteString { temp_dir.path().toUtf8().constData() };
 
     {
-        // Re-create a version 1 profile with the old placement units and no image table.
+        // Re-create a version 1 profile with the old placement units, no image table and no lock column.
         auto db = MUST(Database::Database::create(dir_path, "Dashboard"sv));
         MUST(DashboardStore::migrate_schema(*db));
         MUST(db->execute_raw(R"#(
+            ALTER TABLE DashboardWidgets DROP COLUMN locked;
             INSERT INTO DashboardMeta VALUES ('default', 7, 1, 0);
             INSERT INTO DashboardWidgets VALUES ('default', 'clock', 'world-clock', 1, '{}');
             INSERT INTO DashboardPlacements VALUES ('default', 'wide', 'clock', 5, 510, 3, 2);
@@ -116,6 +142,7 @@ TEST_CASE(dashboard_store_migrates_saved_rows_relative_to_the_viewport_center)
         auto db = MUST(Database::Database::create(dir_path, "Dashboard"sv));
         MUST(DashboardStore::migrate_schema(*db));
         MUST(db->execute_raw(R"#(
+            ALTER TABLE DashboardWidgets DROP COLUMN locked;
             INSERT INTO DashboardMeta VALUES ('default', 5, 1, 0), ('workspace', 2, 1, 0);
             INSERT INTO DashboardWidgets VALUES
                 ('default', 'clock', 'world-clock', 1, '{}'),
@@ -186,6 +213,60 @@ TEST_CASE(dashboard_store_ephemeral_starter_and_conflict_validation)
     EXPECT(!stale_res.ok);
     EXPECT(stale_res.conflict);
     EXPECT_EQ(stale_res.snapshot.layout_revision, 1);
+}
+
+TEST_CASE(dashboard_store_keeps_widget_locks)
+{
+    QTemporaryDir temp_dir;
+    VERIFY(temp_dir.isValid());
+    auto dir_path = ByteString { temp_dir.path().toUtf8().constData() };
+    auto scope = "default"_string;
+
+    {
+        // A profile saved before widgets could be locked opens with every widget unlocked.
+        auto db = MUST(Database::Database::create(dir_path, "Dashboard"sv));
+        MUST(DashboardStore::migrate_schema(*db));
+        MUST(db->execute_raw(R"#(
+            ALTER TABLE DashboardWidgets DROP COLUMN locked;
+            INSERT INTO DashboardMeta VALUES ('default', 3, 1, 0);
+            INSERT INTO DashboardWidgets VALUES
+                ('default', 'clock', 'world-clock', 1, '{}'),
+                ('default', 'tasks', 'quick-tasks', 1, '{}');
+            INSERT INTO DashboardPlacements VALUES
+                ('default', 'wide', 'clock', 0, -4, 16, 8),
+                ('default', 'wide', 'tasks', 16, -4, 16, 8);
+            UPDATE SchemaVersions SET version = 4 WHERE store = 'Dashboard';
+        )#"sv));
+    }
+
+    {
+        auto store = DashboardStore::open_persistent(dir_path, true);
+        EXPECT_EQ(store->storage_status(), DashboardStore::StorageStatus::Persistent);
+        auto layout = store->load_or_initialize_layout(scope, false);
+        EXPECT_EQ(layout.widgets.size(), 2uz);
+        for (auto const& widget : layout.widgets)
+            EXPECT(!widget.locked);
+
+        for (auto& widget : layout.widgets)
+            widget.locked = widget.instance_id == "clock"sv;
+        auto committed = store->commit_layout(scope, "lock-clock"_string, 3, false, layout.widgets, layout.placements);
+        EXPECT(committed.ok);
+    }
+
+    // The lock is saved with the widget and reaches the page.
+    auto store = DashboardStore::open_persistent(dir_path, true);
+    auto layout = store->load_or_initialize_layout(scope, false);
+    EXPECT_EQ(layout.widgets.size(), 2uz);
+    for (auto const& widget : layout.widgets)
+        EXPECT_EQ(widget.locked, widget.instance_id == "clock"sv);
+
+    auto serialized = DashboardStore::serialize_layout_snapshot(layout);
+    auto const& widgets = serialized.get_array("widgets"sv).value();
+    for (size_t i = 0; i < widgets.size(); ++i) {
+        auto const& widget = widgets.at(i).as_object();
+        auto instance_id = widget.get_string("instanceId"sv).value_or(String {});
+        EXPECT_EQ(widget.get_bool("locked"sv).value_or(false), instance_id == "clock"sv);
+    }
 }
 
 TEST_CASE(dashboard_store_enforces_row_offsets_and_placement_height)

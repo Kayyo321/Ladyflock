@@ -40,12 +40,12 @@ export function mount(root, api) {
 
         const cap = tier === "compact" ? 1 : tier === "expanded" ? 12 : 5;
         const shown = state.items.slice(0, cap);
-        api.setMeta(`${state.items.length} saved`);
+        api.setMeta(state.items.length ? `${state.items.length} saved` : "");
 
         if (shown.length === 0) {
             const msg = document.createElement("div");
             msg.className = "dash-empty-card";
-            msg.textContent = "No recently closed tabs.";
+            msg.textContent = "Tabs you close will wait here.";
             listEl.append(msg);
             return;
         }

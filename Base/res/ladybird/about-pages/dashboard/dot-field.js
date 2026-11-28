@@ -2,8 +2,12 @@
  * Copyright (c) 2026-present, the Ladyflock developers.
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The pegboard draws sparse reference dots. The finer pegs around a tile appear
- * when it is moved, resized, or placed.
+ * The pegboard. One peg is drawn at every corner of the catalog's cells, in a lattice
+ * that is anchored on the center of the dashboard as a new tab shows it, so the field is
+ * the same on both sides of that center. The pegs on the two center lines are a little
+ * heavier, a small cross marks the center itself, and the pegs below the first screen
+ * are fainter. The finer pegs between them appear around a tile while it is moved,
+ * resized or placed, and the four pegs around a locked tile stay lit.
  *
  * The field is drawn on one canvas behind the tiles. It only draws in response to
  * something the person did (entering edit mode, dragging, dropping, scrolling), and it
@@ -14,10 +18,15 @@
  * page scrolls, so its size stays bounded however long the board grows.
  */
 
+import { GRID_STEPS_PER_CELL } from "./grid-engine.js";
+
 const BASE_RADIUS = 1.5;
-const MINOR_RADIUS = 1;
-const MINOR_OPACITY = 0.54;
-const DOT_INTERVAL = 5;
+const AXIS_RADIUS = 1.9;
+// Multiples of the theme's dot opacity.
+const AXIS_OPACITY = 1.7;
+const BELOW_FOLD_OPACITY = 0.5;
+const CENTER_ARM = 5.5;
+const CENTER_TINT = 0.75;
 const SETTLE_MS = 70;
 const WAVE_SPEED = 2.2; // CSS px per ms
 const MAX_WINDOW_HEIGHTS = 2;
@@ -39,6 +48,7 @@ export function createDotField(canvas) {
     let dots = []; // Positions relative to the board, limited to the canvas slice.
     let visible = false;
     let footprint = null; // { col, row, w, h, tone }
+    let anchors = new Set(); // Keys of the pegs at the corners of locked tiles.
     let frame = 0;
     let lastTime = 0;
     let colors = { base: [128, 128, 128], accent: [10, 122, 255], warn: [200, 60, 50], alpha: 0.25 };
@@ -104,6 +114,8 @@ export function createDotField(canvas) {
             || geometry.cols !== next.cols
             || geometry.height !== next.height
             || geometry.originY !== next.originY
+            || geometry.rowShift !== next.rowShift
+            || geometry.viewportHeight !== next.viewportHeight
             || Math.abs(geometry.unitX - next.unitX) > 0.01
             || Math.abs(geometry.unitY - next.unitY) > 0.01
             || geometry.gap !== next.gap
@@ -120,6 +132,8 @@ export function createDotField(canvas) {
             && previous.cols === next.cols
             && previous.rtl === next.rtl
             && previous.originY === next.originY
+            && previous.rowShift === next.rowShift
+            && previous.viewportHeight === next.viewportHeight
             && Math.abs(previous.unitX - next.unitX) <= 0.01
             && Math.abs(previous.unitY - next.unitY) <= 0.01
             && previous.gap === next.gap;
@@ -129,7 +143,11 @@ export function createDotField(canvas) {
     }
 
     function syncSliceDots(keep) {
-        const { cols, unitX, unitY, originY, inlineInset, gap, width, rtl } = geometry;
+        const { cols, unitX, unitY, originY, inlineInset, gap, width, rtl, rowShift, viewportHeight } = geometry;
+        // The lattice is counted from the center of the first screen, which every breakpoint
+        // puts on a whole column and a whole row.
+        const centerCol = cols / 2;
+        const centerRow = -rowShift;
         const firstRow = Math.floor((sliceTop - originY + gap / 2 - 8) / unitY);
         const lastRow = Math.ceil((sliceTop + sliceHeight - originY + gap / 2 + 8) / unitY);
         const previous = new Map();
@@ -139,7 +157,6 @@ export function createDotField(canvas) {
         }
 
         dots = [];
-        const columnInterval = Math.min(DOT_INTERVAL, cols / 4);
         for (let j = firstRow; j <= lastRow; ++j) {
             for (let i = 0; i <= cols; ++i) {
                 const prior = previous.get(j * (cols + 1) + i);
@@ -147,16 +164,20 @@ export function createDotField(canvas) {
                     dots.push(prior);
                     continue;
                 }
-                const major = j % DOT_INTERVAL === 0 && (i - cols / 2) % columnInterval === 0;
-                const minor = (j - Math.floor(DOT_INTERVAL / 2)) % DOT_INTERVAL === 0
-                    && (i - cols / 2 - Math.floor(columnInterval / 2)) % columnInterval === 0;
-                const restAlpha = major ? 1 : minor ? MINOR_OPACITY : 0;
-                const restRadius = minor ? MINOR_RADIUS : BASE_RADIUS;
+                const peg = (i - centerCol) % GRID_STEPS_PER_CELL === 0 && (j - centerRow) % GRID_STEPS_PER_CELL === 0;
+                const center = i === centerCol && j === centerRow;
+                const onAxis = peg && (i === centerCol || j === centerRow);
                 const inlineX = inlineInset + i * unitX - gap / 2;
+                const y = originY + j * unitY - gap / 2;
+                let restAlpha = 0;
+                if (peg)
+                    restAlpha = (onAxis ? AXIS_OPACITY : 1) * (y > viewportHeight + 1 ? BELOW_FOLD_OPACITY : 1);
+                const restRadius = onAxis ? AXIS_RADIUS : BASE_RADIUS;
                 dots.push({
-                    i, j, major, restAlpha, restRadius,
+                    i, j, peg, center, restAlpha, restRadius,
+                    restTint: center ? CENTER_TINT : 0,
                     x: rtl ? width - inlineX : inlineX,
-                    y: originY + j * unitY - gap / 2,
+                    y,
                     r: restRadius,
                     a: visible ? restAlpha : 0,
                     k: 0,
@@ -175,8 +196,16 @@ export function createDotField(canvas) {
         for (const dot of dots) {
             dot.tr = dot.restRadius;
             dot.ta = visible ? dot.restAlpha : 0;
-            dot.tk = 0;
-            if (!visible || !footprint)
+            dot.tk = visible ? dot.restTint : 0;
+            dot.tone = 0;
+            if (!visible)
+                continue;
+            if (anchors.has(`${dot.i},${dot.j}`)) {
+                dot.tr = 2.5;
+                dot.ta = 1;
+                dot.tk = 0.85;
+            }
+            if (!footprint)
                 continue;
 
             const left = footprint.col;
@@ -185,9 +214,10 @@ export function createDotField(canvas) {
             const bottom = footprint.row + footprint.h;
             const dx = dot.i < left ? left - dot.i : dot.i > right ? dot.i - right : 0;
             const dy = dot.j < top ? top - dot.j : dot.j > bottom ? dot.j - bottom : 0;
-            dot.tone = footprint.tone === "warn" ? 1 : 0;
+            const tone = footprint.tone === "warn" ? 1 : 0;
 
             if (dx === 0 && dy === 0) {
+                dot.tone = tone;
                 const onColumnEdge = dot.i === left || dot.i === right;
                 const onRowEdge = dot.j === top || dot.j === bottom;
                 if (onColumnEdge && onRowEdge) {
@@ -197,17 +227,18 @@ export function createDotField(canvas) {
                     || (onRowEdge && (dot.i - left) % 2 === 0)) {
                     dot.tr = 1.7;
                     dot.ta = dot.tk = 0.72;
-                } else if (dot.major) {
-                    dot.tk = 0.45;
+                } else if (dot.peg) {
+                    dot.tk = Math.max(dot.tk, 0.45);
                 }
                 continue;
             }
 
             const distance = Math.hypot(dx, dy);
-            if (dot.major && distance <= 2.3) {
+            if (dot.peg && distance <= 2.3) {
                 const nearness = 1 - distance / 2.3;
-                dot.tr = BASE_RADIUS + nearness * 0.9;
-                dot.tk = nearness * 0.55;
+                dot.tone = tone;
+                dot.tr = Math.max(dot.tr, dot.restRadius + nearness * 0.9);
+                dot.tk = Math.max(dot.tk, nearness * 0.55);
             }
         }
     }
@@ -266,10 +297,29 @@ export function createDotField(canvas) {
             const red = Math.round(br + (ar - br) * k);
             const green = Math.round(bg + (ag - bg) * k);
             const blue = Math.round(bb + (ab - bb) * k);
-            const alpha = (colors.alpha + (1 - colors.alpha) * k) * dot.a;
-            g.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(3)})`;
+            // A resting peg has the theme's dot opacity, or a multiple of it; a lit one is opaque.
+            const rest = Math.min(1, colors.alpha * dot.a);
+            const alpha = rest + (Math.min(1, dot.a) - rest) * k;
+            const color = `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(3)})`;
+            const x = dot.x + pad;
+            const y = dot.y - sliceTop;
+            if (dot.center) {
+                // The center of the dashboard is a cross instead of a peg.
+                const arm = CENTER_ARM * Math.max(0.2, dot.r) / AXIS_RADIUS;
+                g.strokeStyle = color;
+                g.lineWidth = 1.6;
+                g.lineCap = "round";
+                g.beginPath();
+                g.moveTo(x - arm, y);
+                g.lineTo(x + arm, y);
+                g.moveTo(x, y - arm);
+                g.lineTo(x, y + arm);
+                g.stroke();
+                continue;
+            }
+            g.fillStyle = color;
             g.beginPath();
-            g.arc(dot.x + pad, dot.y - sliceTop, Math.max(0.2, dot.r), 0, Math.PI * 2);
+            g.arc(x, y, Math.max(0.2, dot.r), 0, Math.PI * 2);
             g.fill();
         }
 
@@ -299,7 +349,7 @@ export function createDotField(canvas) {
             for (const dot of dots) {
                 // The whole field is already visible while the ripple travels.
                 dot.a = Math.max(dot.a, dot.restAlpha * 0.6);
-                if (!dot.major)
+                if (!dot.peg)
                     continue;
                 dot.revealAt = now + Math.hypot(dot.x - ox, dot.y - oy) / WAVE_SPEED;
             }
@@ -355,6 +405,22 @@ export function createDotField(canvas) {
         requestDraw();
     }
 
+    // The pegs at the four corners of each of `rects` stay lit: they hold a locked tile.
+    function setAnchors(rects) {
+        const next = new Set();
+        for (const rect of rects) {
+            for (const i of [rect.col, rect.col + rect.w]) {
+                for (const j of [rect.row, rect.row + rect.h])
+                    next.add(`${i},${j}`);
+            }
+        }
+        if (next.size === anchors.size && [...next].every(key => anchors.has(key)))
+            return;
+        anchors = next;
+        computeTargets();
+        requestDraw();
+    }
+
     function refreshColors() {
         readColors();
         requestDraw();
@@ -375,5 +441,5 @@ export function createDotField(canvas) {
     window.addEventListener("scroll", onViewportChange, { passive: true });
     window.addEventListener("resize", onViewportChange);
 
-    return { setGeometry, show, hide, setFootprint, pulse, refreshColors, isVisible: () => visible };
+    return { setGeometry, show, hide, setFootprint, setAnchors, pulse, refreshColors, isVisible: () => visible };
 }

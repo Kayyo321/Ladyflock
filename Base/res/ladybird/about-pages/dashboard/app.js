@@ -7,6 +7,10 @@
  * The dashboard is a pegboard. Tiles hang on a grid of pegs that stays out of sight
  * until the board is being edited. Smaller snap steps between the visible dots
  * allow precise placement and resizing without crowding the editing surface.
+ *
+ * Customizing has two views, switched at the top of the window: Edit, where tiles are
+ * arranged, and Preview, which shows the board exactly as a new tab will. Everything that
+ * helps with centering refers to that new tab: the middle of the board's first screen.
  */
 
 import { onDashboardEvent, request, setExpectedGeneration, waitForBridge } from "./bridge.js";
@@ -23,6 +27,7 @@ import {
     getBreakpointByName,
     getBreakpointForWidth,
     projectPlacements,
+    rectsOverlap,
     resolveLayout,
     resizeLimits,
     snapResizePlacement,
@@ -48,11 +53,9 @@ const gridWrapEl = document.getElementById("dashboard-grid-wrap");
 const boardEl = document.getElementById("dashboard-board");
 const gridEl = document.getElementById("dashboard-grid");
 const landingEl = document.getElementById("dashboard-landing");
-const guideX = document.createElement("div");
-const guideY = document.createElement("div");
-guideX.className = "dash-guide dash-guide-vertical";
-guideY.className = "dash-guide dash-guide-horizontal";
-guideX.hidden = guideY.hidden = true;
+const foldEl = document.getElementById("dashboard-fold");
+const guideX = createGuide("vertical");
+const guideY = createGuide("horizontal");
 document.getElementById("dashboard-guides").append(guideX, guideY);
 const emptyEl = document.getElementById("dashboard-empty");
 const bannerEl = document.getElementById("dashboard-banner");
@@ -67,6 +70,9 @@ const btnCustomize = document.getElementById("btn-customize");
 const customizeWrapEl = document.getElementById("customize-wrap");
 const btnCustomizeHide = document.getElementById("btn-customize-hide");
 const btnDoneEdit = document.getElementById("btn-done-edit");
+const modeSwitchEl = document.getElementById("mode-switch");
+const btnModeEdit = document.getElementById("btn-mode-edit");
+const btnModePreview = document.getElementById("btn-mode-preview");
 const btnAddWidget = document.getElementById("btn-add-widget");
 const btnPresets = document.getElementById("btn-presets");
 const btnCompact = document.getElementById("btn-compact");
@@ -90,6 +96,19 @@ const confirmExtra = document.getElementById("confirm-dialog-extra");
 const confirmAccept = document.getElementById("confirm-dialog-accept");
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+// A guide is a line through the center of the tile in hand. Its label is shown only when
+// the line is the center of the dashboard itself.
+function createGuide(direction) {
+    const guide = document.createElement("div");
+    guide.className = `dash-guide dash-guide-${direction}`;
+    guide.hidden = true;
+    const label = document.createElement("span");
+    label.className = "dash-guide-label";
+    label.textContent = "Center";
+    guide.append(label);
+    return guide;
+}
 
 // Glyphs for the controls declared in the page markup.
 for (const el of document.querySelectorAll("[data-icon]"))
@@ -149,7 +168,12 @@ const MAX_UNDO = 30;
 let ctx = null;
 let layout = { layoutRevision: 0, initialized: false, compactMode: false, widgets: [], placements: {} };
 let currentBp = getBreakpointForWidth(window.innerWidth);
+// A customize session is open: the board is being arranged, or its result previewed.
+let isCustomizing = false;
+// Tiles can be arranged right now. False while previewing.
 let isEditing = false;
+// Where the page was scrolled to when Preview took it back to the top.
+let scrollBeforePreview = null;
 // Whether the person hid the Customize button, for the session or for good.
 let customizeHidden = false;
 let selectedId = null;
@@ -402,12 +426,65 @@ function restoreFocusAfterCommit(focusInstanceId) {
         (isEditing ? btnAddWidget : emptyAddBtn).focus();
 }
 
+// --- Locked tiles ---------------------------------------------------------------------
+//
+// A locked tile stays where it was put. It cannot be picked up, resized or swapped, nothing
+// that happens to another tile moves it, and other tiles do not take their alignment from it.
+
+function lockedIds() {
+    return layout.widgets.filter(w => w.locked).map(w => w.instanceId);
+}
+
+function isLocked(instanceId) {
+    return layout.widgets.some(w => w.instanceId === instanceId && w.locked);
+}
+
+// Lays `placements` out around the tiles in `movingIds` and around every locked tile.
+function solveLayout(placements, movingIds, m, compactMode = layout.compactMode) {
+    return resolveLayout(placements, [...movingIds, ...lockedIds()], m.cols, compactMode, m.minRow);
+}
+
+async function handleToggleLock(instanceId) {
+    const inst = layout.widgets.find(w => w.instanceId === instanceId);
+    if (!inst)
+        return;
+    const def = getWidgetDef(inst.widgetType);
+    const title = def ? def.title : "the tile";
+    const locked = !inst.locked;
+    const nextWidgets = layout.widgets.map(w => (w.instanceId === instanceId ? { ...w, locked } : w));
+    const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, currentPlacements());
+    await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, {
+        announcement: locked ? `Locked ${title} in place.` : `Unlocked ${title}.`,
+        focusInstanceId: instanceId,
+        pulseId: locked ? instanceId : null,
+    });
+}
+
+// Something tried to move a locked tile: its lock shakes its head.
+function refuseLocked(instanceId) {
+    const section = mountedCards.get(instanceId)?.chrome.section;
+    if (section && !reducedMotion.matches) {
+        section.classList.add("is-refusing");
+        setTimeout(() => section.classList.remove("is-refusing"), 400);
+    }
+    announce("This tile is locked. Unlock it to move, resize or swap it.");
+    setSaveStatus("Locked in place", true);
+}
+
+function syncLockAnchors(placements) {
+    const locked = new Set(lockedIds());
+    dots.setAnchors(isEditing ? placements.filter(p => locked.has(p.instanceId)) : []);
+}
+
 // --- Geometry -----------------------------------------------------------------------
 
 function isRtl() {
     return getComputedStyle(boardEl).direction === "rtl";
 }
 
+// The board's first screen, from its top to `viewportHeight`, is what a new tab shows. Its
+// center is the dashboard's center: horizontally the middle column, vertically row
+// `-rowShift`, which is row zero unless a short window had to move the rows down.
 function metrics(placements = currentPlacements()) {
     const width = boardEl.clientWidth;
     const { cols, gap, rowHeight } = currentBp;
@@ -440,19 +517,28 @@ function rectFor(placement, m) {
 
 function applyBoardSize(placements, m) {
     const lastRow = Math.max(m.minRow, ...placements.map(p => p.row + p.h));
-    // Leave room below occupied rows for scrolling while dragging, and fill
-    // the window even when there are no tiles.
-    const endRow = Math.min(MAX_GRID_ROWS, lastRow + (isEditing ? EXTRA_EDIT_ROWS : 0));
-    const bottomClearance = !isEditing && !bannerEl.classList.contains("hidden")
-        ? Math.max(TILE_BOTTOM_CLEARANCE, m.viewportHeight - footerEl.getBoundingClientRect().top + 8)
-        : TILE_BOTTOM_CLEARANCE;
-    const height = Math.max(
-        m.viewportHeight,
-        m.originY + endRow * m.unitY - m.gap,
-        m.originY + lastRow * m.unitY - m.gap + bottomClearance,
-    );
+    const tilesEnd = m.originY + lastRow * m.unitY - m.gap;
+    // The page scrolls only as far as there are tiles to see. While every tile ends on the
+    // first screen the board is exactly that screen and nothing scrolls. Once a tile reaches
+    // below it, the board runs on far enough for that tile to clear the controls at the bottom.
+    let height = m.viewportHeight;
+    if (tilesEnd > m.viewportHeight) {
+        const overControls = isEditing || !bannerEl.classList.contains("hidden");
+        height = tilesEnd + Math.max(
+            TILE_BOTTOM_CLEARANCE,
+            overControls ? m.viewportHeight - footerEl.getBoundingClientRect().top + 8 : 0,
+        );
+    }
+    // A tile in hand has room below the lowest tile to be carried to.
+    if (gestureState) {
+        const endRow = Math.min(MAX_GRID_ROWS, lastRow + EXTRA_EDIT_ROWS);
+        height = Math.max(height, m.originY + endRow * m.unitY - m.gap);
+    }
     boardEl.style.height = `${height}px`;
     boardEl.style.setProperty("--tile-gap", `${m.gap}px`);
+    // While arranging, a board that runs past its first screen shows where that screen ends.
+    foldEl.hidden = !isEditing || height < m.viewportHeight + m.unitY;
+    foldEl.style.top = `${m.viewportHeight}px`;
     dots.setGeometry({ ...m, height });
 }
 
@@ -461,6 +547,33 @@ function positionTile(section, placement, m) {
     section.style.width = `${rect.w}px`;
     section.style.height = `${rect.h}px`;
     section.style.translate = `${rect.x}px ${rect.y}px`;
+}
+
+// The Edit and Preview switch floats over the board's top corner. A tile whose options button
+// would sit underneath it wears the button just below the switch instead. This works from where
+// tiles are going, not where a transition has them now.
+function keepMenusClearOfModeSwitch(placements = currentPlacements(), m = metrics(placements)) {
+    const board = boardEl.getBoundingClientRect();
+    // The switch is fixed to the window, so its offsets are window coordinates, and they do not
+    // move while it slides in.
+    const guardLeft = modeSwitchEl.offsetLeft - 6;
+    const guardRight = modeSwitchEl.offsetLeft + modeSwitchEl.offsetWidth + 6;
+    const guardBottom = modeSwitchEl.offsetTop + modeSwitchEl.offsetHeight + 6;
+    for (const p of placements) {
+        const chrome = mountedCards.get(p.instanceId)?.chrome;
+        if (!chrome)
+            continue;
+        chrome.section.style.removeProperty("--menu-drop");
+        if (!isEditing)
+            continue;
+        const rect = rectFor(p, m);
+        const left = board.left + rect.x + chrome.menuBtn.offsetLeft;
+        const top = board.top + rect.y + chrome.menuBtn.offsetTop;
+        const covered = left < guardRight && left + chrome.menuBtn.offsetWidth > guardLeft
+            && top < guardBottom && top + chrome.menuBtn.offsetHeight > modeSwitchEl.offsetTop - 6;
+        if (covered)
+            chrome.section.style.setProperty("--menu-drop", `${Math.ceil(guardBottom + 2 - top)}px`);
+    }
 }
 
 function positionLanding(placement, m) {
@@ -537,8 +650,10 @@ function mountWidgetIntoCard(entry) {
                 tier,
                 request,
                 onEvent: onDashboardEvent,
+                // A count of nothing is left out. Every tile that reports one also says it is empty
+                // in its own words, or shows the same zero as a figure.
                 setMeta: text => {
-                    chrome.metaEl.textContent = text || "";
+                    chrome.metaEl.textContent = /^0\s/.test(text || "") ? "" : text || "";
                 },
                 openUrl: (url, newTab = false) => request("navigation.openUrl", { url, newTab }),
                 openSettings: () => openConfigureDialog(instance.instanceId),
@@ -581,6 +696,10 @@ const cardHandlers = {
     isEditing: () => isEditing,
     isSwapMode: () => Boolean(swapSourceId),
     cardCount: () => layout.widgets.length,
+    movableCount: () => layout.widgets.filter(w => !w.locked).length,
+    isLocked: id => isLocked(id),
+    onToggleLock: id => handleToggleLock(id),
+    onRefuseLocked: id => refuseLocked(id),
     cols: () => currentBp.cols,
     getPlacement: id => currentPlacements().find(p => p.instanceId === id) || null,
     hasConfigure: id => Boolean(mountedCards.get(id)?.hasConfigure),
@@ -596,8 +715,12 @@ const cardHandlers = {
             selectTile(id);
     },
     onStartSwap: id => {
+        if (isLocked(id)) {
+            refuseLocked(id);
+            return;
+        }
         if (!isEditing)
-            setEditing(true);
+            setMode("edit");
         swapSourceId = id;
         selectTile(null);
         updateToolbarState();
@@ -633,6 +756,7 @@ function renderGrid() {
 
     const m = metrics(placements);
     applyBoardSize(placements, m);
+    syncLockAnchors(placements);
 
     const firstRender = !hasRenderedOnce;
     const ordered = sortReadingOrder(placements);
@@ -669,6 +793,7 @@ function renderGrid() {
 
     hasRenderedOnce = true;
     refreshTileStates();
+    keepMenusClearOfModeSwitch(placements, m);
     updateDotVisibility();
     scheduleDomOrderSync(firstRender ? 0 : SETTLE_MS);
 }
@@ -710,10 +835,13 @@ function refreshTileStates() {
         const el = entry.chrome.section;
         el.classList.toggle("is-selected", isEditing && selectedId === id && !swapSourceId);
         el.classList.toggle("is-swap-source", swapSourceId === id);
-        el.classList.toggle("is-swap-target", Boolean(swapSourceId && swapSourceId !== id));
+        const locked = Boolean(entry.instance.locked);
+        entry.chrome.setLocked(locked);
+        el.classList.toggle("is-swap-target", Boolean(swapSourceId && swapSourceId !== id && !locked));
         entry.chrome.face.inert = isEditing;
         entry.chrome.dragBtn.tabIndex = isEditing ? 0 : -1;
-        entry.chrome.removeBtn.tabIndex = isEditing ? 0 : -1;
+        entry.chrome.removeBtn.tabIndex = isEditing && !locked ? 0 : -1;
+        entry.chrome.lockBtn.tabIndex = isEditing && locked ? 0 : -1;
     }
 }
 
@@ -735,11 +863,19 @@ function updateDotVisibility(origin = null) {
 }
 
 function updateToolbarState() {
+    const isPreviewing = isCustomizing && !isEditing;
     rootEl.classList.toggle("is-editing", isEditing);
+    rootEl.classList.toggle("is-previewing", isPreviewing);
     gridEl.classList.toggle("is-editing", isEditing);
-    editToolbarEl.classList.toggle("hidden", !isEditing);
-    customizeWrapEl.classList.toggle("hidden", isEditing || customizeHidden);
-    gridWrapEl.tabIndex = customizeHidden && !isEditing ? 0 : -1;
+    // The dock keeps only its Done button while previewing.
+    editToolbarEl.classList.toggle("hidden", !isCustomizing);
+    editToolbarEl.classList.toggle("is-preview", isPreviewing);
+    modeSwitchEl.classList.toggle("hidden", !isCustomizing);
+    modeSwitchEl.dataset.mode = isPreviewing ? "preview" : "edit";
+    btnModeEdit.setAttribute("aria-pressed", isPreviewing ? "false" : "true");
+    btnModePreview.setAttribute("aria-pressed", isPreviewing ? "true" : "false");
+    customizeWrapEl.classList.toggle("hidden", isCustomizing || customizeHidden);
+    gridWrapEl.tabIndex = customizeHidden && !isCustomizing ? 0 : -1;
     if (gridWrapEl.tabIndex === 0)
         gridWrapEl.setAttribute("aria-description", "Press Enter for dashboard options.");
     else
@@ -756,30 +892,60 @@ function updateToolbarState() {
         hint = `Choose a tile to swap with ${def ? getWidgetShortTitle(def) : "this tile"}`;
         showCancel = true;
     } else if (isEditing && selectedId && !picker.isOpen()) {
-        hint = "Drag it, or click an open spot to move it there";
+        hint = isLocked(selectedId)
+            ? "Locked in place. Unlock it to move or resize it"
+            : "Drag it, or click an open spot to move it there";
     }
     swapTextEl.textContent = hint;
     swapCancelBtn.classList.toggle("hidden", !showCancel);
     swapBannerEl.classList.toggle("hidden", !hint);
 }
 
-function setEditing(next, origin = null) {
-    if (isEditing === next)
+// "view" is the dashboard as a new tab shows it. "edit" and "preview" are the two sides of a
+// customize session: arranging the tiles, and looking at the result without leaving.
+function setMode(mode, origin = null) {
+    const nextEditing = mode === "edit";
+    const nextCustomizing = mode !== "view";
+    if (isEditing === nextEditing && isCustomizing === nextCustomizing)
         return;
-    if (!next) {
+    if (gestureState)
+        cancelPointerGesture();
+    if (!nextEditing) {
         clearSwapMode();
         picker.close();
         closeCardMenus(false);
     }
-    isEditing = next;
+    const wasPreviewing = isCustomizing && !isEditing;
+    isEditing = nextEditing;
+    isCustomizing = nextCustomizing;
     selectedId = null;
     clearHoverCell();
     updateToolbarState();
     refreshTileStates();
-    const m = metrics();
-    applyBoardSize(currentPlacements(), m);
+    const placements = currentPlacements();
+    const m = metrics(placements);
+    applyBoardSize(placements, m);
+    syncLockAnchors(placements);
+    keepMenusClearOfModeSwitch(placements, m);
     updateDotVisibility(origin);
-    announce(next ? "Editing the dashboard. Tiles snap to the dot grid." : "Finished editing the dashboard.");
+
+    // A new tab opens at the top of the board, so that is what Preview shows. Going back
+    // to Edit returns to the part of the board that was being worked on.
+    if (mode === "preview") {
+        scrollBeforePreview = window.scrollY;
+        window.scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
+    } else {
+        if (mode === "edit" && wasPreviewing && scrollBeforePreview)
+            window.scrollTo({ top: scrollBeforePreview, behavior: "auto" });
+        scrollBeforePreview = null;
+    }
+
+    if (mode === "preview")
+        announce("Previewing the dashboard as a new tab shows it.");
+    else if (mode === "edit")
+        announce(wasPreviewing ? "Back to editing the dashboard." : "Editing the dashboard. Tiles snap to the dot grid.");
+    else
+        announce("Finished editing the dashboard.");
 }
 
 function clearSwapMode() {
@@ -795,10 +961,14 @@ async function completeSwap(targetId) {
         clearSwapMode();
         return;
     }
+    if (isLocked(targetId)) {
+        refuseLocked(targetId);
+        return;
+    }
     const srcId = swapSourceId;
     clearSwapMode();
     const cur = currentPlacements();
-    const swapped = swapPlacements(cur, srcId, targetId, currentBp.cols, layout.compactMode, metrics(cur).minRow);
+    const swapped = swapPlacements(cur, srcId, targetId, currentBp.cols, layout.compactMode, metrics(cur).minRow, lockedIds());
     if (!swapped.ok) {
         announce(swapped.error);
         setSaveStatus(swapped.error, true);
@@ -847,12 +1017,10 @@ async function handleAddWidget(def, { tier = null, placement = null } = {}) {
     let nextCur;
     let landed;
     if (placement) {
-        const resolved = resolveLayout(
+        const resolved = solveLayout(
             [...cur, { instanceId: inst.instanceId, col: placement.col, row: placement.row, w: placement.w, h: placement.h }],
             [inst.instanceId],
-            currentBp.cols,
-            layout.compactMode,
-            m.minRow
+            m
         );
         if (!resolved.ok) {
             announce(resolved.error);
@@ -890,6 +1058,9 @@ async function handleReplaceWidget(newDef, oldInstanceId) {
     if (!oldPlacement)
         return;
     const inst = newInstance(newDef);
+    // A locked spot stays locked for the widget that takes it over.
+    if (isLocked(oldInstanceId))
+        inst.locked = true;
     const nextWidgets = layout.widgets.map(w => (w.instanceId === oldInstanceId ? inst : w));
     const effSizes = effectiveSizesForBreakpoint(newDef.sizes, currentBp.cols);
     const snapped = snapResizeSize(oldPlacement.w, oldPlacement.h, effSizes);
@@ -904,7 +1075,7 @@ async function handleReplaceWidget(newDef, oldInstanceId) {
             }
             : p
     );
-    const resolved = resolveLayout(next, [inst.instanceId], currentBp.cols, layout.compactMode, metrics(cur).minRow);
+    const resolved = solveLayout(next, [inst.instanceId], metrics(cur));
     if (!resolved.ok) {
         announce(resolved.error);
         return;
@@ -928,7 +1099,7 @@ async function handleRemoveWidget(instanceId) {
     const nextWidgets = layout.widgets.filter(w => w.instanceId !== instanceId);
     const remaining = cur.filter(p => p.instanceId !== instanceId);
     const resolved = layout.compactMode
-        ? resolveLayout(remaining, [], currentBp.cols, true, metrics(cur).minRow)
+        ? solveLayout(remaining, [], metrics(cur), true)
         : { ok: true, placements: remaining };
     const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, resolved.placements);
     const def = getWidgetDef(layout.widgets.find(w => w.instanceId === instanceId)?.widgetType);
@@ -943,7 +1114,7 @@ async function handleRemoveWidget(instanceId) {
 async function commitTilePlacement(instanceId, candidate, announcement) {
     const cur = currentPlacements();
     const next = cur.map(p => (p.instanceId === instanceId ? { ...p, ...candidate, instanceId } : p));
-    const resolved = resolveLayout(next, [instanceId], currentBp.cols, layout.compactMode, metrics(cur).minRow);
+    const resolved = solveLayout(next, [instanceId], metrics(cur));
     if (!resolved.ok) {
         announce(resolved.error);
         setSaveStatus(resolved.error, true);
@@ -961,6 +1132,10 @@ async function handleResizeTo(instanceId, targetW, targetH) {
     const target = currentPlacements().find(p => p.instanceId === instanceId);
     if (!target)
         return;
+    if (isLocked(instanceId)) {
+        refuseLocked(instanceId);
+        return;
+    }
     await commitTilePlacement(
         instanceId,
         { col: Math.min(target.col, currentBp.cols - targetW), row: target.row, w: targetW, h: targetH },
@@ -973,6 +1148,10 @@ async function handleKeyboardMove(instanceId, dx, dy) {
     const target = placements.find(p => p.instanceId === instanceId);
     if (!target)
         return;
+    if (isLocked(instanceId)) {
+        refuseLocked(instanceId);
+        return;
+    }
     const { minRow } = metrics(placements);
     const col = Math.max(0, Math.min(target.col + dx, currentBp.cols - target.w));
     const row = Math.max(minRow, Math.min(target.row + dy, MAX_GRID_ROWS - target.h));
@@ -1005,7 +1184,7 @@ function beginPointerGesture(instanceId, mode, point) {
     const base = currentPlacements();
     const start = base.find(p => p.instanceId === instanceId);
     const entry = mountedCards.get(instanceId);
-    if (!start || !entry)
+    if (!start || !entry || isLocked(instanceId))
         return;
     closeCardMenus(false);
     clearHoverCell();
@@ -1074,7 +1253,8 @@ function resolvePreview(candidate) {
 
     // Dropping a tile exactly onto another of the same size trades their places.
     if (gs.mode === "move") {
-        const twin = others.find(p => p.col === candidate.col && p.row === candidate.row && p.w === candidate.w && p.h === candidate.h);
+        const twin = others.find(p => p.col === candidate.col && p.row === candidate.row && p.w === candidate.w && p.h === candidate.h
+            && !isLocked(p.instanceId));
         if (twin) {
             const swapped = gs.base.map(p => {
                 if (p.instanceId === id)
@@ -1088,7 +1268,7 @@ function resolvePreview(candidate) {
     }
 
     const next = [...others, { instanceId: id, ...candidate }];
-    return resolveLayout(next, [id], gs.m.cols, layout.compactMode, gs.m.minRow);
+    return solveLayout(next, [id], gs.m);
 }
 
 function updateSizeBadge(candidate) {
@@ -1100,16 +1280,43 @@ function updateSizeBadge(candidate) {
     gs.sizeBadge.classList.remove("hidden");
 }
 
+// The tile in hand is over a spot it cannot take, because a locked tile holds part of it. The
+// pegs there turn to the warning color, the locked tile shows its lock, and the landing mark
+// stays on the last spot that was free, which is where a drop would go.
+function showBlockedSpot(candidate) {
+    const gs = gestureState;
+    gs.blocked = true;
+    dots.setFootprint({ ...candidate, tone: "warn" });
+    const locked = new Set(lockedIds());
+    for (const p of gs.base) {
+        if (locked.has(p.instanceId))
+            mountedCards.get(p.instanceId)?.chrome.section.classList.toggle("is-blocking", rectsOverlap(p, candidate));
+    }
+}
+
+function clearBlockedSpot() {
+    const gs = gestureState;
+    if (!gs.blocked)
+        return;
+    gs.blocked = false;
+    for (const entry of mountedCards.values())
+        entry.chrome.section.classList.remove("is-blocking");
+    dots.setFootprint(gs.candidate);
+}
+
 function applyCandidate(candidate) {
     const gs = gestureState;
     const same = gs.candidate
         && candidate
         && gs.candidate.col === candidate.col && gs.candidate.row === candidate.row
         && gs.candidate.w === candidate.w && gs.candidate.h === candidate.h;
-    if (same || (!candidate && !gs.candidate))
+    if (same || (!candidate && !gs.candidate)) {
+        clearBlockedSpot();
         return;
+    }
 
     if (!candidate) {
+        clearBlockedSpot();
         gs.candidate = null;
         gs.preview = gs.base;
         previewPlacements(gs.base, gs.instanceId);
@@ -1119,8 +1326,11 @@ function applyCandidate(candidate) {
     }
 
     const resolved = resolvePreview(candidate);
-    if (!resolved.ok)
+    if (!resolved.ok) {
+        showBlockedSpot(candidate);
         return;
+    }
+    clearBlockedSpot();
     gs.candidate = candidate;
     gs.preview = resolved.placements;
     applyBoardSize(resolved.placements, gs.m);
@@ -1131,43 +1341,43 @@ function applyCandidate(candidate) {
         updateSizeBadge(candidate);
 }
 
+// Guides run through the center of the spot the tile in hand would land on. A solid, labelled
+// guide means that center is the dashboard's own: the middle of the first screen, which is
+// what a new tab shows. That is a fact about the grid, so it holds however far the page is
+// scrolled while arranging and whatever else is open in the window. A dashed guide means the
+// spot is centered on a neighbouring tile. Locked tiles are left out: they stand apart.
 function updateAlignmentGuides(inHand) {
     const gs = gestureState;
     guideX.hidden = guideY.hidden = true;
-    gs.centeredScrollDelta = 0;
-    if (!gs.candidate)
+    if (!gs.candidate || gs.blocked)
         return inHand;
 
-    const { m } = gs;
-    const landing = rectFor(gs.candidate, m);
+    const { m, candidate } = gs;
+    const landing = rectFor(candidate, m);
     const board = boardEl.getBoundingClientRect();
-    const viewportWidth = rootEl.clientWidth;
-    const viewportHeight = rootEl.clientHeight;
     const visibleTop = Math.max(0, -board.top);
-    const visibleBottom = Math.min(board.height, viewportHeight - board.top);
+    const visibleBottom = Math.min(board.height, m.viewportHeight - board.top);
     const centerX = landing.x + landing.w / 2;
     const centerY = landing.y + landing.h / 2;
-    const viewportCenterY = viewportHeight / 2 - board.top;
-    const scrollDelta = centerY - viewportCenterY;
-    const viewportX = Math.abs(centerX - (viewportWidth / 2 - board.left)) <= 0.75;
-    // Scrolling can leave the viewport center between two rows. Align the
-    // preview here, then bring the drop position to the same line on release.
-    const centeredScroll = window.scrollY + scrollDelta;
-    const viewportY = Math.abs(scrollDelta) <= m.unitY / 2
-        && centeredScroll >= -0.5 && centeredScroll <= rootEl.scrollHeight - viewportHeight + 0.5;
-    const others = gs.preview.filter(p => p.instanceId !== gs.instanceId).map(p => rectFor(p, m));
-    const visiblePeers = others.filter(p => p.y < visibleBottom && p.y + p.h > visibleTop);
+    const homeX = candidate.col + candidate.w / 2 === m.cols / 2;
+    const homeY = candidate.row + candidate.h / 2 === -m.rowShift;
+    const locked = new Set(lockedIds());
+    const visiblePeers = gs.preview
+        .filter(p => p.instanceId !== gs.instanceId && !locked.has(p.instanceId))
+        .map(p => rectFor(p, m))
+        .filter(p => p.y < visibleBottom && p.y + p.h > visibleTop);
     const peerX = visiblePeers.find(p => Math.abs(p.x + p.w / 2 - centerX) <= 0.75);
     const peerY = visiblePeers.find(p => Math.abs(p.y + p.h / 2 - centerY) <= 0.75);
 
+    // Close to a guide, the tile in hand settles onto it.
     const aligned = { ...inHand };
-    if ((viewportX || peerX)
+    if ((homeX || peerX)
         && Math.abs(inHand.x + inHand.w / 2 - centerX) <= Math.min(10, m.unitX / 2)
         && visibleBottom > visibleTop) {
-        const top = viewportX ? visibleTop : Math.max(visibleTop, Math.min(landing.y, peerX.y) - 8);
-        const bottom = viewportX ? visibleBottom : Math.min(visibleBottom, Math.max(landing.y + landing.h, peerX.y + peerX.h) + 8);
+        const top = homeX ? visibleTop : Math.max(visibleTop, Math.min(landing.y, peerX.y) - 8);
+        const bottom = homeX ? visibleBottom : Math.min(visibleBottom, Math.max(landing.y + landing.h, peerX.y + peerX.h) + 8);
         if (bottom > top) {
-            guideX.classList.toggle("is-viewport", viewportX);
+            guideX.classList.toggle("is-home", homeX);
             guideX.style.left = `${centerX}px`;
             guideX.style.top = `${top}px`;
             guideX.style.height = `${bottom - top}px`;
@@ -1176,20 +1386,18 @@ function updateAlignmentGuides(inHand) {
             aligned.w = landing.w;
         }
     }
-    if ((viewportY || peerY)
+    if ((homeY || peerY)
         && Math.abs(inHand.y + inHand.h / 2 - centerY) <= Math.min(10, m.unitY / 2)
         && centerY >= visibleTop && centerY <= visibleBottom) {
-        const left = viewportY ? 0 : Math.max(0, Math.min(landing.x, peerY.x) - 8);
-        const right = viewportY ? m.width : Math.min(m.width, Math.max(landing.x + landing.w, peerY.x + peerY.w) + 8);
-        guideY.classList.toggle("is-viewport", viewportY);
+        const left = homeY ? 0 : Math.max(0, Math.min(landing.x, peerY.x) - 8);
+        const right = homeY ? m.width : Math.min(m.width, Math.max(landing.x + landing.w, peerY.x + peerY.w) + 8);
+        guideY.classList.toggle("is-home", homeY);
         guideY.style.left = `${left}px`;
-        guideY.style.top = `${viewportY ? viewportCenterY : centerY}px`;
+        guideY.style.top = `${centerY}px`;
         guideY.style.width = `${right - left}px`;
         guideY.hidden = false;
-        aligned.y = landing.y - (viewportY ? scrollDelta : 0);
+        aligned.y = landing.y;
         aligned.h = landing.h;
-        if (viewportY)
-            gs.centeredScrollDelta = scrollDelta;
     }
     return aligned;
 }
@@ -1244,6 +1452,7 @@ function endGestureVisuals() {
     const gs = gestureState;
     stopAutoScroll();
     rootEl.classList.remove("is-gesturing");
+    clearBlockedSpot();
     dots.setFootprint(null);
     positionLanding(null, gs.m);
     guideX.hidden = guideY.hidden = true;
@@ -1261,10 +1470,6 @@ async function commitPointerGesture() {
     const gs = gestureState;
     if (!gs)
         return;
-    // Keep the snapped tile on the viewport guide when the page was scrolled
-    // between grid rows. Native scrolling rounds to whole CSS pixels.
-    if (Math.abs(gs.centeredScrollDelta) >= 0.5)
-        window.scrollBy(0, gs.centeredScrollDelta);
     endGestureVisuals();
     gestureState = null;
 
@@ -1471,7 +1676,7 @@ function placementAtPointer(e) {
     if (e.target.closest?.(".dash-card"))
         return null;
     const tile = currentPlacements().find(p => p.instanceId === selectedId);
-    if (!tile)
+    if (!tile || isLocked(selectedId))
         return null;
     const m = metrics();
     const cell = cellFromPoint(e.clientX, e.clientY, m);
@@ -1514,7 +1719,7 @@ let holdTimer = 0;
 document.body.addEventListener("pointerdown", e => {
     if (isEditing || e.button !== 0 || !ctx)
         return;
-    if (e.target.closest?.(".dash-card, .dash-card-menu, .dash-shelf, .dashboard-footer, .dashboard-banner, dialog, button, input, select, textarea, a"))
+    if (e.target.closest?.(".dash-card, .dash-card-menu, .dash-shelf, .dashboard-footer, .dashboard-banner, .dash-mode-switch, dialog, button, input, select, textarea, a"))
         return;
     const origin = { clientX: e.clientX, clientY: e.clientY };
     const cancelHold = () => {
@@ -1530,7 +1735,7 @@ document.body.addEventListener("pointerdown", e => {
     clearTimeout(holdTimer);
     holdTimer = setTimeout(() => {
         cancelHold();
-        setEditing(true, origin);
+        setMode("edit", origin);
     }, 480);
     document.addEventListener("pointerup", cancelHold, true);
     document.addEventListener("pointercancel", cancelHold, true);
@@ -1580,7 +1785,7 @@ function openAddPicker(initialTab = "widgets") {
     if (!ctx)
         return;
     if (!isEditing)
-        setEditing(true);
+        setMode("edit");
     selectTile(null);
     picker.open(shelfState(initialTab === "presets" ? btnPresets : btnAddWidget, {
         mode: "add",
@@ -1593,7 +1798,7 @@ function openAddPicker(initialTab = "widgets") {
 
 function openReplacePicker(instanceId) {
     if (!isEditing)
-        setEditing(true);
+        setMode("edit");
     const inst = layout.widgets.find(w => w.instanceId === instanceId);
     const def = inst ? getWidgetDef(inst.widgetType) : null;
     picker.open(shelfState(mountedCards.get(instanceId)?.chrome.menuBtn || btnAddWidget, {
@@ -1683,7 +1888,7 @@ function openPresetConfirmation(preset) {
 // --- Dock -------------------------------------------------------------------------------
 
 function startEditing(origin = null) {
-    setEditing(true, origin);
+    setMode("edit", origin);
     btnAddWidget.focus({ preventScroll: true });
 }
 
@@ -1697,9 +1902,17 @@ btnCustomize.addEventListener("click", e => {
 });
 
 btnDoneEdit.addEventListener("click", () => {
-    setEditing(false);
+    setMode("view");
     (customizeHidden ? gridWrapEl : btnCustomize).focus({ preventScroll: true });
 });
+
+// Leaving Edit closes the shelf, which hands focus back to the dock; the switch keeps it.
+for (const [button, mode] of [[btnModeEdit, "edit"], [btnModePreview, "preview"]]) {
+    button.addEventListener("click", () => {
+        setMode(mode);
+        button.focus({ preventScroll: true });
+    });
+}
 
 btnCustomizeHide.append(icon("close", 10));
 
@@ -1741,14 +1954,14 @@ function openDashboardOptions(point) {
 }
 
 gridWrapEl.addEventListener("contextmenu", e => {
-    if (!customizeHidden || isEditing || e.target.closest(".dash-card, button, a, input, textarea, select"))
+    if (!customizeHidden || isCustomizing || e.target.closest(".dash-card, button, a, input, textarea, select"))
         return;
     e.preventDefault();
     openDashboardOptions({ x: e.clientX, y: e.clientY });
 });
 
 gridWrapEl.addEventListener("keydown", e => {
-    if (!customizeHidden || isEditing || e.target !== gridWrapEl)
+    if (!customizeHidden || isCustomizing || e.target !== gridWrapEl)
         return;
     if (e.key === "Enter" || e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
@@ -1773,7 +1986,7 @@ swapCancelBtn.addEventListener("click", () => {
 btnCompact.addEventListener("click", async () => {
     const nextCompact = !layout.compactMode;
     const cur = currentPlacements();
-    const resolved = nextCompact ? resolveLayout(cur, [], currentBp.cols, true, metrics(cur).minRow) : { ok: true, placements: cur };
+    const resolved = nextCompact ? solveLayout(cur, [], metrics(cur), true) : { ok: true, placements: cur };
     if (!resolved.ok)
         return;
     const nextPlacements = buildCommitPlacements(layout.widgets, currentBp.name, resolved.placements);
@@ -1859,8 +2072,13 @@ document.addEventListener("keydown", e => {
         selectTile(null);
     } else if (isEditing && !e.target.closest?.("input, textarea, select")) {
         e.preventDefault();
-        setEditing(false);
+        setMode("view");
         (customizeHidden ? gridWrapEl : btnCustomize).focus({ preventScroll: true });
+    } else if (isCustomizing && !e.target.closest?.("input, textarea, select, .dash-card")) {
+        // Escape steps back out of Preview the way it steps out of everything else here.
+        e.preventDefault();
+        setMode("edit");
+        btnModeEdit.focus({ preventScroll: true });
     }
 });
 
@@ -1892,6 +2110,18 @@ window.addEventListener("resize", () => {
         cancelPointerGesture();
     withoutMotion(renderGrid);
 });
+
+// Tiles scroll under the switch, which stays where it is.
+let menuClearanceFrame = 0;
+window.addEventListener("scroll", () => {
+    if (!isEditing || gestureState || menuClearanceFrame)
+        return;
+    menuClearanceFrame = requestAnimationFrame(() => {
+        menuClearanceFrame = 0;
+        if (isEditing && !gestureState)
+            keepMenusClearOfModeSwitch();
+    });
+}, { passive: true });
 
 // Multi-tab live sync
 onDashboardEvent("layoutUpdated", nextLayout => {

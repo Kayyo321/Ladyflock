@@ -140,11 +140,13 @@ export function mount(root, api) {
             unit.textContent = period;
             primaryEl.append(unit);
         }
-        dateEl.textContent = new Intl.DateTimeFormat(undefined, {
+        const date = new Intl.DateTimeFormat(undefined, {
             weekday: tier === "compact" ? "short" : "long",
             month: tier === "compact" ? "short" : "long",
             day: "numeric",
         }).format(now);
+        const zone = shortZoneName(now) || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+        dateEl.textContent = zone ? `${date} · ${zone}` : date;
 
         const localMinutes = getZoneMinutes(now, undefined);
         dayEl.classList.toggle("hidden", tier === "compact" || localMinutes === null);
@@ -187,7 +189,6 @@ export function mount(root, api) {
                 zonesEl.append(row);
             }
         }
-        api.setMeta(shortZoneName(now) || Intl.DateTimeFormat().resolvedOptions().timeZone || "");
     }
 
     function reschedule() {
