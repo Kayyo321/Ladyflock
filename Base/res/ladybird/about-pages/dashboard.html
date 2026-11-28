@@ -12,6 +12,7 @@
         <link rel="stylesheet" type="text/css" href="resource://ladybird/ladybird.css" />
         <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/webui.css" />
         <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/dashboard.css" />
+        <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/alignment-guides.css" />
         <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets.css" />
         <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-navigation.css" />
         <link rel="stylesheet" type="text/css" href="resource://ladybird/about-pages/dashboard/widgets-library.css" />
@@ -20,8 +21,6 @@
     </head>
     <body class="dashboard-page">
         <div id="dashboard-root" class="dashboard-shell">
-            <div id="dashboard-banner" class="dashboard-banner hidden" role="status"></div>
-
             <div id="dashboard-fallback" class="dashboard-fallback hidden" role="region" aria-label="Dashboard unavailable">
                 <h1 class="fallback-title">New Tab Dashboard</h1>
                 <p class="description">
@@ -35,6 +34,7 @@
                     <canvas id="dashboard-dots" class="dashboard-dots" aria-hidden="true"></canvas>
                     <div id="dashboard-landing" class="dash-landing hidden" aria-hidden="true"></div>
                     <div id="dashboard-grid" class="dashboard-grid" role="list"></div>
+                    <div id="dashboard-guides" aria-hidden="true"></div>
 
                     <section id="dashboard-empty" class="dashboard-empty hidden" aria-label="Empty dashboard">
                         <p class="dashboard-empty-title">A blank board</p>
@@ -48,6 +48,20 @@
             </main>
 
             <footer id="dashboard-footer" class="dashboard-footer" aria-label="Dashboard controls">
+                <div id="dashboard-banner" class="dashboard-banner hidden" role="status"></div>
+                <div id="customize-wrap" class="dash-customize-wrap">
+                    <button id="btn-customize" type="button" class="dash-customize" data-icon="customize">Customize</button>
+                    <button
+                        id="btn-customize-hide"
+                        type="button"
+                        class="dash-customize-hide"
+                        aria-label="Hide the Customize button"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        title="Hide the Customize button"
+                    ></button>
+                </div>
+
                 <div id="dashboard-swap-banner" class="dashboard-hint hidden" role="status">
                     <span id="dashboard-swap-text"></span>
                     <button id="dashboard-swap-cancel" type="button" class="dashboard-hint-btn">Cancel</button>
@@ -79,19 +93,6 @@
                     <span class="dock-sep" aria-hidden="true"></span>
                     <span id="dashboard-save-status" class="dock-status hidden" role="status"></span>
                     <button id="btn-done-edit" type="button" class="dock-btn done">Done</button>
-                </div>
-
-                <div id="customize-wrap" class="dash-customize-wrap">
-                    <button id="btn-customize" type="button" class="dash-customize" data-icon="customize">Customize</button>
-                    <button
-                        id="btn-customize-hide"
-                        type="button"
-                        class="dash-customize-hide"
-                        aria-label="Hide the Customize button"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
-                        title="Hide"
-                    ></button>
                 </div>
             </footer>
         </div>

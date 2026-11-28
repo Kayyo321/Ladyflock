@@ -1112,7 +1112,7 @@ void ConnectionFromUI::web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, Str
 
     auto* web_ui = WebView::ApplicationWebUI::find(web_ui_id);
     auto* session = web_ui ? web_ui->session() : nullptr;
-    if (!session || session->is_private() == WebView::IsPrivate::Yes || session->is_ephemeral()) {
+    if (!session || web_ui->context().host != "dashboard"sv || session->is_private() == WebView::IsPrivate::Yes || session->is_ephemeral()) {
         fail();
         return;
     }
@@ -1129,7 +1129,8 @@ void ConnectionFromUI::web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, Str
     }
 
     Optional<URL::URL> fetch_url;
-    if (kind == "feed"sv) {
+    auto imports_image = kind == "image"sv;
+    if (kind == "feed"sv || imports_image) {
         auto parsed = URL::Parser::basic_parse(target);
         if (!parsed.has_value() || !is_public_https_dashboard_destination(*parsed)) {
             fail();
@@ -1171,22 +1172,28 @@ void ConnectionFromUI::web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, Str
 
     auto request_headers = HTTP::HeaderList::create();
     request_headers->set({ "User-Agent"sv, Web::default_user_agent });
-    request_headers->set({ "Accept"sv, kind == "weather"sv ? "application/json"sv : "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9"sv });
-
-    auto request = instance_or_error.value()->ui_client().start_request(
-        "GET"sv,
-        *fetch_url,
-        HTTP::Cookie::SameSiteContext::same_site(),
-        *request_headers,
-        {},
-        HTTP::CacheMode::NoStore,
-        HTTP::Cookie::IncludeCredentials::No);
+    RefPtr<Requests::Request> request;
+    auto& request_client = instance_or_error.value()->ui_client();
+    if (imports_image) {
+        request_headers->set({ "Accept"sv, "image/png, image/jpeg, image/gif, image/webp, image/avif, image/bmp, */*;q=0.1"sv });
+        request = request_client.start_public_resource_request(*fetch_url, *request_headers);
+    } else {
+        request_headers->set({ "Accept"sv, kind == "weather"sv ? "application/json"sv : "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9"sv });
+        request = request_client.start_request(
+            "GET"sv,
+            *fetch_url,
+            HTTP::Cookie::SameSiteContext::same_site(),
+            *request_headers,
+            {},
+            HTTP::CacheMode::NoStore,
+            HTTP::Cookie::IncludeCredentials::No);
+    }
     if (!request) {
         fail();
         return;
     }
 
-    static constexpr size_t MAX_DASHBOARD_RESPONSE_BYTES = 1024 * 1024;
+    size_t max_response_bytes = (imports_image ? 8 : 1) * 1024 * 1024;
     struct FetchState : public RefCounted<FetchState> {
         ByteBuffer body;
         Vector<HTTP::Header> headers;
@@ -1221,49 +1228,41 @@ void ConnectionFromUI::web_ui_dashboard_fetch(u64 web_ui_id, u64 request_id, Str
         });
     };
 
-    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [this, request_id, state, finish_fetch] {
+    auto abort_fetch = [this, request_id, state, finish_fetch] {
         state->aborted = true;
         if (auto req = m_requests.get(request_id); req.has_value())
             (*req)->stop();
         finish_fetch(state, true);
-    });
+    };
+
+    auto timer = Core::Timer::create_single_shot(AK::Duration::from_seconds(10), [abort_fetch] { abort_fetch(); });
     timer->start();
     m_request_timers.set(request_id, timer);
 
     request->set_unbuffered_request_callbacks(
-        [this, request_id, state](NonnullRefPtr<HTTP::HeaderList> response_headers, Optional<u32> response_code, Optional<String> const&, Requests::CacheState) {
+        [state, abort_fetch, max_response_bytes](NonnullRefPtr<HTTP::HeaderList> response_headers, Optional<u32> response_code, Optional<String> const&, Requests::CacheState) {
             state->status_code = response_code;
             // Reject redirects (3xx) and non-2xx responses immediately.
-            if (!response_code.has_value() || *response_code < 200 || *response_code >= 300) {
-                state->aborted = true;
-                if (auto req = m_requests.get(request_id); req.has_value())
-                    (*req)->stop();
+            auto content_length = response_headers->get("Content-Length"sv).value_or(ByteString {}).to_number<u64>();
+            if (!response_code.has_value() || *response_code < 200 || *response_code >= 300 || content_length.value_or(0) > max_response_bytes) {
+                abort_fetch();
                 return;
             }
             if (auto ct = response_headers->get("Content-Type"sv); ct.has_value())
                 state->headers.append({ "Content-Type"sv, ct.release_value() });
         },
-        [this, request_id, state](Requests::ResponseData data) {
+        [state, abort_fetch, max_response_bytes](Requests::ResponseData data) {
             if (state->aborted)
                 return;
             auto bytes = data.bytes();
-            if (state->body.size() + bytes.size() > MAX_DASHBOARD_RESPONSE_BYTES) {
-                state->aborted = true;
-                if (auto req = m_requests.get(request_id); req.has_value())
-                    (*req)->stop();
-                return;
-            }
-            if (state->body.try_append(bytes).is_error()) {
-                state->aborted = true;
-                if (auto req = m_requests.get(request_id); req.has_value())
-                    (*req)->stop();
-            }
+            if (bytes.size() > max_response_bytes - state->body.size() || state->body.try_append(bytes).is_error())
+                abort_fetch();
         },
-        [state](Core::ImmutableBytes data) {
+        [state, abort_fetch, max_response_bytes](Core::ImmutableBytes data) {
             if (state->aborted)
                 return;
-            if (data.size() > MAX_DASHBOARD_RESPONSE_BYTES || state->body.try_append(data.bytes()).is_error())
-                state->aborted = true;
+            if (data.size() > max_response_bytes - state->body.size() || state->body.try_append(data.bytes()).is_error())
+                abort_fetch();
         },
         [state, finish_fetch](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> network_error) {
             finish_fetch(state, network_error.has_value() || state->aborted);

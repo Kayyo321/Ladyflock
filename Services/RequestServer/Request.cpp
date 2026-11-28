@@ -31,6 +31,10 @@
 #include <RequestServer/ResourceSubstitutionMap.h>
 #include <string.h>
 
+#ifndef AK_OS_WINDOWS
+#    include <netinet/in.h>
+#endif
+
 namespace RequestServer {
 
 extern OwnPtr<ResourceSubstitutionMap> g_resource_substitution_map;
@@ -49,6 +53,53 @@ static ByteString url_without_credentials(URL::URL url)
     url.set_username(""sv);
     url.set_password(""sv);
     return url.to_byte_string();
+}
+
+static bool is_public_unicast(IPv4Address const& address)
+{
+    u8 first = address[0];
+    u8 second = address[1];
+    return first != 0 && first != 10 && first != 127 && first < 224
+        && !(first == 100 && (second & 0xc0) == 0x40)
+        && !(first == 169 && second == 254)
+        && !(first == 172 && (second & 0xf0) == 16)
+        && !(first == 192 && (second == 168 || (second == 0 && (address[2] == 0 || address[2] == 2))))
+        && !(first == 198 && (second == 18 || second == 19 || (second == 51 && address[2] == 100)))
+        && !(first == 203 && second == 0 && address[2] == 113);
+}
+
+static bool is_public_unicast(IPv6Address const& address)
+{
+    // Only native global unicast. Exclude the documentation and transition ranges.
+    return (address[0] & 0xe000) == 0x2000
+        && !(address[0] == 0x2001 && (address[1] < 0x0200 || address[1] == 0x0db8))
+        && address[0] != 0x2002 && !(address[0] == 0x3fff && address[1] < 0x1000);
+}
+
+static curl_socket_t open_public_resource_socket(void*, curlsocktype purpose, curl_sockaddr* connection)
+{
+    if (purpose != CURLSOCKTYPE_IPCXN)
+        return CURL_SOCKET_BAD;
+
+    // Verify the actual endpoint before opening a socket, including every DNS retry.
+    if (connection->family == AF_INET && connection->addrlen >= sizeof(sockaddr_in)) {
+        auto const& address = *reinterpret_cast<sockaddr_in const*>(&connection->addr);
+        if (!is_public_unicast(IPv4Address { reinterpret_cast<u8 const*>(&address.sin_addr.s_addr) }))
+            return CURL_SOCKET_BAD;
+    } else if (connection->family == AF_INET6 && connection->addrlen >= sizeof(sockaddr_in6)) {
+        auto const& address = *reinterpret_cast<sockaddr_in6 const*>(&connection->addr);
+        IPv6Address::in6_addr_t bytes;
+        memcpy(bytes, address.sin6_addr.s6_addr, sizeof(bytes));
+        if (!is_public_unicast(IPv6Address { bytes }))
+            return CURL_SOCKET_BAD;
+    } else {
+        return CURL_SOCKET_BAD;
+    }
+
+    auto socket = Core::System::socket(connection->family, connection->socktype, connection->protocol);
+    if (socket.is_error())
+        return CURL_SOCKET_BAD;
+    return static_cast<curl_socket_t>(socket.release_value());
 }
 
 // https://everything.curl.dev/internals/content-encoding.html#supported-content-encodings
@@ -453,6 +504,15 @@ NonnullOwnPtr<Request> Request::fetch(
     request->m_extension_request_check = extension_request_check;
     request->process();
 
+    return request;
+}
+
+NonnullOwnPtr<Request> Request::fetch_public_resource(u64 request_id, ConnectionFromClient& client, void* curl_multi, Resolver& resolver, URL::URL url, NonnullRefPtr<HTTP::HeaderList> request_headers)
+{
+    auto request = adopt_own(*new Request { request_id, RequestType::Fetch, {}, {}, HTTP::CacheMode::NoStore, client, curl_multi, resolver, move(url), "GET"sv, move(request_headers), {}, HTTP::Cookie::IncludeCredentials::No, HTTP::Cookie::SameSiteContext::same_site() });
+    request->m_public_destination_only = true;
+    request->m_alternative_services_disabled = true;
+    request->process();
     return request;
 }
 
@@ -902,7 +962,7 @@ void Request::reset_for_retry()
 
 void Request::update_alternative_services()
 {
-    if (m_proxy.has_value() || m_url.scheme() != "https"sv || !m_url.host().has_value())
+    if (m_public_destination_only || m_proxy.has_value() || m_url.scheme() != "https"sv || !m_url.host().has_value())
         return;
 
     auto alt_svc = m_response_headers->get("Alt-Svc"sv);
@@ -938,6 +998,7 @@ bool Request::should_retry_without_alternative_service(int curl_result_code) con
 bool Request::should_retry_after_fetching_aia_intermediate(int curl_result_code) const
 {
     return m_type == RequestType::Fetch
+        && !m_public_destination_only
         && curl_result_code == CURLE_PEER_FAILED_VERIFICATION
         && m_aia_collector
         && !m_aia_collector->pending_urls.is_empty()
@@ -1398,6 +1459,11 @@ void Request::handle_dns_lookup_state()
     // Under a mandatory route this is always the route, so no request here can fall back to a direct connection.
     auto isolation_site = m_network_isolation_key.has_value() ? m_network_isolation_key->top_level_site.to_utf8().to_byte_string() : ByteString {};
     m_proxy = proxy_for_connection(m_url, isolation_site);
+    if (m_public_destination_only && m_proxy.has_value()) {
+        m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+        transition_to_state(State::Error);
+        return;
+    }
     // The proxy configuration can change while a lookup is pending, so resolve again for a different proxy.
     if (!m_proxy_host_resolved || m_resolved_proxy != m_proxy) {
         resolve_proxy_host(m_proxy, weak_callback(*this, [proxy = m_proxy](auto& self, ErrorOr<void> result) {
@@ -1681,6 +1747,16 @@ void Request::handle_fetch_state()
 
     set_option(CURLOPT_CUSTOMREQUEST, m_method.characters());
     set_option(CURLOPT_FOLLOWLOCATION, 0);
+    if (m_public_destination_only) {
+        // A pooled connection would skip the socket check.
+        if (curl_easy_setopt(m_curl_easy_handle, CURLOPT_FRESH_CONNECT, 1L) != CURLE_OK
+            || curl_easy_setopt(m_curl_easy_handle, CURLOPT_OPENSOCKETFUNCTION, &open_public_resource_socket) != CURLE_OK
+            || curl_easy_setopt(m_curl_easy_handle, CURLOPT_PROXY, "") != CURLE_OK) {
+            m_network_error = Requests::NetworkError::BlockedByPrivacyPolicy;
+            transition_to_state(State::Error);
+            return;
+        }
+    }
     if constexpr (CURL_DEBUG) {
         set_option(CURLOPT_VERBOSE, 1);
     }

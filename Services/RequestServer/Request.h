@@ -69,6 +69,8 @@ public:
         bool notify_on_cache_miss,
         Requests::ExtensionRequestCheck = Requests::ExtensionRequestCheck::NotApplicable);
 
+    static NonnullOwnPtr<Request> fetch_public_resource(u64 request_id, ConnectionFromClient&, void* curl_multi, Resolver&, URL::URL, NonnullRefPtr<HTTP::HeaderList>);
+
     static NonnullOwnPtr<Request> connect(
         u64 request_id,
         ConnectionFromClient& client,
@@ -381,6 +383,7 @@ private:
 
     Optional<AlternativeService> m_alternative_service;
     bool m_alternative_services_disabled { false };
+    bool m_public_destination_only { false };
 
     Optional<u32> m_status_code;
     Optional<String> m_reason_phrase;

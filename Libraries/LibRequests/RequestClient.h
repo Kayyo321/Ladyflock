@@ -53,6 +53,7 @@ public:
 
     // Best-effort index into the resolved address pool.
     RefPtr<Request> start_request(ByteString const& method, URL::URL const&, HTTP::Cookie::SameSiteContext, Optional<HTTP::HeaderList const&> request_headers = {}, ReadonlyBytes request_body = {}, HTTP::CacheMode = HTTP::CacheMode::Default, HTTP::Cookie::IncludeCredentials = HTTP::Cookie::IncludeCredentials::Yes, TransferLease = TransferLease::No, Optional<u32> address_selection_hint = {}, CacheMissNotification = CacheMissNotification::No, u64 originating_page_id = 0, Optional<HTTP::NetworkIsolationKey> = {}, ExtensionRequestCheck = ExtensionRequestCheck::NotApplicable);
+    NonnullRefPtr<Request> start_public_resource_request(URL::URL const&, HTTP::HeaderList const&);
     RefPtr<Request> adopt_request(int source_client_id, u64 source_request_id, TransferLease = TransferLease::No, Optional<int> owner_client_id = {});
 
     // Moves a response between RequestServers. The request leaves this client on export; the imported one is a new

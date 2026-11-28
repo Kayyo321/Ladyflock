@@ -5,13 +5,18 @@
  * Pure deterministic, idempotent grid placement solver for about:dashboard.
  */
 
-export const MAX_GRID_ROWS = 512;
+// A stored coordinate is one quarter of a catalog cell. Resize steps are two
+// coordinates wide so a resized tile's center is still addressable when moving it.
+export const GRID_STEPS_PER_CELL = 4;
+export const GRID_RESIZE_STEP = 2;
+export const MAX_GRID_ROWS = 512 * GRID_STEPS_PER_CELL;
+export const MIN_GRID_ROW = -MAX_GRID_ROWS;
 
 export const BREAKPOINTS = [
-    { name: "wide", minWidth: 1120, cols: 12, rowHeight: 96, gap: 14 },
-    { name: "medium", minWidth: 800, cols: 8, rowHeight: 96, gap: 12 },
-    { name: "narrow", minWidth: 520, cols: 4, rowHeight: 92, gap: 12 },
-    { name: "compact", minWidth: 0, cols: 2, rowHeight: 88, gap: 10 },
+    { name: "wide", minWidth: 1120, cols: 48, rowHeight: 96, gap: 14 },
+    { name: "medium", minWidth: 800, cols: 32, rowHeight: 96, gap: 12 },
+    { name: "narrow", minWidth: 520, cols: 16, rowHeight: 92, gap: 12 },
+    { name: "compact", minWidth: 0, cols: 8, rowHeight: 88, gap: 10 },
 ];
 
 export function getBreakpointForWidth(widthPx) {
@@ -30,15 +35,39 @@ export function effectiveSizesForBreakpoint(sizes, cols) {
     const out = [];
     const seen = new Set();
     for (const sz of sizes) {
-        const w = Math.max(1, Math.min(sz.w, cols));
-        const h = Math.max(1, sz.h);
+        const w = Math.max(1, Math.min(sz.w * GRID_STEPS_PER_CELL, cols));
+        const h = Math.max(1, sz.h * GRID_STEPS_PER_CELL);
         const key = `${w}x${h}`;
         if (seen.has(key))
             continue;
         seen.add(key);
-        out.push({ w, h, label: sz.label || `${w}×${h}`, tier: sz.tier || "default" });
+        out.push({ w, h, label: formatGridSize({ w, h }), tier: sz.tier || "default" });
     }
     return out;
+}
+
+export function formatGridSize({ w, h }, separator = " × ") {
+    return [w / GRID_STEPS_PER_CELL, h / GRID_STEPS_PER_CELL].join(separator);
+}
+
+export function resizeLimits(placement, sizes, cols) {
+    const maxW = Math.min(cols - placement.col, Math.max(placement.w, ...sizes.map(s => s.w)));
+    const maxH = Math.min(MAX_GRID_ROWS, MAX_GRID_ROWS - placement.row, Math.max(placement.h, ...sizes.map(s => s.h)));
+    return {
+        minW: Math.min(placement.w, ...sizes.map(s => s.w)),
+        minH: Math.min(placement.h, ...sizes.map(s => s.h)),
+        maxW: Math.floor(maxW / GRID_RESIZE_STEP) * GRID_RESIZE_STEP,
+        maxH: Math.floor(maxH / GRID_RESIZE_STEP) * GRID_RESIZE_STEP,
+    };
+}
+
+export function snapResizePlacement(start, w, h, { minW, minH, maxW, maxH }) {
+    return {
+        col: start.col,
+        row: start.row,
+        w: Math.max(minW, Math.min(maxW, Math.round(w / GRID_RESIZE_STEP) * GRID_RESIZE_STEP)),
+        h: Math.max(minH, Math.min(maxH, Math.round(h / GRID_RESIZE_STEP) * GRID_RESIZE_STEP)),
+    };
 }
 
 export function snapResizeSize(targetW, targetH, validSizes) {
@@ -77,6 +106,20 @@ export function sortReadingOrder(placements) {
     });
 }
 
+export function centerPlacements(placements) {
+    if (!placements.length)
+        return [];
+
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const { row, h } of placements) {
+        top = Math.min(top, row);
+        bottom = Math.max(bottom, row + h);
+    }
+    const centerRow = Math.round((top + bottom) / 2);
+    return placements.map(placement => ({ ...placement, row: placement.row - centerRow }));
+}
+
 function collidesWithAny(candidate, placed) {
     for (const p of placed) {
         if (rectsOverlap(candidate, p))
@@ -85,10 +128,12 @@ function collidesWithAny(candidate, placed) {
     return false;
 }
 
-export function findFirstFreeSlot(existingPlacements, w, h, cols) {
+export function findFirstFreeSlot(existingPlacements, w, h, cols, minRow = 0) {
     const cw = Math.max(1, Math.min(w, cols));
     const ch = Math.max(1, h);
-    for (let row = 0; row + ch <= MAX_GRID_ROWS; ++row) {
+    if (ch > MAX_GRID_ROWS)
+        return null;
+    for (let row = Math.max(MIN_GRID_ROW, minRow); row + ch <= MAX_GRID_ROWS; ++row) {
         for (let col = 0; col + cw <= cols; ++col) {
             const candidate = { col, row, w: cw, h: ch };
             if (!collidesWithAny(candidate, existingPlacements))
@@ -106,10 +151,11 @@ export function findFirstFreeSlot(existingPlacements, w, h, cols) {
  * - If `compactMode` is true, pulls non-pinned cards upward into legal gaps in reading order.
  * Returns `{ ok: true, placements }` or `{ ok: false, error }`.
  */
-export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = false) {
+export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = false, minRow = MIN_GRID_ROW) {
     const pinnedSet = new Set(pinnedIds || []);
     const ordered = sortReadingOrder(inputPlacements);
     const placed = [];
+    const firstRow = Math.max(MIN_GRID_ROW, minRow);
 
     // 1. Place pinned targets first and verify mutual non-overlap and bounds.
     for (const item of ordered) {
@@ -118,8 +164,8 @@ export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = fa
         const w = Math.max(1, Math.min(item.w, cols));
         const h = Math.max(1, item.h);
         const col = Math.max(0, Math.min(item.col, cols - w));
-        const row = Math.max(0, item.row);
-        if (row + h > MAX_GRID_ROWS)
+        const row = Math.max(firstRow, item.row);
+        if (h > MAX_GRID_ROWS || row + h > MAX_GRID_ROWS)
             return { ok: false, error: "Layout exceeds maximum grid height." };
         const rect = { instanceId: item.instanceId, col, row, w, h };
         if (collidesWithAny(rect, placed))
@@ -134,7 +180,9 @@ export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = fa
         const w = Math.max(1, Math.min(item.w, cols));
         const h = Math.max(1, item.h);
         const col = Math.max(0, Math.min(item.col, cols - w));
-        let row = Math.max(0, item.row);
+        let row = Math.max(firstRow, item.row);
+        if (h > MAX_GRID_ROWS)
+            return { ok: false, error: "Layout exceeds maximum grid height." };
         while (row + h <= MAX_GRID_ROWS && collidesWithAny({ col, row, w, h }, placed)) {
             ++row;
         }
@@ -156,7 +204,7 @@ export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = fa
             if (pinnedSet.has(p.instanceId))
                 continue;
             let bestRow = p.row;
-            for (let r = 0; r < p.row; ++r) {
+            for (let r = firstRow; r < p.row; ++r) {
                 if (!collidesWithAny({ col: p.col, row: r, w: p.w, h: p.h }, compacted)) {
                     bestRow = r;
                     break;
@@ -172,7 +220,8 @@ export function resolveLayout(inputPlacements, pinnedIds, cols, compactMode = fa
 
 /**
  * Projects canonical wide placements onto a narrower breakpoint in stable
- * `(row, col, instanceId)` reading order using first free row-major slot.
+ * `(row, col, instanceId)` reading order using first free row-major slot, then
+ * centers the projected group relative to row zero.
  */
 export function projectPlacements(widePlacements, targetCols) {
     const ordered = sortReadingOrder(widePlacements);
@@ -185,35 +234,25 @@ export function projectPlacements(widePlacements, targetCols) {
             break;
         placed.push({ instanceId: item.instanceId, ...slot });
     }
-    return sortReadingOrder(placed);
+    return centerPlacements(sortReadingOrder(placed));
 }
 
 /**
  * Swaps positions of two placed cards:
  * - Same-size cards exchange coordinates exactly.
- * - Unequal-size cards retain their sizes, pin both anchors (clamped if needed),
+ * - Unequal-size cards retain their sizes, pin both anchors,
  *   reject if the two pinned rects overlap or cross bounds, and resolve remaining cards.
  */
-export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = false) {
+export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = false, minRow = MIN_GRID_ROW) {
     const a = currentPlacements.find(p => p.instanceId === idA);
     const b = currentPlacements.find(p => p.instanceId === idB);
     if (!a || !b || idA === idB)
         return { ok: false, error: "Select two distinct cards to swap." };
 
-    if (a.w === b.w && a.h === b.h) {
-        const next = currentPlacements.map(p => {
-            if (p.instanceId === idA)
-                return { ...p, col: b.col, row: b.row };
-            if (p.instanceId === idB)
-                return { ...p, col: a.col, row: a.row };
-            return { ...p };
-        });
-        return { ok: true, placements: sortReadingOrder(next) };
-    }
-
     const newA = { ...a, col: b.col, row: b.row };
     const newB = { ...b, col: a.col, row: a.row };
-    if (newA.col + newA.w > cols || newB.col + newB.w > cols || newA.row + newA.h > MAX_GRID_ROWS || newB.row + newB.h > MAX_GRID_ROWS) {
+    const firstRow = Math.max(MIN_GRID_ROW, minRow);
+    if ([newA, newB].some(p => p.col + p.w > cols || p.row < firstRow || p.h > MAX_GRID_ROWS || p.row + p.h > MAX_GRID_ROWS)) {
         return { ok: false, error: "These two cards don’t fit cleanly in each other’s anchor positions." };
     }
     if (rectsOverlap(newA, newB)) {
@@ -227,5 +266,7 @@ export function swapPlacements(currentPlacements, idA, idB, cols, compactMode = 
             return newB;
         return { ...p };
     });
-    return resolveLayout(next, [idA, idB], cols, compactMode);
+    if (a.w === b.w && a.h === b.h)
+        return { ok: true, placements: sortReadingOrder(next) };
+    return resolveLayout(next, [idA, idB], cols, compactMode, firstRow);
 }

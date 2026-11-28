@@ -5,20 +5,27 @@
  * Main controller for about:dashboard.
  *
  * The dashboard is a pegboard. Tiles hang on a grid of pegs that stays out of sight
- * until the board is being edited, at which point the pegs appear as a field of dots
- * and every move, resize and drop snaps to them.
+ * until the board is being edited. Smaller snap steps between the visible dots
+ * allow precise placement and resizing without crowding the editing surface.
  */
 
 import { onDashboardEvent, request, setExpectedGeneration, waitForBridge } from "./bridge.js";
 import { createDotField } from "./dot-field.js";
 import {
+    GRID_RESIZE_STEP,
+    GRID_STEPS_PER_CELL,
     MAX_GRID_ROWS,
+    MIN_GRID_ROW,
+    centerPlacements,
     effectiveSizesForBreakpoint,
     findFirstFreeSlot,
+    formatGridSize,
     getBreakpointByName,
     getBreakpointForWidth,
     projectPlacements,
     resolveLayout,
+    resizeLimits,
+    snapResizePlacement,
     snapResizeSize,
     sortReadingOrder,
     swapPlacements,
@@ -41,6 +48,12 @@ const gridWrapEl = document.getElementById("dashboard-grid-wrap");
 const boardEl = document.getElementById("dashboard-board");
 const gridEl = document.getElementById("dashboard-grid");
 const landingEl = document.getElementById("dashboard-landing");
+const guideX = document.createElement("div");
+const guideY = document.createElement("div");
+guideX.className = "dash-guide dash-guide-vertical";
+guideY.className = "dash-guide dash-guide-horizontal";
+guideX.hidden = guideY.hidden = true;
+document.getElementById("dashboard-guides").append(guideX, guideY);
 const emptyEl = document.getElementById("dashboard-empty");
 const bannerEl = document.getElementById("dashboard-banner");
 const fallbackEl = document.getElementById("dashboard-fallback");
@@ -127,13 +140,15 @@ const picker = createPickerController({
 });
 
 const INCOMING_ID = "~incoming";
-const EXTRA_EDIT_ROWS = 2;
+const EXTRA_EDIT_ROWS = 2 * GRID_STEPS_PER_CELL;
+const TILE_INLINE_INSET = 16;
+const TILE_BOTTOM_CLEARANCE = 64;
 const SETTLE_MS = 460;
 const MAX_UNDO = 30;
 
 let ctx = null;
 let layout = { layoutRevision: 0, initialized: false, compactMode: false, widgets: [], placements: {} };
-let currentBp = getBreakpointForWidth(window.innerWidth - 56);
+let currentBp = getBreakpointForWidth(window.innerWidth);
 let isEditing = false;
 // Whether the person hid the Customize button, for the session or for good.
 let customizeHidden = false;
@@ -229,9 +244,9 @@ function getEffectivePlacementsForBreakpoint(bpName) {
         for (const w of layout.widgets) {
             if (!byId.has(w.instanceId)) {
                 const def = getWidgetDef(w.widgetType);
-                const eff = def ? effectiveSizesForBreakpoint(def.sizes, bp.cols) : [{ w: 2, h: 2 }];
+                const eff = def ? effectiveSizesForBreakpoint(def.sizes, bp.cols) : [{ w: GRID_STEPS_PER_CELL * 2, h: GRID_STEPS_PER_CELL * 2 }];
                 const defSize = eff[1] || eff[0];
-                const slot = findFirstFreeSlot(result, defSize.w, defSize.h, bp.cols);
+                const slot = findDefaultSlot(result, defSize, bp.cols);
                 if (slot)
                     result.push({ instanceId: w.instanceId, ...slot });
             }
@@ -250,9 +265,23 @@ function currentPlacements() {
     return getEffectivePlacementsForBreakpoint(currentBp.name);
 }
 
+function findDefaultSlot(placements, { w, h }, cols) {
+    if (!placements.length)
+        return { col: Math.round((cols - w) / 2), row: -Math.floor(h / 2), w, h };
+    const firstRow = Math.min(...placements.map(p => p.row));
+    return findFirstFreeSlot(placements, w, h, cols, firstRow);
+}
+
 function buildCommitPlacements(nextWidgets, editedBpName, editedBpPlacements) {
     const nextPlacements = {};
     const widgetIds = new Set(nextWidgets.map(w => w.instanceId));
+    const { rowShift } = metrics();
+    // When an edit vacates the top occupied row in a short window, keep the
+    // drop and the other tiles at their previewed positions.
+    if (rowShift > 0 && metrics(editedBpPlacements).rowShift < rowShift
+        && editedBpPlacements.every(p => p.row + p.h + rowShift <= MAX_GRID_ROWS)) {
+        editedBpPlacements = editedBpPlacements.map(p => ({ ...p, row: p.row + rowShift }));
+    }
 
     // Always ensure canonical wide placements exist when widgets exist.
     if (editedBpName === "wide") {
@@ -263,8 +292,10 @@ function buildCommitPlacements(nextWidgets, editedBpName, editedBpPlacements) {
         for (const w of nextWidgets) {
             if (!wideResult.some(p => p.instanceId === w.instanceId)) {
                 const def = getWidgetDef(w.widgetType);
-                const s = def ? (def.sizes[1] || def.sizes[0]) : { w: 3, h: 2 };
-                const slot = findFirstFreeSlot(wideResult, s.w, s.h, 12);
+                const { cols } = getBreakpointByName("wide");
+                const sizes = def ? effectiveSizesForBreakpoint(def.sizes, cols) : [{ w: 12, h: 8 }];
+                const size = sizes[1] || sizes[0];
+                const slot = findDefaultSlot(wideResult, size, cols);
                 if (slot)
                     wideResult.push({ instanceId: w.instanceId, ...slot });
             }
@@ -282,9 +313,9 @@ function buildCommitPlacements(nextWidgets, editedBpName, editedBpPlacements) {
         for (const w of nextWidgets) {
             if (!kept.some(p => p.instanceId === w.instanceId)) {
                 const def = getWidgetDef(w.widgetType);
-                const eff = def ? effectiveSizesForBreakpoint(def.sizes, bp.cols) : [{ w: 2, h: 2 }];
+                const eff = def ? effectiveSizesForBreakpoint(def.sizes, bp.cols) : [{ w: GRID_STEPS_PER_CELL * 2, h: GRID_STEPS_PER_CELL * 2 }];
                 const s = eff[1] || eff[0];
-                const slot = findFirstFreeSlot(kept, s.w, s.h, bp.cols);
+                const slot = findDefaultSlot(kept, s, bp.cols);
                 if (slot)
                     kept.push({ instanceId: w.instanceId, ...slot });
             }
@@ -360,14 +391,11 @@ async function commitLayoutChange(nextWidgets, nextPlacements, nextCompactMode, 
 }
 
 function restoreFocusAfterCommit(focusInstanceId) {
-    if (focusInstanceId) {
-        const entry = mountedCards.get(focusInstanceId);
-        if (entry) {
-            const target = isEditing ? entry.chrome.dragBtn : entry.chrome.menuBtn;
-            if (target) {
-                target.focus({ preventScroll: true });
-                return;
-            }
+    if (isEditing && focusInstanceId) {
+        const target = mountedCards.get(focusInstanceId)?.chrome.dragBtn;
+        if (target) {
+            target.focus({ preventScroll: true });
+            return;
         }
     }
     if (layout.widgets.length === 0 && document.activeElement === document.body)
@@ -380,47 +408,52 @@ function isRtl() {
     return getComputedStyle(boardEl).direction === "rtl";
 }
 
-function metrics() {
+function metrics(placements = currentPlacements()) {
     const width = boardEl.clientWidth;
     const { cols, gap, rowHeight } = currentBp;
-    const cellW = (width - gap * (cols - 1)) / cols;
-    return { width, cols, gap, cellW, unitX: cellW + gap, unitY: rowHeight + gap, rtl: isRtl() };
+    const unitY = (rowHeight + gap) / GRID_STEPS_PER_CELL;
+    const viewportHeight = rootEl.clientHeight;
+    const centeredOrigin = (viewportHeight + gap) / 2;
+    const firstRow = Math.min(0, ...placements.map(p => p.row));
+    // Keep the topmost tile reachable in a short window. Shift by whole rows
+    // so that the viewport center remains a reachable snap point.
+    const firstVisibleRow = Math.ceil(-centeredOrigin / unitY);
+    const rowShift = Math.max(0, firstVisibleRow - firstRow);
+    const originY = centeredOrigin + rowShift * unitY;
+    return {
+        width, cols, gap, unitY, originY, viewportHeight, rowShift,
+        unitX: (width - TILE_INLINE_INSET * 2 + gap) / cols,
+        inlineInset: TILE_INLINE_INSET,
+        minRow: Math.max(MIN_GRID_ROW, firstVisibleRow - rowShift),
+        rtl: isRtl(),
+    };
 }
 
 function rectFor(placement, m) {
     const w = placement.w * m.unitX - m.gap;
     const h = placement.h * m.unitY - m.gap;
-    let x = placement.col * m.unitX;
+    let x = m.inlineInset + placement.col * m.unitX;
     if (m.rtl)
         x = m.width - x - w;
-    return { x, y: placement.row * m.unitY, w, h };
-}
-
-function rowsNeeded(placements) {
-    let rows = 0;
-    for (const p of placements)
-        rows = Math.max(rows, p.row + p.h);
-    return rows;
-}
-
-function boardRowCount(placements, m) {
-    const used = rowsNeeded(placements);
-    if (!isEditing && !gestureState)
-        return Math.max(used, layout.widgets.length === 0 ? 4 : 1);
-    // While editing, the board reaches the bottom of the window so there is always open
-    // pegboard to move a tile onto.
-    const top = boardEl.getBoundingClientRect().top + window.scrollY;
-    const visibleRows = Math.floor((window.innerHeight - top - 96 + m.gap) / m.unitY);
-    return Math.min(MAX_GRID_ROWS, Math.max(used + EXTRA_EDIT_ROWS, visibleRows, 3));
+    return { x, y: m.originY + placement.row * m.unitY, w, h };
 }
 
 function applyBoardSize(placements, m) {
-    const rows = boardRowCount(placements, m);
-    const height = rows * m.unitY - m.gap;
+    const lastRow = Math.max(m.minRow, ...placements.map(p => p.row + p.h));
+    // Leave room below occupied rows for scrolling while dragging, and fill
+    // the window even when there are no tiles.
+    const endRow = Math.min(MAX_GRID_ROWS, lastRow + (isEditing ? EXTRA_EDIT_ROWS : 0));
+    const bottomClearance = !isEditing && !bannerEl.classList.contains("hidden")
+        ? Math.max(TILE_BOTTOM_CLEARANCE, m.viewportHeight - footerEl.getBoundingClientRect().top + 8)
+        : TILE_BOTTOM_CLEARANCE;
+    const height = Math.max(
+        m.viewportHeight,
+        m.originY + endRow * m.unitY - m.gap,
+        m.originY + lastRow * m.unitY - m.gap + bottomClearance,
+    );
     boardEl.style.height = `${height}px`;
     boardEl.style.setProperty("--tile-gap", `${m.gap}px`);
-    dots.setGeometry({ cols: m.cols, rows, unitX: m.unitX, unitY: m.unitY, gap: m.gap, width: m.width, height, rtl: m.rtl });
-    return rows;
+    dots.setGeometry({ ...m, height });
 }
 
 function positionTile(section, placement, m) {
@@ -455,8 +488,8 @@ function cellFromPoint(clientX, clientY, m) {
     if (m.rtl)
         x = m.width - x;
     return {
-        col: Math.floor((x + m.gap / 2) / m.unitX),
-        row: Math.floor((clientY - rect.top + m.gap / 2) / m.unitY),
+        col: Math.floor((x - m.inlineInset + m.gap / 2) / m.unitX),
+        row: Math.floor((clientY - rect.top - m.originY + m.gap / 2) / m.unitY),
     };
 }
 
@@ -486,12 +519,12 @@ function mountWidgetIntoCard(entry) {
     const { instance, chrome } = entry;
     const def = getWidgetDef(instance.widgetType);
     const placement = currentPlacements().find(p => p.instanceId === instance.instanceId);
-    const tier = computeCardTier(placement || { w: 3, h: 2 }, def, currentBp.cols);
+    const tier = computeCardTier(placement || { w: 12, h: 8 }, def, currentBp.cols);
 
     const mountSeq = ++entry.mountSeq;
     chrome.body.replaceChildren();
 
-    loadWidgetModule(instance.widgetType)
+    entry.mountPromise = loadWidgetModule(instance.widgetType)
         .then(mod => {
             if (entry.mountSeq !== mountSeq || !mountedCards.has(instance.instanceId))
                 return;
@@ -508,13 +541,14 @@ function mountWidgetIntoCard(entry) {
                     chrome.metaEl.textContent = text || "";
                 },
                 openUrl: (url, newTab = false) => request("navigation.openUrl", { url, newTab }),
+                openSettings: () => openConfigureDialog(instance.instanceId),
                 updateConfig: async patch => {
                     const nextConfig = { ...(entry.instance.config || {}), ...patch };
                     const nextWidgets = layout.widgets.map(w =>
                         w.instanceId === instance.instanceId ? { ...w, config: nextConfig } : w
                     );
                     const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, currentPlacements());
-                    await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, { recordUndo: false });
+                    return commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, { recordUndo: false });
                 },
                 reportError: errMsg => {
                     renderCardError(
@@ -573,10 +607,6 @@ const cardHandlers = {
     onResizeTo: (id, w, h) => handleResizeTo(id, w, h),
     onOpenReplacePicker: id => openReplacePicker(id),
     isCustomizeHidden: () => customizeHidden,
-    onCustomizeBoard: () => {
-        setEditing(true);
-        btnAddWidget.focus({ preventScroll: true });
-    },
     onShowCustomizeButton: () => setCustomizeButton("shown"),
     onOpenConfigure: id => openConfigureDialog(id),
     onRemove: id => handleRemoveWidget(id),
@@ -601,7 +631,7 @@ function renderGrid() {
             unmountCard(id, hasRenderedOnce);
     }
 
-    const m = metrics();
+    const m = metrics(placements);
     applyBoardSize(placements, m);
 
     const firstRender = !hasRenderedOnce;
@@ -709,6 +739,11 @@ function updateToolbarState() {
     gridEl.classList.toggle("is-editing", isEditing);
     editToolbarEl.classList.toggle("hidden", !isEditing);
     customizeWrapEl.classList.toggle("hidden", isEditing || customizeHidden);
+    gridWrapEl.tabIndex = customizeHidden && !isEditing ? 0 : -1;
+    if (gridWrapEl.tabIndex === 0)
+        gridWrapEl.setAttribute("aria-description", "Press Enter for dashboard options.");
+    else
+        gridWrapEl.removeAttribute("aria-description");
     btnCompact.setAttribute("aria-pressed", layout.compactMode ? "true" : "false");
     btnUndo.disabled = undoStack.length === 0;
     btnRedo.disabled = redoStack.length === 0;
@@ -762,7 +797,8 @@ async function completeSwap(targetId) {
     }
     const srcId = swapSourceId;
     clearSwapMode();
-    const swapped = swapPlacements(currentPlacements(), srcId, targetId, currentBp.cols, layout.compactMode);
+    const cur = currentPlacements();
+    const swapped = swapPlacements(cur, srcId, targetId, currentBp.cols, layout.compactMode, metrics(cur).minRow);
     if (!swapped.ok) {
         announce(swapped.error);
         setSaveStatus(swapped.error, true);
@@ -807,6 +843,7 @@ async function handleAddWidget(def, { tier = null, placement = null } = {}) {
     const inst = newInstance(def);
     const nextWidgets = [...layout.widgets, inst];
     const cur = currentPlacements();
+    const m = metrics(cur);
     let nextCur;
     let landed;
     if (placement) {
@@ -814,7 +851,8 @@ async function handleAddWidget(def, { tier = null, placement = null } = {}) {
             [...cur, { instanceId: inst.instanceId, col: placement.col, row: placement.row, w: placement.w, h: placement.h }],
             [inst.instanceId],
             currentBp.cols,
-            layout.compactMode
+            layout.compactMode,
+            m.minRow
         );
         if (!resolved.ok) {
             announce(resolved.error);
@@ -824,7 +862,7 @@ async function handleAddWidget(def, { tier = null, placement = null } = {}) {
         landed = nextCur.find(p => p.instanceId === inst.instanceId);
     } else {
         const size = defaultSizeFor(def, tier);
-        const slot = findFirstFreeSlot(cur, size.w, size.h, currentBp.cols);
+        const slot = findDefaultSlot(cur, size, currentBp.cols);
         if (!slot) {
             announce("There is no room left on the board.");
             return false;
@@ -834,13 +872,15 @@ async function handleAddWidget(def, { tier = null, placement = null } = {}) {
     }
     const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, nextCur);
     const ok = await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, {
-        announcement: `Added ${def.title} at column ${landed.col + 1}, row ${landed.row + 1}.`,
+        announcement: `Added ${def.title} at column ${landed.col + 1}, row ${landed.row - m.minRow + 1}.`,
         pulseId: inst.instanceId,
     });
     if (ok && !placement) {
         const section = mountedCards.get(inst.instanceId)?.chrome.section;
         section?.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
     }
+    if (ok && def.id === "image")
+        await openNewImageSettings(inst.instanceId);
     return ok;
 }
 
@@ -864,17 +904,19 @@ async function handleReplaceWidget(newDef, oldInstanceId) {
             }
             : p
     );
-    const resolved = resolveLayout(next, [inst.instanceId], currentBp.cols, layout.compactMode);
+    const resolved = resolveLayout(next, [inst.instanceId], currentBp.cols, layout.compactMode, metrics(cur).minRow);
     if (!resolved.ok) {
         announce(resolved.error);
         return;
     }
     const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, resolved.placements);
-    await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, {
+    const ok = await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, {
         announcement: `Replaced the tile with ${newDef.title}.`,
         focusInstanceId: inst.instanceId,
         pulseId: inst.instanceId,
     });
+    if (ok && newDef.id === "image")
+        await openNewImageSettings(inst.instanceId);
 }
 
 async function handleRemoveWidget(instanceId) {
@@ -886,7 +928,7 @@ async function handleRemoveWidget(instanceId) {
     const nextWidgets = layout.widgets.filter(w => w.instanceId !== instanceId);
     const remaining = cur.filter(p => p.instanceId !== instanceId);
     const resolved = layout.compactMode
-        ? resolveLayout(remaining, [], currentBp.cols, true)
+        ? resolveLayout(remaining, [], currentBp.cols, true, metrics(cur).minRow)
         : { ok: true, placements: remaining };
     const nextPlacements = buildCommitPlacements(nextWidgets, currentBp.name, resolved.placements);
     const def = getWidgetDef(layout.widgets.find(w => w.instanceId === instanceId)?.widgetType);
@@ -901,7 +943,7 @@ async function handleRemoveWidget(instanceId) {
 async function commitTilePlacement(instanceId, candidate, announcement) {
     const cur = currentPlacements();
     const next = cur.map(p => (p.instanceId === instanceId ? { ...p, ...candidate, instanceId } : p));
-    const resolved = resolveLayout(next, [instanceId], currentBp.cols, layout.compactMode);
+    const resolved = resolveLayout(next, [instanceId], currentBp.cols, layout.compactMode, metrics(cur).minRow);
     if (!resolved.ok) {
         announce(resolved.error);
         setSaveStatus(resolved.error, true);
@@ -922,19 +964,21 @@ async function handleResizeTo(instanceId, targetW, targetH) {
     await commitTilePlacement(
         instanceId,
         { col: Math.min(target.col, currentBp.cols - targetW), row: target.row, w: targetW, h: targetH },
-        `Resized to ${targetW} by ${targetH}.`
+        `Resized to ${formatGridSize({ w: targetW, h: targetH }, " by ")}.`
     );
 }
 
 async function handleKeyboardMove(instanceId, dx, dy) {
-    const target = currentPlacements().find(p => p.instanceId === instanceId);
+    const placements = currentPlacements();
+    const target = placements.find(p => p.instanceId === instanceId);
     if (!target)
         return;
+    const { minRow } = metrics(placements);
     const col = Math.max(0, Math.min(target.col + dx, currentBp.cols - target.w));
-    const row = Math.max(0, Math.min(target.row + dy, MAX_GRID_ROWS - target.h));
+    const row = Math.max(minRow, Math.min(target.row + dy, MAX_GRID_ROWS - target.h));
     if (col === target.col && row === target.row)
         return;
-    await commitTilePlacement(instanceId, { col, row, w: target.w, h: target.h }, `Moved to column ${col + 1}, row ${row + 1}.`);
+    await commitTilePlacement(instanceId, { col, row, w: target.w, h: target.h }, `Moved to column ${col + 1}, row ${row - minRow + 1}.`);
 }
 
 async function handleKeyboardResize(instanceId, dx, dy) {
@@ -944,12 +988,11 @@ async function handleKeyboardResize(instanceId, dx, dy) {
     if (!def || !target)
         return;
     const valid = effectiveSizesForBreakpoint(def.sizes, currentBp.cols);
-    const curIdx = valid.findIndex(s => s.w === target.w && s.h === target.h);
-    const delta = dx + dy > 0 ? 1 : -1;
-    const nextIdx = Math.max(0, Math.min(valid.length - 1, (curIdx === -1 ? 0 : curIdx) + delta));
-    if (valid[nextIdx].w === target.w && valid[nextIdx].h === target.h)
+    const limits = resizeLimits(target, valid, currentBp.cols);
+    const next = snapResizePlacement(target, target.w + dx * GRID_RESIZE_STEP, target.h + dy * GRID_RESIZE_STEP, limits);
+    if (next.w === target.w && next.h === target.h)
         return;
-    await handleResizeTo(instanceId, valid[nextIdx].w, valid[nextIdx].h);
+    await handleResizeTo(instanceId, next.w, next.h);
 }
 
 // --- Drag, resize and drag-in ---------------------------------------------------------
@@ -969,11 +1012,13 @@ function beginPointerGesture(instanceId, mode, point) {
     selectedId = instanceId;
     refreshTileStates();
 
-    const m = metrics();
+    const m = metrics(base);
     const boardRect = boardEl.getBoundingClientRect();
     const startRect = rectFor(start, m);
     const inst = layout.widgets.find(w => w.instanceId === instanceId);
     const def = inst ? getWidgetDef(inst.widgetType) : null;
+
+    const sizes = def ? effectiveSizesForBreakpoint(def.sizes, m.cols) : [];
 
     gestureState = {
         mode,
@@ -986,6 +1031,7 @@ function beginPointerGesture(instanceId, mode, point) {
         section: entry.chrome.section,
         sizeBadge: entry.chrome.sizeBadge,
         startRect,
+        resizeLimits: resizeLimits(start, sizes, m.cols),
         grabDX: point.clientX - boardRect.left - startRect.x,
         grabDY: point.clientY - boardRect.top - startRect.y,
         // For a resize, how far the pointer sits from the corner being dragged.
@@ -1004,6 +1050,7 @@ function beginPointerGesture(instanceId, mode, point) {
     rootEl.classList.add("is-gesturing");
     dots.setFootprint(start);
     positionLanding(start, m);
+    updateAlignmentGuides(startRect);
     if (mode === "resize")
         updateSizeBadge(start);
     startAutoScroll();
@@ -1011,10 +1058,10 @@ function beginPointerGesture(instanceId, mode, point) {
 
 function candidateForMove(x, y, w, h, m) {
     const wPx = w * m.unitX - m.gap;
-    const inlineX = m.rtl ? m.width - x - wPx : x;
+    const inlineX = (m.rtl ? m.width - x - wPx : x) - m.inlineInset;
     return {
         col: Math.max(0, Math.min(Math.round(inlineX / m.unitX), m.cols - w)),
-        row: Math.max(0, Math.min(Math.round(y / m.unitY), MAX_GRID_ROWS - h)),
+        row: Math.max(m.minRow, Math.min(Math.round((y - m.originY) / m.unitY), MAX_GRID_ROWS - h)),
         w,
         h,
     };
@@ -1041,7 +1088,7 @@ function resolvePreview(candidate) {
     }
 
     const next = [...others, { instanceId: id, ...candidate }];
-    return resolveLayout(next, [id], gs.m.cols, layout.compactMode);
+    return resolveLayout(next, [id], gs.m.cols, layout.compactMode, gs.m.minRow);
 }
 
 function updateSizeBadge(candidate) {
@@ -1049,7 +1096,7 @@ function updateSizeBadge(candidate) {
     if (!gs?.sizeBadge)
         return;
     const tier = computeCardTier(candidate, gs.def, gs.m.cols);
-    gs.sizeBadge.textContent = `${SIZE_NAMES[tier] || "Size"} · ${candidate.w} × ${candidate.h}`;
+    gs.sizeBadge.textContent = `${SIZE_NAMES[tier] || "Size"} · ${formatGridSize(candidate)}`;
     gs.sizeBadge.classList.remove("hidden");
 }
 
@@ -1084,6 +1131,69 @@ function applyCandidate(candidate) {
         updateSizeBadge(candidate);
 }
 
+function updateAlignmentGuides(inHand) {
+    const gs = gestureState;
+    guideX.hidden = guideY.hidden = true;
+    gs.centeredScrollDelta = 0;
+    if (!gs.candidate)
+        return inHand;
+
+    const { m } = gs;
+    const landing = rectFor(gs.candidate, m);
+    const board = boardEl.getBoundingClientRect();
+    const viewportWidth = rootEl.clientWidth;
+    const viewportHeight = rootEl.clientHeight;
+    const visibleTop = Math.max(0, -board.top);
+    const visibleBottom = Math.min(board.height, viewportHeight - board.top);
+    const centerX = landing.x + landing.w / 2;
+    const centerY = landing.y + landing.h / 2;
+    const viewportCenterY = viewportHeight / 2 - board.top;
+    const scrollDelta = centerY - viewportCenterY;
+    const viewportX = Math.abs(centerX - (viewportWidth / 2 - board.left)) <= 0.75;
+    // Scrolling can leave the viewport center between two rows. Align the
+    // preview here, then bring the drop position to the same line on release.
+    const centeredScroll = window.scrollY + scrollDelta;
+    const viewportY = Math.abs(scrollDelta) <= m.unitY / 2
+        && centeredScroll >= -0.5 && centeredScroll <= rootEl.scrollHeight - viewportHeight + 0.5;
+    const others = gs.preview.filter(p => p.instanceId !== gs.instanceId).map(p => rectFor(p, m));
+    const visiblePeers = others.filter(p => p.y < visibleBottom && p.y + p.h > visibleTop);
+    const peerX = visiblePeers.find(p => Math.abs(p.x + p.w / 2 - centerX) <= 0.75);
+    const peerY = visiblePeers.find(p => Math.abs(p.y + p.h / 2 - centerY) <= 0.75);
+
+    const aligned = { ...inHand };
+    if ((viewportX || peerX)
+        && Math.abs(inHand.x + inHand.w / 2 - centerX) <= Math.min(10, m.unitX / 2)
+        && visibleBottom > visibleTop) {
+        const top = viewportX ? visibleTop : Math.max(visibleTop, Math.min(landing.y, peerX.y) - 8);
+        const bottom = viewportX ? visibleBottom : Math.min(visibleBottom, Math.max(landing.y + landing.h, peerX.y + peerX.h) + 8);
+        if (bottom > top) {
+            guideX.classList.toggle("is-viewport", viewportX);
+            guideX.style.left = `${centerX}px`;
+            guideX.style.top = `${top}px`;
+            guideX.style.height = `${bottom - top}px`;
+            guideX.hidden = false;
+            aligned.x = landing.x;
+            aligned.w = landing.w;
+        }
+    }
+    if ((viewportY || peerY)
+        && Math.abs(inHand.y + inHand.h / 2 - centerY) <= Math.min(10, m.unitY / 2)
+        && centerY >= visibleTop && centerY <= visibleBottom) {
+        const left = viewportY ? 0 : Math.max(0, Math.min(landing.x, peerY.x) - 8);
+        const right = viewportY ? m.width : Math.min(m.width, Math.max(landing.x + landing.w, peerY.x + peerY.w) + 8);
+        guideY.classList.toggle("is-viewport", viewportY);
+        guideY.style.left = `${left}px`;
+        guideY.style.top = `${viewportY ? viewportCenterY : centerY}px`;
+        guideY.style.width = `${right - left}px`;
+        guideY.hidden = false;
+        aligned.y = landing.y - (viewportY ? scrollDelta : 0);
+        aligned.h = landing.h;
+        if (viewportY)
+            gs.centeredScrollDelta = scrollDelta;
+    }
+    return aligned;
+}
+
 function updatePointerGesture(point) {
     const gs = gestureState;
     if (!gs)
@@ -1095,34 +1205,19 @@ function updatePointerGesture(point) {
     const py = point.clientY - boardRect.top;
 
     if (gs.mode === "resize") {
-        const minW = m.cellW * 0.7;
-        const minH = (m.unitY - m.gap) * 0.7;
-        const maxW = m.rtl ? gs.startRect.x + gs.startRect.w : m.width - gs.startRect.x;
-        let wPx;
-        let xPx = gs.startRect.x;
-        if (m.rtl) {
-            wPx = Math.max(minW, Math.min(maxW, gs.startRect.x + gs.startRect.w - (px - gs.cornerDX)));
-            xPx = gs.startRect.x + gs.startRect.w - wPx;
-        } else {
-            wPx = Math.max(minW, Math.min(maxW, px + gs.cornerDX - gs.startRect.x));
-        }
-        const hPx = Math.max(minH, py + gs.cornerDY - gs.startRect.y);
-        gs.section.style.width = `${wPx}px`;
-        gs.section.style.height = `${hPx}px`;
-        gs.section.style.translate = `${xPx}px ${gs.startRect.y}px`;
+        const { minW, minH, maxW, maxH } = gs.resizeLimits;
+        const desiredWidth = m.rtl
+            ? gs.startRect.x + gs.startRect.w - (px - gs.cornerDX)
+            : px + gs.cornerDX - gs.startRect.x;
+        const wPx = Math.max(minW * m.unitX - m.gap, Math.min(maxW * m.unitX - m.gap, desiredWidth));
+        const hPx = Math.max(minH * m.unitY - m.gap, Math.min(maxH * m.unitY - m.gap, py + gs.cornerDY - gs.startRect.y));
+        const xPx = m.rtl ? gs.startRect.x + gs.startRect.w - wPx : gs.startRect.x;
 
-        const valid = gs.def ? effectiveSizesForBreakpoint(gs.def.sizes, m.cols) : [{ w: gs.start.w, h: gs.start.h }];
-        const snapped = snapResizeSize(
-            Math.max(1, Math.round((wPx + m.gap) / m.unitX)),
-            Math.max(1, Math.round((hPx + m.gap) / m.unitY)),
-            valid
-        );
-        applyCandidate({
-            col: Math.min(gs.start.col, m.cols - snapped.w),
-            row: gs.start.row,
-            w: snapped.w,
-            h: snapped.h,
-        });
+        applyCandidate(snapResizePlacement(gs.start, (wPx + m.gap) / m.unitX, (hPx + m.gap) / m.unitY, gs.resizeLimits));
+        const aligned = updateAlignmentGuides({ x: xPx, y: gs.startRect.y, w: wPx, h: hPx });
+        gs.section.style.width = `${aligned.w}px`;
+        gs.section.style.height = `${aligned.h}px`;
+        gs.section.style.translate = `${aligned.x}px ${aligned.y}px`;
         return;
     }
 
@@ -1130,20 +1225,19 @@ function updatePointerGesture(point) {
     const w = gs.start.w;
     const h = gs.start.h;
     const wPx = w * m.unitX - m.gap;
+    const hPx = h * m.unitY - m.gap;
     const x = Math.max(-24, Math.min(px - gs.grabDX, m.width - wPx + 24));
     const y = Math.max(-24, py - gs.grabDY);
-    gs.section.style.translate = `${x}px ${y}px`;
-
+    let outside = false;
     if (gs.mode === "add") {
         // The ducked shelf still shows a sliver at the bottom; letting go there puts the widget back.
         const overShelf = picker.isOpen() && point.clientY > window.innerHeight - 46;
-        const outside = point.clientY < boardRect.top - 60 || overShelf;
+        outside = point.clientY < boardRect.top - 60 || overShelf;
         gs.section.classList.toggle("is-homeless", outside);
-        applyCandidate(outside ? null : candidateForMove(x, y, w, h, m));
-        return;
     }
-
-    applyCandidate(candidateForMove(x, y, w, h, m));
+    applyCandidate(outside ? null : candidateForMove(x, y, w, h, m));
+    const aligned = updateAlignmentGuides({ x, y, w: wPx, h: hPx });
+    gs.section.style.translate = `${aligned.x}px ${aligned.y}px`;
 }
 
 function endGestureVisuals() {
@@ -1152,6 +1246,7 @@ function endGestureVisuals() {
     rootEl.classList.remove("is-gesturing");
     dots.setFootprint(null);
     positionLanding(null, gs.m);
+    guideX.hidden = guideY.hidden = true;
     gs.sizeBadge?.classList.add("hidden");
     gs.section.style.rotate = "";
     gs.section.classList.remove("is-dragging", "is-resizing", "is-homeless");
@@ -1166,6 +1261,10 @@ async function commitPointerGesture() {
     const gs = gestureState;
     if (!gs)
         return;
+    // Keep the snapped tile on the viewport guide when the page was scrolled
+    // between grid rows. Native scrolling rounds to whole CSS pixels.
+    if (Math.abs(gs.centeredScrollDelta) >= 0.5)
+        window.scrollBy(0, gs.centeredScrollDelta);
     endGestureVisuals();
     gestureState = null;
 
@@ -1195,8 +1294,8 @@ async function commitPointerGesture() {
     const nextPlacements = buildCommitPlacements(layout.widgets, gs.bpName, gs.preview);
     const landed = gs.candidate;
     const message = gs.mode === "move"
-        ? `Moved to column ${landed.col + 1}, row ${landed.row + 1}.`
-        : `Resized to ${landed.w} by ${landed.h}.`;
+        ? `Moved to column ${landed.col + 1}, row ${landed.row - gs.m.minRow + 1}.`
+        : `Resized to ${formatGridSize(landed, " by ")}.`;
     await commitLayoutChange(layout.widgets, nextPlacements, layout.compactMode, {
         announcement: message,
         focusInstanceId: gs.instanceId,
@@ -1378,7 +1477,7 @@ function placementAtPointer(e) {
     const cell = cellFromPoint(e.clientX, e.clientY, m);
     return {
         col: Math.max(0, Math.min(cell.col, m.cols - tile.w)),
-        row: Math.max(0, Math.min(cell.row, MAX_GRID_ROWS - tile.h)),
+        row: Math.max(m.minRow, Math.min(cell.row, MAX_GRID_ROWS - tile.h)),
         w: tile.w,
         h: tile.h,
     };
@@ -1407,7 +1506,7 @@ boardEl.addEventListener("click", async e => {
         return;
     const id = selectedId;
     clearHoverCell();
-    await commitTilePlacement(id, target, `Moved to column ${target.col + 1}, row ${target.row + 1}.`);
+    await commitTilePlacement(id, target, `Moved to column ${target.col + 1}, row ${target.row - metrics().minRow + 1}.`);
 });
 
 // Pressing and holding an empty part of the page starts editing, as it would on a phone's home screen.
@@ -1440,6 +1539,16 @@ document.body.addEventListener("pointerdown", e => {
 
 // --- Dialogs and the shelf --------------------------------------------------------------
 
+async function openNewImageSettings(instanceId) {
+    const entry = mountedCards.get(instanceId);
+    if (!entry)
+        return;
+    picker.close();
+    await entry.mountPromise;
+    if (isEditing && !configDialog.open && !confirmDialog.open)
+        openConfigureDialog(instanceId);
+}
+
 function openConfigureDialog(instanceId) {
     const entry = mountedCards.get(instanceId);
     if (!entry || typeof entry.controller?.renderConfig !== "function")
@@ -1451,7 +1560,7 @@ function openConfigureDialog(instanceId) {
     showDialog(configDialog);
 }
 
-function shelfState(extra) {
+function shelfState(returnFocusEl, extra) {
     return {
         ctx,
         placedWidgets: layout.widgets,
@@ -1461,6 +1570,7 @@ function shelfState(extra) {
         onClose: () => {
             rootEl.classList.remove("shelf-open");
             updateToolbarState();
+            returnFocusEl.focus({ preventScroll: true });
         },
         ...extra,
     };
@@ -1472,7 +1582,7 @@ function openAddPicker(initialTab = "widgets") {
     if (!isEditing)
         setEditing(true);
     selectTile(null);
-    picker.open(shelfState({
+    picker.open(shelfState(initialTab === "presets" ? btnPresets : btnAddWidget, {
         mode: "add",
         initialTab,
         onSelectWidget: (def, _oldId, tier) => handleAddWidget(def, { tier }),
@@ -1486,7 +1596,7 @@ function openReplacePicker(instanceId) {
         setEditing(true);
     const inst = layout.widgets.find(w => w.instanceId === instanceId);
     const def = inst ? getWidgetDef(inst.widgetType) : null;
-    picker.open(shelfState({
+    picker.open(shelfState(mountedCards.get(instanceId)?.chrome.menuBtn || btnAddWidget, {
         mode: "replace",
         initialTab: "widgets",
         replaceInstanceId: instanceId,
@@ -1553,9 +1663,15 @@ function openPresetConfirmation(preset) {
                     configVersion: 1,
                     config: def.defaultConfig ? def.defaultConfig() : {},
                 });
-                wide.push({ instanceId, col: it.col, row: it.row, w: it.w, h: it.h });
+                wide.push({
+                    instanceId,
+                    col: it.col * GRID_STEPS_PER_CELL,
+                    row: it.row * GRID_STEPS_PER_CELL,
+                    w: it.w * GRID_STEPS_PER_CELL,
+                    h: it.h * GRID_STEPS_PER_CELL,
+                });
             }
-            const nextPlacements = wide.length ? { wide } : {};
+            const nextPlacements = wide.length ? { wide: centerPlacements(wide) } : {};
             await commitLayoutChange(nextWidgets, nextPlacements, layout.compactMode, {
                 announcement: `Applied the ${preset.name} preset.`,
             });
@@ -1566,22 +1682,23 @@ function openPresetConfirmation(preset) {
 
 // --- Dock -------------------------------------------------------------------------------
 
+function startEditing(origin = null) {
+    setEditing(true, origin);
+    btnAddWidget.focus({ preventScroll: true });
+}
+
 btnCustomize.addEventListener("click", e => {
     const rect = btnCustomize.getBoundingClientRect();
     // A keyboard or scripted click has no position; the ripple then starts at the button.
     const origin = e.clientX || e.clientY
         ? { clientX: e.clientX, clientY: e.clientY }
         : { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-    setEditing(true, origin);
-    btnAddWidget.focus({ preventScroll: true });
+    startEditing(origin);
 });
 
 btnDoneEdit.addEventListener("click", () => {
     setEditing(false);
-    if (customizeHidden)
-        document.body.focus({ preventScroll: true });
-    else
-        btnCustomize.focus({ preventScroll: true });
+    (customizeHidden ? gridWrapEl : btnCustomize).focus({ preventScroll: true });
 });
 
 btnCustomizeHide.append(icon("close", 10));
@@ -1593,12 +1710,14 @@ async function setCustomizeButton(visibility) {
         const res = await request("dashboard.setCustomizeButton", { visibility });
         customizeHidden = Boolean(res.hidden);
         updateToolbarState();
-        if (visibility === "session")
-            announce("The Customize button is hidden until you quit the browser. A tile’s menu can still customize the board.");
-        else if (visibility === "forever")
-            announce("The Customize button is hidden. A tile’s menu can customize the board or bring the button back.");
-        else
+        if (customizeHidden) {
+            const duration = visibility === "session" ? " until you quit the browser" : "";
+            announce(`The Customize button is hidden${duration}. Right-click the dashboard background or focus the dashboard and press Enter for options.`);
+            gridWrapEl.focus({ preventScroll: true });
+        } else {
             announce("The Customize button is back.");
+            (isEditing ? btnAddWidget : btnCustomize).focus({ preventScroll: true });
+        }
     } catch (err) {
         setSaveStatus(err.message || "Couldn’t change the Customize button.", true);
     }
@@ -1611,6 +1730,30 @@ btnCustomizeHide.addEventListener("click", () => {
         { glyph: "eye", label: "Hide for this session", keepsFocus: true, onClick: () => setCustomizeButton("session") },
         { glyph: "eye", label: "Hide forever", keepsFocus: true, onClick: () => setCustomizeButton("forever") },
     ]);
+});
+
+// Keep the board's controls reachable after the user dismisses the button.
+function openDashboardOptions(point) {
+    openActionMenu(gridWrapEl, "Dashboard options", [
+        { glyph: "customize", label: "Customize dashboard", keepsFocus: true, onClick: () => startEditing() },
+        { glyph: "eye", label: "Show Customize button", keepsFocus: true, onClick: () => setCustomizeButton("shown") },
+    ], point);
+}
+
+gridWrapEl.addEventListener("contextmenu", e => {
+    if (!customizeHidden || isEditing || e.target.closest(".dash-card, button, a, input, textarea, select"))
+        return;
+    e.preventDefault();
+    openDashboardOptions({ x: e.clientX, y: e.clientY });
+});
+
+gridWrapEl.addEventListener("keydown", e => {
+    if (!customizeHidden || isEditing || e.target !== gridWrapEl)
+        return;
+    if (e.key === "Enter" || e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+        e.preventDefault();
+        openDashboardOptions({ x: 16, y: 16 });
+    }
 });
 
 onDashboardEvent("customizeButtonChanged", data => {
@@ -1630,7 +1773,7 @@ swapCancelBtn.addEventListener("click", () => {
 btnCompact.addEventListener("click", async () => {
     const nextCompact = !layout.compactMode;
     const cur = currentPlacements();
-    const resolved = nextCompact ? resolveLayout(cur, [], currentBp.cols, true) : { ok: true, placements: cur };
+    const resolved = nextCompact ? resolveLayout(cur, [], currentBp.cols, true, metrics(cur).minRow) : { ok: true, placements: cur };
     if (!resolved.ok)
         return;
     const nextPlacements = buildCommitPlacements(layout.widgets, currentBp.name, resolved.placements);
@@ -1711,14 +1854,13 @@ document.addEventListener("keydown", e => {
     } else if (picker.isOpen()) {
         e.preventDefault();
         picker.close();
-        btnAddWidget.focus({ preventScroll: true });
     } else if (isEditing && selectedId) {
         e.preventDefault();
         selectTile(null);
     } else if (isEditing && !e.target.closest?.("input, textarea, select")) {
         e.preventDefault();
         setEditing(false);
-        btnCustomize.focus({ preventScroll: true });
+        (customizeHidden ? gridWrapEl : btnCustomize).focus({ preventScroll: true });
     }
 });
 
@@ -1744,8 +1886,11 @@ const resizeObserver = new ResizeObserver(entries => {
 resizeObserver.observe(gridWrapEl);
 
 window.addEventListener("resize", () => {
-    if (ctx && isEditing && !gestureState)
-        applyBoardSize(currentPlacements(), metrics());
+    if (!ctx)
+        return;
+    if (gestureState)
+        cancelPointerGesture();
+    withoutMotion(renderGrid);
 });
 
 // Multi-tab live sync
@@ -1832,7 +1977,7 @@ async function init() {
         customizeHidden = Boolean(ctx.customizeHidden);
         dots.refreshColors();
 
-        currentBp = getBreakpointForWidth(gridWrapEl.clientWidth || (window.innerWidth - 56));
+        currentBp = getBreakpointForWidth(gridWrapEl.clientWidth || window.innerWidth);
         updateBanner();
         updateDefaultSaveStatus();
         withoutMotion(renderGrid);

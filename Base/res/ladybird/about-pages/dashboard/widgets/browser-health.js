@@ -51,7 +51,7 @@ export function mount(root, api) {
 
     function render() {
         figuresEl.replaceChildren();
-        figuresEl.append(figure(snapshot.eligibleTabCount, "tabs"), figure(snapshot.loadedTabCount, "loaded"));
+        figuresEl.append(figure(snapshot.eligibleTabCount, snapshot.eligibleTabCount === 1 ? "tab" : "tabs"), figure(snapshot.loadedTabCount, "loaded"));
         api.setMeta(`${snapshot.loadedTabCount} active`);
         listEl.replaceChildren();
 

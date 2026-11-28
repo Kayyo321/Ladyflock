@@ -15,6 +15,7 @@
 #include <AK/Time.h>
 #include <LibURL/InternalURLs.h>
 #include <LibURL/Parser.h>
+#include <LibWebCommon/MimeSniff/Resource.h>
 #include <LibWebView/HistoryStore.h>
 #include <LibWebView/SearchEngine.h>
 #include <LibWebView/Settings.h>
@@ -157,6 +158,38 @@ bool is_public_https_url(URL::URL const& url)
         || serialized.ends_with(".home.arpa"sv, CaseSensitivity::CaseInsensitive))
         return false;
     return true;
+}
+
+String dashboard_image_type(ReadonlyBytes bytes)
+{
+    auto mime_type = Web::MimeSniff::Resource::sniff(bytes, { .sniffing_context = Web::MimeSniff::SniffingContext::Image });
+    auto const& essence = mime_type.essence();
+    if (essence.is_one_of("image/png"sv, "image/jpeg"sv, "image/gif"sv, "image/webp"sv, "image/bmp"sv))
+        return essence;
+
+    // The image sniffing rules do not include AVIF. Its opening file type box
+    // identifies still images and sequences by their major or compatible brand.
+    StringView header { bytes };
+    if (header.length() >= 16 && header.substring_view(4, 4) == "ftyp"sv) {
+        u32 box_size = (static_cast<u32>(bytes[0]) << 24) | (static_cast<u32>(bytes[1]) << 16) | (static_cast<u32>(bytes[2]) << 8) | bytes[3];
+        if (box_size >= 16 && box_size <= bytes.size()) {
+            if (header.substring_view(8, 4).is_one_of("avif"sv, "avis"sv))
+                return "image/avif"_string;
+            for (size_t offset = 16; offset + 4 <= box_size; offset += 4) {
+                if (header.substring_view(offset, 4).is_one_of("avif"sv, "avis"sv))
+                    return "image/avif"_string;
+            }
+        }
+    }
+    return {};
+}
+
+ErrorOr<JsonObject> dashboard_image_payload(StringView mime_type, ReadonlyBytes bytes)
+{
+    auto base64 = TRY(encode_base64(bytes));
+    JsonObject result;
+    result.set("dataUrl"sv, TRY(String::formatted("data:{};base64,{}", mime_type, base64)));
+    return result;
 }
 
 bool is_allowed_tool_url(URL::URL const& url, bool is_persistent_default)
@@ -565,6 +598,22 @@ void DashboardPage::received_message(String const& name, JsonValue const& data)
         handle_items_delete(request_id, params);
     else if (method == "items.clearCompleted"sv)
         handle_items_clear_completed(request_id, params);
+    else if (method == "images.load"sv)
+        handle_image_load(request_id, params);
+    else if (method == "images.save"sv)
+        handle_image_save(request_id, params);
+    else if (method == "images.remove"sv)
+        handle_image_remove(request_id, params);
+    else if (method == "images.fetchUrl"sv)
+        handle_image_fetch_url(request_id, params);
+    else if (method == "shaders.list"sv)
+        handle_shaders_list(request_id);
+    else if (method == "shaders.load"sv)
+        handle_shader_load(request_id, params);
+    else if (method == "shaders.save"sv)
+        handle_shader_save(request_id, params);
+    else if (method == "shaders.remove"sv)
+        handle_shader_remove(request_id, params);
     else if (method == "topSites.load"sv)
         handle_top_sites_load(request_id);
     else if (method == "search.engines"sv)
@@ -669,6 +718,8 @@ void DashboardPage::handle_init(i64 request_id)
     ctx.set("maxCards"sv, static_cast<i64>(DashboardStore::MAX_CARDS));
     ctx.set("maxGridRows"sv, DashboardStore::MAX_GRID_ROWS);
     ctx.set("maxNoteBytes"sv, static_cast<i64>(DashboardStore::MAX_NOTE_BYTES));
+    ctx.set("maxImageBytes"sv, static_cast<i64>(DashboardStore::MAX_IMAGE_BYTES));
+    ctx.set("maxShaderBytes"sv, static_cast<i64>(DashboardStore::MAX_SHADER_BYTES));
     ctx.set("accent"sv, accent_json());
     ctx.set("customizeHidden"sv, is_customize_button_hidden());
 
@@ -850,6 +901,10 @@ void DashboardPage::handle_delete_all_data(i64 request_id)
 void DashboardPage::handle_items_list(i64 request_id, JsonObject const& params)
 {
     auto collection = params.get_string("collection"sv).value_or(String {});
+    if (collection == DashboardStore::IMAGE_SHADER_COLLECTION) {
+        reply_error(request_id, "Use the image shader library."sv);
+        return;
+    }
     auto limit = params.get_integer<size_t>("limit"sv).value_or(DashboardStore::MAX_COLLECTION_ITEMS);
     auto items = store().list_items(m_scope_key, collection, limit);
 
@@ -871,6 +926,10 @@ void DashboardPage::handle_items_list(i64 request_id, JsonObject const& params)
 void DashboardPage::handle_items_save(i64 request_id, JsonObject const& params)
 {
     auto collection = params.get_string("collection"sv).value_or(String {});
+    if (collection == DashboardStore::IMAGE_SHADER_COLLECTION) {
+        reply_error(request_id, "Use the image shader library."sv);
+        return;
+    }
     auto item_id = params.get_string("itemId"sv).value_or(String {});
     if (item_id.is_empty())
         item_id = generate_opaque_id("item"sv);
@@ -912,6 +971,10 @@ void DashboardPage::handle_items_save(i64 request_id, JsonObject const& params)
 void DashboardPage::handle_items_delete(i64 request_id, JsonObject const& params)
 {
     auto collection = params.get_string("collection"sv).value_or(String {});
+    if (collection == DashboardStore::IMAGE_SHADER_COLLECTION) {
+        reply_error(request_id, "Use the image shader library."sv);
+        return;
+    }
     auto item_id = params.get_string("itemId"sv).value_or(String {});
     if (!store().delete_item(m_scope_key, collection, item_id)) {
         reply_error(request_id, "Couldn’t delete item."sv);
@@ -930,6 +993,10 @@ void DashboardPage::handle_items_delete(i64 request_id, JsonObject const& params
 void DashboardPage::handle_items_clear_completed(i64 request_id, JsonObject const& params)
 {
     auto collection = params.get_string("collection"sv).value_or("tasks"_string);
+    if (collection == DashboardStore::IMAGE_SHADER_COLLECTION) {
+        reply_error(request_id, "Use the image shader library."sv);
+        return;
+    }
     Vector<String> ids;
     if (auto arr = params.get_array("itemIds"sv); arr.has_value()) {
         for (size_t i = 0; i < arr->size(); ++i) {
@@ -945,6 +1012,246 @@ void DashboardPage::handle_items_clear_completed(i64 request_id, JsonObject cons
 
     coordinator().broadcast_to_scope(m_scope_key, this, [&](DashboardPage& peer) {
         peer.push_event("collectionChanged"sv, out);
+    });
+}
+
+void DashboardPage::handle_image_load(i64 request_id, JsonObject const& params)
+{
+    auto instance_id = params.get_string("instanceId"sv).value_or(String {});
+    auto result = store().load_image(m_scope_key, instance_id);
+    if (result.is_error()) {
+        reply_error(request_id, "Couldn’t load the saved image."sv);
+        return;
+    }
+    auto image = result.release_value();
+    if (!image.has_value()) {
+        JsonObject out;
+        out.set("dataUrl"sv, JsonValue());
+        reply_ok(request_id, move(out));
+        return;
+    }
+    auto payload = dashboard_image_payload(image->mime_type, image->bytes.bytes());
+    if (payload.is_error()) {
+        reply_error(request_id, "Couldn’t load the saved image."sv);
+        return;
+    }
+    reply_ok(request_id, payload.release_value());
+}
+
+void DashboardPage::handle_image_save(i64 request_id, JsonObject const& params)
+{
+    auto instance_id = params.get_string("instanceId"sv).value_or(String {});
+    auto encoded = params.get_string("base64"sv).value_or(String {});
+    constexpr size_t max_encoded_bytes = ((DashboardStore::MAX_IMAGE_BYTES + 2) / 3) * 4;
+    if (encoded.is_empty() || encoded.bytes().size() > max_encoded_bytes) {
+        reply_error(request_id, "Choose an image up to 8 MB."sv);
+        return;
+    }
+    if (store().verify_image_widget(m_scope_key, instance_id).is_error()) {
+        reply_error(request_id, "This image widget is no longer on the dashboard."sv);
+        return;
+    }
+    auto bytes = decode_base64(encoded, AK::LastChunkHandling::Strict);
+    if (bytes.is_error() || bytes.value().is_empty() || bytes.value().size() > DashboardStore::MAX_IMAGE_BYTES) {
+        reply_error(request_id, "Couldn’t read the image. Choose a valid image up to 8 MB."sv);
+        return;
+    }
+    auto mime_type = dashboard_image_type(bytes.value().bytes());
+    if (mime_type.is_empty()) {
+        reply_error(request_id, "Choose a PNG, JPEG, GIF, WebP, AVIF or BMP image."sv);
+        return;
+    }
+
+    auto data_url = String::formatted("data:{};base64,{}", mime_type, encoded);
+    if (data_url.is_error()) {
+        reply_error(request_id, "Couldn’t prepare the image."sv);
+        return;
+    }
+    auto saved = store().save_image(m_scope_key, instance_id, mime_type, bytes.value().bytes());
+    if (saved.is_error()) {
+        auto message = saved.error().string_literal();
+        reply_error(request_id, message.is_empty() ? "Couldn’t save the image."sv : message);
+        return;
+    }
+    JsonObject out;
+    out.set("dataUrl"sv, data_url.release_value());
+    reply_ok(request_id, move(out));
+    broadcast_image_change(instance_id);
+}
+
+void DashboardPage::handle_image_remove(i64 request_id, JsonObject const& params)
+{
+    auto instance_id = params.get_string("instanceId"sv).value_or(String {});
+    if (store().remove_image(m_scope_key, instance_id).is_error()) {
+        reply_error(request_id, "Couldn’t delete the saved image."sv);
+        return;
+    }
+    reply_ok(request_id);
+    broadcast_image_change(instance_id);
+}
+
+void DashboardPage::broadcast_image_change(String const& instance_id)
+{
+    JsonObject event;
+    event.set("instanceId"sv, instance_id);
+    coordinator().broadcast_to_scope(m_scope_key, this, [&](DashboardPage& peer) {
+        peer.push_event("imageChanged"sv, event);
+    });
+}
+
+void DashboardPage::handle_image_fetch_url(i64 request_id, JsonObject const& params)
+{
+    if (!allows_network_widgets()) {
+        reply_error(request_id, "Import an image from a file in this session."sv);
+        return;
+    }
+    if (Application::the().privacy_network_mode() == Privacy::NetworkMode::Offline) {
+        reply_error(request_id, "The browser is in Offline mode."sv);
+        return;
+    }
+    if (!consume_user_activation()) {
+        reply_error(request_id, "Click Import to fetch the image."sv);
+        return;
+    }
+
+    auto instance_id = params.get_string("instanceId"sv).value_or(String {});
+    if (store().verify_image_widget(m_scope_key, instance_id).is_error()) {
+        reply_error(request_id, "This image widget is no longer on the dashboard."sv);
+        return;
+    }
+    auto url = params.get_string("url"sv).value_or(String {});
+    auto parsed = url.bytes().size() <= 4096 ? URL::Parser::basic_parse(url) : Optional<URL::URL> {};
+    if (!parsed.has_value() || !is_public_https_url(*parsed)) {
+        reply_error(request_id, "Enter a public HTTPS image URL."sv);
+        return;
+    }
+    auto& active_count = coordinator().active_fetches_per_scope.ensure(m_scope_key);
+    if (active_count >= 2) {
+        reply_error(request_id, "Too many dashboard requests. Try again shortly."sv);
+        return;
+    }
+    auto* hub = HubConnection::the_if_connected();
+    if (!hub) {
+        reply_error(request_id, "Browser hub is unavailable."sv);
+        return;
+    }
+
+    ++active_count;
+    auto weak_this = make_weak_ptr();
+    auto scope_key = m_scope_key;
+    auto hub_request_id = hub->fetch_dashboard_resource(web_ui_id(), "image"_string, parsed->serialize(), 0,
+        [weak_this, request_id, scope_key, instance_id = move(instance_id)](HubConnection::RequestResponse response) {
+            auto& count = coordinator().active_fetches_per_scope.ensure(scope_key);
+            if (count > 0)
+                --count;
+            if (!weak_this || weak_this->m_is_closing)
+                return;
+            weak_this->m_in_flight_requests.remove_all_matching([&](u64, u64 web_request_id) {
+                return web_request_id == static_cast<u64>(request_id);
+            });
+            if (response.had_network_error || !response.response_code.has_value() || *response.response_code < 200 || *response.response_code >= 300) {
+                weak_this->reply_error(request_id, "Couldn’t download the image. Use a direct HTTPS link to an image up to 8 MB."sv);
+                return;
+            }
+            if (weak_this->store().verify_image_widget(scope_key, instance_id).is_error()) {
+                weak_this->reply_error(request_id, "This image widget is no longer on the dashboard."sv);
+                return;
+            }
+            auto bytes = response.body.bytes();
+            auto mime_type = bytes.size() <= DashboardStore::MAX_IMAGE_BYTES ? dashboard_image_type(bytes) : String {};
+            if (mime_type.is_empty()) {
+                weak_this->reply_error(request_id, "The URL must lead to a PNG, JPEG, GIF, WebP, AVIF or BMP image up to 8 MB."sv);
+                return;
+            }
+            auto payload = dashboard_image_payload(mime_type, bytes);
+            if (payload.is_error()) {
+                weak_this->reply_error(request_id, "Couldn’t prepare the image."sv);
+                return;
+            }
+            weak_this->reply_ok(request_id, payload.release_value());
+        });
+    m_in_flight_requests.set(hub_request_id, static_cast<u64>(request_id));
+}
+
+void DashboardPage::handle_shaders_list(i64 request_id)
+{
+    auto collection = MUST(String::from_utf8(DashboardStore::IMAGE_SHADER_COLLECTION));
+    auto items = store().list_items(m_scope_key, collection, DashboardStore::MAX_SHADER_FILES);
+    JsonArray shaders;
+    for (auto const& item : items) {
+        auto name = item.value.get_string("name"sv);
+        if (!name.has_value())
+            continue;
+        JsonObject shader;
+        shader.set("id"sv, item.item_id);
+        shader.set("name"sv, name.release_value());
+        shaders.must_append(move(shader));
+    }
+
+    JsonObject out;
+    out.set("shaders"sv, move(shaders));
+    reply_ok(request_id, move(out));
+}
+
+void DashboardPage::handle_shader_load(i64 request_id, JsonObject const& params)
+{
+    auto shader_id = params.get_string("id"sv).value_or(String {});
+    Optional<String> source;
+    if (shader_id.bytes_as_string_view().starts_with("shader-"sv)) {
+        auto collection = MUST(String::from_utf8(DashboardStore::IMAGE_SHADER_COLLECTION));
+        if (auto item = store().get_item(m_scope_key, collection, shader_id); item.has_value()) {
+            if (auto saved_source = item->value.get_string("source"sv); saved_source.has_value())
+                source = *saved_source;
+        }
+    }
+
+    JsonObject out;
+    out.set("source"sv, source.has_value() ? JsonValue { source.release_value() } : JsonValue {});
+    reply_ok(request_id, move(out));
+}
+
+void DashboardPage::handle_shader_save(i64 request_id, JsonObject const& params)
+{
+    auto name = params.get_string("name"sv).value_or(String {});
+    auto source = params.get_string("source"sv).value_or(String {});
+    JsonObject value;
+    value.set("name"sv, name);
+    value.set("source"sv, move(source));
+
+    auto collection = MUST(String::from_utf8(DashboardStore::IMAGE_SHADER_COLLECTION));
+    auto shader_id = generate_opaque_id("shader"sv);
+    auto result = store().save_item(m_scope_key, collection, shader_id, 0, value);
+    if (!result.ok) {
+        reply_error(request_id, result.error);
+        return;
+    }
+
+    JsonObject out;
+    out.set("id"sv, shader_id);
+    out.set("name"sv, move(name));
+    reply_ok(request_id, move(out));
+    broadcast_shader_change(shader_id);
+}
+
+void DashboardPage::handle_shader_remove(i64 request_id, JsonObject const& params)
+{
+    auto shader_id = params.get_string("id"sv).value_or(String {});
+    auto collection = MUST(String::from_utf8(DashboardStore::IMAGE_SHADER_COLLECTION));
+    if (!shader_id.bytes_as_string_view().starts_with("shader-"sv) || !store().delete_item(m_scope_key, collection, shader_id)) {
+        reply_error(request_id, "Couldn’t remove the saved shader."sv);
+        return;
+    }
+
+    reply_ok(request_id);
+    broadcast_shader_change(shader_id);
+}
+
+void DashboardPage::broadcast_shader_change(String const& shader_id)
+{
+    JsonObject event;
+    event.set("id"sv, shader_id);
+    coordinator().broadcast_to_scope(m_scope_key, nullptr, [&](DashboardPage& peer) {
+        peer.push_event("shadersChanged"sv, event);
     });
 }
 

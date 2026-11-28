@@ -97,7 +97,7 @@ export function mount(root, api) {
         dialRing?.el.remove();
         dialRing = null;
         if (size) {
-            dialRing = ring(size, tier === "expanded" ? 8 : 7);
+            dialRing = ring(size, tier === "expanded" ? 6 : 4);
             dialEl.prepend(dialRing.el);
         }
     }

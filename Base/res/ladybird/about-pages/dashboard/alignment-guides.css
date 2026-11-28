@@ -1,0 +1,32 @@
+/*
+ * Copyright (c) 2026-present, the Ladyflock developers.
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#dashboard-guides {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    pointer-events: none;
+}
+
+.dash-guide {
+    position: absolute;
+    border-color: rgba(var(--dot-accent-rgb), 0.78);
+    border-style: dashed;
+    border-width: 0;
+}
+
+.dash-guide.is-viewport {
+    border-style: solid;
+}
+
+.dash-guide-vertical {
+    border-left-width: 1px;
+    translate: -50% 0;
+}
+
+.dash-guide-horizontal {
+    border-top-width: 1px;
+    translate: 0 -50%;
+}

@@ -2,7 +2,8 @@
  * Copyright (c) 2026-present, the Ladyflock developers.
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * The pegboard: a field of dots at every grid intersection that tiles snap to.
+ * The pegboard draws sparse reference dots. The finer pegs around a tile appear
+ * when it is moved, resized, or placed.
  *
  * The field is drawn on one canvas behind the tiles. It only draws in response to
  * something the person did (entering edit mode, dragging, dropping, scrolling), and it
@@ -13,7 +14,10 @@
  * page scrolls, so its size stays bounded however long the board grows.
  */
 
-const BASE_RADIUS = 1.7;
+const BASE_RADIUS = 1.5;
+const MINOR_RADIUS = 1;
+const MINOR_OPACITY = 0.54;
+const DOT_INTERVAL = 5;
 const SETTLE_MS = 70;
 const WAVE_SPEED = 2.2; // CSS px per ms
 const MAX_WINDOW_HEIGHTS = 2;
@@ -30,9 +34,9 @@ export function createDotField(canvas) {
     const board = canvas.parentElement;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-    let geometry = null; // { cols, rows, unitX, unitY, gap, width, height, rtl }
+    let geometry = null;
     let pad = 12;
-    let dots = []; // row-major: index = j * (cols + 1) + i, positions relative to the board
+    let dots = []; // Positions relative to the board, limited to the canvas slice.
     let visible = false;
     let footprint = null; // { col, row, w, h, tone }
     let frame = 0;
@@ -98,7 +102,8 @@ export function createDotField(canvas) {
     function setGeometry(next) {
         const changed = !geometry
             || geometry.cols !== next.cols
-            || geometry.rows !== next.rows
+            || geometry.height !== next.height
+            || geometry.originY !== next.originY
             || Math.abs(geometry.unitX - next.unitX) > 0.01
             || Math.abs(geometry.unitY - next.unitY) > 0.01
             || geometry.gap !== next.gap
@@ -111,48 +116,65 @@ export function createDotField(canvas) {
 
         pad = Math.ceil(next.gap / 2) + 9;
 
-        // Rows are added and removed at the bottom as tiles move, so keep the state of the dots
-        // that are still there. Any other change starts the field afresh.
         const keep = previous
             && previous.cols === next.cols
             && previous.rtl === next.rtl
+            && previous.originY === next.originY
             && Math.abs(previous.unitX - next.unitX) <= 0.01
             && Math.abs(previous.unitY - next.unitY) <= 0.01
             && previous.gap === next.gap;
-        const old = keep ? dots : [];
+        placeCanvas(true);
+        syncSliceDots(keep);
+        requestDraw();
+    }
+
+    function syncSliceDots(keep) {
+        const { cols, unitX, unitY, originY, inlineInset, gap, width, rtl } = geometry;
+        const firstRow = Math.floor((sliceTop - originY + gap / 2 - 8) / unitY);
+        const lastRow = Math.ceil((sliceTop + sliceHeight - originY + gap / 2 + 8) / unitY);
+        const previous = new Map();
+        if (keep) {
+            for (const dot of dots)
+                previous.set(dot.j * (cols + 1) + dot.i, dot);
+        }
+
         dots = [];
-        for (let j = 0; j <= next.rows; ++j) {
-            for (let i = 0; i <= next.cols; ++i) {
-                const index = j * (next.cols + 1) + i;
-                const prior = old[index];
+        const columnInterval = Math.min(DOT_INTERVAL, cols / 4);
+        for (let j = firstRow; j <= lastRow; ++j) {
+            for (let i = 0; i <= cols; ++i) {
+                const prior = previous.get(j * (cols + 1) + i);
+                if (prior) {
+                    dots.push(prior);
+                    continue;
+                }
+                const major = j % DOT_INTERVAL === 0 && (i - cols / 2) % columnInterval === 0;
+                const minor = (j - Math.floor(DOT_INTERVAL / 2)) % DOT_INTERVAL === 0
+                    && (i - cols / 2 - Math.floor(columnInterval / 2)) % columnInterval === 0;
+                const restAlpha = major ? 1 : minor ? MINOR_OPACITY : 0;
+                const restRadius = minor ? MINOR_RADIUS : BASE_RADIUS;
+                const inlineX = inlineInset + i * unitX - gap / 2;
                 dots.push({
-                    i,
-                    j,
-                    // Column 0 is at the inline start, which is the right edge in a right-to-left page.
-                    x: next.rtl
-                        ? next.width - i * next.unitX + next.gap / 2
-                        : i * next.unitX - next.gap / 2,
-                    y: j * next.unitY - next.gap / 2,
-                    r: prior ? prior.r : BASE_RADIUS,
-                    a: prior ? prior.a : (visible ? 1 : 0),
-                    k: prior ? prior.k : 0,
-                    tr: BASE_RADIUS,
-                    ta: visible ? 1 : 0,
+                    i, j, major, restAlpha, restRadius,
+                    x: rtl ? width - inlineX : inlineX,
+                    y: originY + j * unitY - gap / 2,
+                    r: restRadius,
+                    a: visible ? restAlpha : 0,
+                    k: 0,
+                    tr: restRadius,
+                    ta: 0,
                     tk: 0,
                     tone: 0,
-                    revealAt: prior ? prior.revealAt : 0,
+                    revealAt: 0,
                 });
             }
         }
-        placeCanvas(true);
         computeTargets();
-        requestDraw();
     }
 
     function computeTargets() {
         for (const dot of dots) {
-            dot.tr = BASE_RADIUS;
-            dot.ta = visible ? 1 : 0;
+            dot.tr = dot.restRadius;
+            dot.ta = visible ? dot.restAlpha : 0;
             dot.tk = 0;
             if (!visible || !footprint)
                 continue;
@@ -169,20 +191,20 @@ export function createDotField(canvas) {
                 const onColumnEdge = dot.i === left || dot.i === right;
                 const onRowEdge = dot.j === top || dot.j === bottom;
                 if (onColumnEdge && onRowEdge) {
-                    dot.tr = 4.4;
-                    dot.tk = 1;
-                } else if (onColumnEdge || onRowEdge) {
-                    dot.tr = 2.7;
-                    dot.tk = 1;
-                } else {
-                    dot.tr = 1.8;
-                    dot.tk = 0.7;
+                    dot.tr = 3.6;
+                    dot.ta = dot.tk = 1;
+                } else if ((onColumnEdge && (dot.j - top) % 2 === 0)
+                    || (onRowEdge && (dot.i - left) % 2 === 0)) {
+                    dot.tr = 1.7;
+                    dot.ta = dot.tk = 0.72;
+                } else if (dot.major) {
+                    dot.tk = 0.45;
                 }
                 continue;
             }
 
             const distance = Math.hypot(dx, dy);
-            if (distance <= 2.3) {
+            if (dot.major && distance <= 2.3) {
                 const nearness = 1 - distance / 2.3;
                 dot.tr = BASE_RADIUS + nearness * 0.9;
                 dot.tk = nearness * 0.55;
@@ -190,7 +212,7 @@ export function createDotField(canvas) {
         }
     }
 
-    // Dots outside the covered stretch are not animated; they take up their resting state at once.
+    // Dots that scroll into the covered stretch take up their resting state at once.
     function settleAll() {
         for (const dot of dots) {
             dot.revealAt = 0;
@@ -212,19 +234,12 @@ export function createDotField(canvas) {
         let moving = false;
         g.clearRect(0, 0, sliceWidth, sliceHeight);
 
-        // Only the rows under the canvas are worked on.
-        const perRow = geometry.cols + 1;
-        const firstRow = Math.max(0, Math.floor((sliceTop - 8 + geometry.gap / 2) / geometry.unitY));
-        const lastRow = Math.min(geometry.rows, Math.ceil((sliceTop + sliceHeight + 8 + geometry.gap / 2) / geometry.unitY));
-
         const [br, bg, bb] = colors.base;
-        for (let index = firstRow * perRow, end = Math.min(dots.length, (lastRow + 1) * perRow); index < end; ++index) {
-            const dot = dots[index];
-            if (dot.revealAt > now && !instant) {
+        for (const dot of dots) {
+            const waitingForWave = dot.revealAt > now && !instant;
+            if (waitingForWave) {
                 moving = true;
-                continue;
-            }
-            if (dot.revealAt) {
+            } else if (dot.revealAt) {
                 // The wavefront arrives: the dot blooms, then settles.
                 dot.revealAt = 0;
                 dot.r = BASE_RADIUS * 2.6;
@@ -232,13 +247,14 @@ export function createDotField(canvas) {
             }
 
             dot.r += (dot.tr - dot.r) * ease;
-            dot.a += (dot.ta - dot.a) * ease;
+            const targetAlpha = waitingForWave ? dot.ta * 0.6 : dot.ta;
+            dot.a += (targetAlpha - dot.a) * ease;
             dot.k += (dot.tk - dot.k) * ease;
-            if (Math.abs(dot.tr - dot.r) > 0.02 || Math.abs(dot.ta - dot.a) > 0.01 || Math.abs(dot.tk - dot.k) > 0.01) {
+            if (Math.abs(dot.tr - dot.r) > 0.02 || Math.abs(targetAlpha - dot.a) > 0.01 || Math.abs(dot.tk - dot.k) > 0.01) {
                 moving = true;
             } else {
                 dot.r = dot.tr;
-                dot.a = dot.ta;
+                dot.a = targetAlpha;
                 dot.k = dot.tk;
             }
 
@@ -273,15 +289,19 @@ export function createDotField(canvas) {
             return;
         visible = true;
         readColors();
-        placeCanvas();
+        if (placeCanvas())
+            syncSliceDots(true);
         const now = performance.now();
         if (origin && geometry && !reducedMotion.matches) {
             const rect = board.getBoundingClientRect();
             const ox = origin.clientX - rect.left;
             const oy = origin.clientY - rect.top;
             for (const dot of dots) {
+                // The whole field is already visible while the ripple travels.
+                dot.a = Math.max(dot.a, dot.restAlpha * 0.6);
+                if (!dot.major)
+                    continue;
                 dot.revealAt = now + Math.hypot(dot.x - ox, dot.y - oy) / WAVE_SPEED;
-                dot.a = 0;
             }
         }
         computeTargets();
@@ -322,12 +342,13 @@ export function createDotField(canvas) {
             const inColumns = dot.i >= rect.col && dot.i <= rect.col + rect.w;
             const inRows = dot.j >= rect.row && dot.j <= rect.row + rect.h;
             if (onColumn && onRow) {
-                dot.r = 6.5;
-                dot.k = 1;
+                dot.r = 5;
+                dot.a = dot.k = 1;
                 dot.tone = 0;
-            } else if ((onColumn && inRows) || (onRow && inColumns)) {
-                dot.r = 3.4;
-                dot.k = 0.9;
+            } else if ((onColumn && inRows && (dot.j - rect.row) % 2 === 0)
+                || (onRow && inColumns && (dot.i - rect.col) % 2 === 0)) {
+                dot.r = 2.4;
+                dot.a = dot.k = 0.75;
                 dot.tone = 0;
             }
         }
@@ -343,6 +364,7 @@ export function createDotField(canvas) {
         if (!geometry || (!visible && !frame))
             return;
         if (placeCanvas()) {
+            syncSliceDots(false);
             settleAll();
             requestDraw();
         }

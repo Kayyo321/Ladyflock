@@ -2,7 +2,7 @@
  * Copyright (c) 2026-present, the Ladyflock developers.
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Complete 30-widget catalog and presets matching TabsNSuch.md §5 & §7.
+ * Dashboard widget catalog and presets.
  */
 
 // Every section, like everything else on the board, is colored by the browser's accent,
@@ -19,8 +19,12 @@ export const CATALOG_SECTIONS = [
 // Names shown on a tile's eyebrow where the catalog title is too long to sit beside the status text.
 const SHORT_TITLES = {
     "workspaces": "Workspaces",
+    "bookmark-shelf": "Bookmarks",
+    "privacy-summary": "Privacy",
+    "extensions-dock": "Extensions",
     "permissions-audit": "Permissions",
     "profile-switcher": "Profile",
+    "browser-health": "Health",
     "calendar-countdown": "Calendar",
     "calculator": "Calculator",
     "color-contrast": "Contrast",
@@ -349,6 +353,18 @@ export const WIDGET_CATALOG = [
         description: "Manual-coordinate forecast via Open-Meteo after explicit consent.",
         sample: "Opt-in coordinates · No geolocation",
         defaultConfig: () => ({ sourceId: "", unit: "C" }),
+    },
+    {
+        num: 31,
+        id: "image",
+        title: "Image",
+        section: "media",
+        sizes: [sz(1, 1, "compact"), sz(4, 2, "default"), sz(12, 8, "expanded")],
+        multi: true,
+        network: false,
+        privateAllowed: true,
+        description: "Display an image from a file or URL with optional shader effects.",
+        defaultConfig: () => ({ resizeMode: "resize", shaderId: "default", shaderMode: "blit" }),
     },
 
     // 6. Developer tools and references

@@ -41,4 +41,7 @@ endpoint RequestServer
     websocket_send_shared(u64 websocket_id, bool is_text, Core::AnonymousBuffer data) =|
     websocket_close(u64 websocket_id, u16 code, ByteString reason) =|
 
+    // One-shot resource imports by the browser UI, over direct public HTTPS without credentials.
+    start_public_resource_request(u64 request_id, URL::URL url, Vector<HTTP::Header> request_headers) =|
+
 }

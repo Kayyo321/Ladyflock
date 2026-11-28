@@ -66,7 +66,7 @@ export function mount(root, api) {
     const nav = el("div", "cal-nav");
     const prevBtn = el("button", "dash-btn ghost icon small");
     prevBtn.type = "button";
-    prevBtn.textContent = "\u2039";
+    prevBtn.append(icon("chevron-left", 14));
     prevBtn.setAttribute("aria-label", "Previous month");
     prevBtn.title = "Previous month";
     prevBtn.addEventListener("click", () => {
@@ -81,7 +81,7 @@ export function mount(root, api) {
 
     const nextBtn = el("button", "dash-btn ghost icon small");
     nextBtn.type = "button";
-    nextBtn.textContent = "\u203A";
+    nextBtn.append(icon("chevron-right", 14));
     nextBtn.setAttribute("aria-label", "Next month");
     nextBtn.title = "Next month";
     nextBtn.addEventListener("click", () => {

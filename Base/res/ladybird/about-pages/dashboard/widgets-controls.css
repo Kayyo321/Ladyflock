@@ -69,7 +69,7 @@
 .priv-figure-value {
     margin: 0;
     font-size: 26px;
-    font-weight: 300;
+    font-weight: 500;
     letter-spacing: -0.02em;
     line-height: 1.1;
 }
@@ -77,6 +77,11 @@
 .priv-figure dt,
 .priv-figure .dash-muted {
     font-size: 11.5px;
+}
+
+.priv-figure + .priv-figure {
+    padding-inline-start: 12px;
+    border-inline-start: 1px solid var(--separator-soft);
 }
 
 .dash-card[data-tier="expanded"] .priv-figure-value {
@@ -334,7 +339,7 @@
 /* --- Profile and Identity -------------------------------------------------------------- */
 
 .dash-card-body.prof {
-    gap: 10px;
+    gap: 6px;
     overflow: hidden;
 }
 
@@ -354,6 +359,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    line-height: 1.25;
 }
 
 .prof-name {
@@ -400,7 +406,7 @@
 .prof-lines {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
+    gap: 6px;
 }
 
 .dash-card[data-tier="expanded"] .prof-lines {
@@ -581,7 +587,7 @@
 .cal-grid {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
-    grid-auto-rows: 26px;
+    grid-auto-rows: minmax(0, 26px);
     align-content: start;
     min-height: 0;
     justify-items: center;
@@ -601,8 +607,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
+    width: min(26px, 100%);
+    height: min(26px, 100%);
     padding: 0;
     border: none;
     border-radius: 50%;
@@ -642,17 +648,12 @@
 }
 
 .dash-card[data-tier="expanded"] .cal-grid {
-    grid-auto-rows: 34px;
-}
-
-.cal-nav .dash-btn {
-    font-size: 17px;
-    line-height: 1;
+    grid-auto-rows: minmax(0, 34px);
 }
 
 .dash-card[data-tier="expanded"] .cal-cell {
-    width: 32px;
-    height: 32px;
+    width: min(32px, 100%);
+    height: min(32px, 100%);
     font-size: 13px;
 }
 

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/ByteBuffer.h>
 #include <AK/ByteString.h>
 #include <AK/Error.h>
 #include <AK/HashMap.h>
@@ -28,12 +29,19 @@ public:
     AK_ALLOC_WITH_KMALLOC;
 
     static constexpr size_t MAX_CARDS = 60;
-    static constexpr i64 MAX_GRID_ROWS = 512;
+    static constexpr i64 MAX_GRID_ROWS = 2048;
+    static constexpr i64 MIN_GRID_ROW = -MAX_GRID_ROWS;
     static constexpr size_t MAX_NOTE_BYTES = 64 * 1024;
     static constexpr size_t MAX_ITEM_JSON_BYTES = 128 * 1024;
     static constexpr size_t MAX_COLLECTION_ITEMS = 500;
     static constexpr size_t MAX_SCOPE_CACHE_BYTES = 5 * 1024 * 1024;
     static constexpr size_t MAX_OP_DEDUP_ENTRIES = 64;
+    static constexpr size_t MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+    static constexpr size_t MAX_SCOPE_IMAGE_BYTES = 64 * 1024 * 1024;
+    static constexpr auto IMAGE_SHADER_COLLECTION = "image-shaders"sv;
+    static constexpr size_t MAX_SHADER_BYTES = 16 * 1024;
+    static constexpr size_t MAX_SHADER_NAME_BYTES = 240;
+    static constexpr size_t MAX_SHADER_FILES = 24;
 
     enum class StorageStatus : u8 {
         Persistent,
@@ -82,6 +90,11 @@ public:
         JsonObject cache;
         i64 expires_at { 0 };
         i64 last_success_at { 0 };
+    };
+
+    struct Image {
+        String mime_type;
+        ByteBuffer bytes;
     };
 
     struct CommitResult {
@@ -136,6 +149,11 @@ public:
     bool update_network_cache(String const& scope_key, String const& source_id, JsonObject const& cache, i64 expires_at, i64 last_success_at);
     bool revoke_network_grant(String const& scope_key, String const& source_id);
 
+    ErrorOr<void> verify_image_widget(String const& scope_key, String const& instance_id);
+    ErrorOr<Optional<Image>> load_image(String const& scope_key, String const& instance_id);
+    ErrorOr<void> save_image(String const& scope_key, String const& instance_id, StringView mime_type, ReadonlyBytes bytes);
+    ErrorOr<void> remove_image(String const& scope_key, String const& instance_id);
+
     bool delete_scope_data(String const& scope_key);
 
     static JsonObject serialize_layout_snapshot(LayoutSnapshot const&);
@@ -166,6 +184,13 @@ private:
         Database::StatementID delete_grant { 0 };
         Database::StatementID delete_scope_grants { 0 };
         Database::StatementID sum_cache_bytes { 0 };
+        Database::StatementID verify_image_widget { 0 };
+        Database::StatementID get_image { 0 };
+        Database::StatementID upsert_image { 0 };
+        Database::StatementID delete_image { 0 };
+        Database::StatementID delete_scope_images { 0 };
+        Database::StatementID delete_orphan_images { 0 };
+        Database::StatementID sum_other_image_bytes { 0 };
     };
 
     DashboardStore(NonnullRefPtr<Database::Database>, Statements, StorageStatus);

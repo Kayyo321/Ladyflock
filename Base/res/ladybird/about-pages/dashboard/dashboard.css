@@ -16,13 +16,13 @@ html {
 }
 
 body.dashboard-page {
-    --tile-bg: var(--tile);
-    --tile-radius: 22px;
-    --tile-edge: rgba(0, 0, 0, 0.035);
-    --well: #ffffff;
-    --well-edge: rgba(0, 0, 0, 0.07);
+    --canvas: var(--tile);
+    --tile-bg: var(--page);
+    --tile-radius: var(--card-radius);
+    --tile-edge: var(--separator);
+    --well: var(--surface);
+    --well-edge: var(--separator);
     --float: rgba(251, 251, 252, 0.86);
-    --badge-fill: #dedee3;
 
     /* The accent clears 3:1 on a tile; its fill is deep enough for white text. Without a
        host to send them, they are ladybird.css's blues. */
@@ -55,9 +55,9 @@ body.dashboard-page {
     max-width: none;
     min-height: 100vh;
     margin: 0;
-    padding: 28px 28px 96px;
+    padding: 0;
 
-    background-color: var(--page);
+    background-color: var(--canvas);
     color: var(--text);
     font-size: 13px;
     line-height: 1.4;
@@ -65,11 +65,12 @@ body.dashboard-page {
 
 @media (prefers-color-scheme: dark) {
     body.dashboard-page {
-        --tile-edge: rgba(255, 255, 255, 0.05);
+        --canvas: var(--page);
+        --tile-bg: var(--tile);
+        --tile-edge: var(--edge);
         --well: rgba(255, 255, 255, 0.075);
         --well-edge: rgba(255, 255, 255, 0.04);
         --float: rgba(52, 52, 56, 0.82);
-        --badge-fill: #55555b;
 
         --dash-accent: var(--page-accent-dark, #4d96ff);
         --dash-accent-fill: var(--page-accent-dark-fill, #0a66d0);
@@ -102,11 +103,12 @@ html.is-private {
 }
 
 html.is-private body.dashboard-page {
-    --tile-edge: rgba(255, 255, 255, 0.06);
+    --canvas: var(--page);
+    --tile-bg: var(--tile);
+    --tile-edge: var(--edge);
     --well: rgba(255, 255, 255, 0.075);
     --well-edge: rgba(255, 255, 255, 0.04);
     --float: rgba(36, 25, 60, 0.86);
-    --badge-fill: #4a3d6b;
     --dash-accent: var(--page-accent-dark, #4d96ff);
     --dash-accent-fill: var(--page-accent-dark-fill, #0a66d0);
     --dot-accent-rgb: var(--page-accent-dark-rgb, 77, 150, 255);
@@ -149,20 +151,25 @@ html.is-private body.dashboard-page {
 /* --- Page ---------------------------------------------------------------------------- */
 
 .dashboard-shell {
-    max-width: 1280px;
-    margin-inline: auto;
+    /* The dot canvas paints past the board's edge to include the outermost pegs. */
+    overflow: clip;
+}
+
+html:not(.is-ready) .dashboard-footer {
+    visibility: hidden;
 }
 
 .dashboard-banner {
+    grid-column: 1;
+    justify-self: start;
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 7px;
     width: fit-content;
     max-width: 100%;
-    margin: -8px auto 18px;
-    padding: 5px 13px;
-    border-radius: 999px;
+    padding: 6px 10px;
+    border: 1px solid var(--tile-edge);
+    border-radius: 8px;
     background-color: var(--tile-bg);
     color: var(--body);
     font-size: 12px;
@@ -186,12 +193,17 @@ html.is-private body.dashboard-page {
     width: 100%;
 }
 
+.dashboard-grid-wrap:focus-visible {
+    outline: 2px solid var(--focus-edge);
+    outline-offset: -2px;
+}
+
 /* --- The board ----------------------------------------------------------------------- */
 
 .dashboard-board {
     position: relative;
     width: 100%;
-    min-height: 96px;
+    min-height: 100vh;
 }
 
 .dashboard-dots {
@@ -222,8 +234,10 @@ html.is-private body.dashboard-page {
 /* --- A tile -------------------------------------------------------------------------- */
 
 .dash-card {
+    --card-inset: 16px;
+    --head-top: 12px;
     --tint-ink: color-mix(in srgb, var(--tint) 68%, var(--text));
-    --tint-soft: color-mix(in srgb, var(--tint) 15%, transparent);
+    --tint-soft: color-mix(in srgb, var(--tint) 12%, transparent);
     --tint-softer: color-mix(in srgb, var(--tint) 8%, transparent);
 
     position: absolute;
@@ -259,32 +273,37 @@ html.is-private body.dashboard-page {
     flex-wrap: wrap;
     align-items: center;
     align-content: flex-start;
-    gap: 7px;
+    gap: 8px;
     flex-shrink: 0;
     box-sizing: content-box;
-    height: 22px;
-    margin: 0;
-    padding-block: 12px 0;
-    padding-inline: 14px 40px;
+    height: 24px;
+    margin-inline: var(--card-inset);
+    padding-block: var(--head-top) 7px;
+    border-bottom: 1px solid var(--separator-soft);
     overflow: hidden;
 }
 
 .dash-card-glyph {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background-color: var(--tint-softer);
     color: var(--tint-ink);
 }
 
 .dash-card-title {
     flex: 0 1 auto;
     min-width: 0;
-    max-width: calc(100% - 23px);
+    max-width: calc(100% - 32px);
     margin: 0;
     overflow: hidden;
-    color: var(--body);
-    font-size: 12px;
+    color: var(--text);
+    font-size: 13px;
     font-weight: 600;
-    line-height: 22px;
-    letter-spacing: 0.005em;
+    line-height: 24px;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
@@ -295,7 +314,7 @@ html.is-private body.dashboard-page {
     overflow: hidden;
     color: var(--muted);
     font-size: 11.5px;
-    line-height: 22px;
+    line-height: 24px;
     font-variant-numeric: tabular-nums;
     text-align: end;
     white-space: nowrap;
@@ -309,53 +328,238 @@ html.is-private body.dashboard-page {
     gap: 8px;
     min-width: 0;
     min-height: 0;
-    padding: 9px 14px 14px;
+    padding: 10px var(--card-inset) var(--card-inset);
     overflow-x: hidden;
     overflow-y: auto;
     scrollbar-width: thin;
 }
 
+.dash-card[data-compact-row="true"] {
+    --card-inset: 12px;
+    --head-top: 6px;
+}
+
 .dash-card[data-compact-row="true"] .dash-card-head {
-    padding-top: 9px;
+    padding-bottom: 0;
+    border: none;
 }
 
 .dash-card[data-compact-row="true"] .dash-card-body {
     gap: 4px;
-    padding: 4px 14px 10px;
+    padding: 4px var(--card-inset) 8px;
 }
 
-/* The options button rests in the tile's corner. */
-.dash-card-menu-btn {
+/* An image uses the entire placement; the board shows through any unused space. */
+.dash-card[data-widget-type="image"] {
+    --tile-radius: 0;
+}
+
+.dash-card[data-widget-type="image"] .dash-card-face {
+    background: transparent;
+    box-shadow: none;
+}
+
+.dash-card[data-widget-type="image"] .dash-card-body {
+    display: grid;
+    place-items: center;
+    padding: 0;
+    overflow: hidden;
+}
+
+.dashboard-image,
+.dashboard-image-shader {
     position: absolute;
-    top: 7px;
-    inset-inline-end: 8px;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.dashboard-image {
+    object-fit: contain;
+}
+
+.dashboard-image-shader {
+    pointer-events: none;
+}
+
+.dashboard-image[data-mode="crop"] {
+    object-fit: cover;
+}
+
+.dash-card[data-tier="compact"] .image-add {
+    padding-inline: 8px;
+}
+
+.dash-card[data-tier="compact"] .image-add .dash-icon {
+    display: none;
+}
+
+.image-status {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.image-status,
+.image-shader-status,
+.image-shader-error {
+    overflow-wrap: anywhere;
+}
+
+.image-advanced-settings {
+    padding-top: 12px;
+    border-top: 1px solid var(--separator);
+}
+
+.image-advanced-settings > summary {
+    width: fit-content;
+    margin-inline-start: -4px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: var(--body);
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.image-effects {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 12px;
+}
+
+.image-mode-row {
+    flex-wrap: wrap;
+}
+
+.image-effects .image-remove-shader {
+    align-self: flex-start;
+}
+
+#image-shader {
+    text-overflow: ellipsis;
+}
+
+.image-ascii-density output {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+#image-ascii-density {
+    width: 100%;
+    height: 20px;
+    margin: 0;
+}
+
+#image-ascii-density::slider-track {
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--muted) 75%, transparent);
+}
+
+#image-ascii-density::slider-fill,
+#image-ascii-density::slider-thumb {
+    background-color: var(--focus-edge);
+}
+
+#image-ascii-density:focus-visible {
+    outline: none;
+}
+
+#image-ascii-density:focus-visible::slider-thumb {
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--focus-edge);
+}
+
+.image-shader-confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.image-shader-confirm p {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--body);
+    font-size: 12.5px;
+}
+
+.image-shader-help {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.image-shader-help summary {
+    width: fit-content;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.image-shader-help p {
+    margin: 8px 0;
+}
+
+.image-shader-help pre {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 7px;
+    background-color: var(--control);
+    color: var(--body);
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+html.is-private .image-resize-mode,
+html.is-private .image-shader-mode {
+    --segment: var(--control-pressed);
+}
+
+html.is-private .image-status,
+html.is-private .image-shader-status,
+html.is-private .image-shader-error {
+    --error: rgb(var(--dot-warn-rgb));
+}
+
+#image-file {
+    min-width: 0;
+    font: inherit;
+    color: var(--muted);
+}
+
+#image-file::file-selector-button {
+    appearance: none;
+    margin-inline-end: 8px;
+}
+
+/* --- A tile while the board is being edited -------------------------------------------- */
+
+.dashboard-grid.is-editing .dash-card-head {
+    padding-inline-end: 32px;
+}
+
+.dashboard-grid.is-editing .dash-card-menu-btn {
+    position: absolute;
+    top: var(--head-top);
+    inset-inline-end: var(--card-inset);
     z-index: 3;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: none;
-    border-radius: 50%;
-    background: none;
-    color: var(--muted);
-    opacity: 0.7;
+    border-radius: 6px;
+    background-color: var(--control);
+    color: var(--text);
     cursor: pointer;
 }
 
-.dash-card-menu-btn:hover,
-.dash-card-menu-btn[aria-expanded="true"] {
-    background-color: var(--control);
-    color: var(--text);
-    opacity: 1;
+.dashboard-grid.is-editing .dash-card-menu-btn:hover,
+.dashboard-grid.is-editing .dash-card-menu-btn[aria-expanded="true"] {
+    background-color: var(--control-hover);
 }
-
-.dash-card[data-compact-row="true"] .dash-card-menu-btn {
-    top: 4px;
-}
-
-/* --- A tile while the board is being edited -------------------------------------------- */
 
 /* A tile's content cannot be scrolled while arranging, so its scrollbars stay out of the way. */
 html.is-editing .dash-card-body,
@@ -364,6 +568,7 @@ html.is-editing .dash-card-body * {
 }
 
 .dash-card-drag,
+.dash-card-menu-btn,
 .dash-card-remove,
 .dash-card-resize {
     display: none;
@@ -386,19 +591,10 @@ html.is-editing .dash-card-body * {
     touch-action: none;
 }
 
-.dashboard-grid.is-editing .dash-card-menu-btn {
-    background-color: var(--badge-fill);
-    color: var(--text);
-    opacity: 1;
-    width: 24px;
-    height: 24px;
-    top: 8px;
-}
-
 .dashboard-grid.is-editing .dash-card-remove {
     position: absolute;
-    top: -7px;
-    inset-inline-start: -7px;
+    top: var(--head-top);
+    inset-inline-start: var(--card-inset);
     z-index: 3;
     display: inline-flex;
     align-items: center;
@@ -407,28 +603,28 @@ html.is-editing .dash-card-body * {
     height: 24px;
     padding: 0;
     border: none;
-    border-radius: 50%;
-    background-color: var(--badge-fill);
-    box-shadow: 0 0 0 2.5px var(--page);
+    border-radius: 6px;
+    /* Cover the widget glyph until the handle withdraws during a drag or swap. */
+    background: linear-gradient(var(--control), var(--control)), var(--tile-bg);
     color: var(--text);
     cursor: pointer;
     animation: dash-badge-in 260ms var(--ease-spring) both;
 }
 
 .dashboard-grid.is-editing .dash-card-remove:hover {
-    background-color: var(--error);
-    color: var(--page);
+    background: color-mix(in srgb, var(--error) 12%, var(--tile-bg));
+    color: var(--error);
 }
 
 /* The resize corner: an arc that hugs the tile's rounded corner. */
 .dashboard-grid.is-editing .dash-card-resize {
     position: absolute;
-    inset-inline-end: -5px;
-    bottom: -5px;
+    inset-inline-end: 0;
+    bottom: 0;
     z-index: 3;
     display: block;
-    width: 34px;
-    height: 34px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: none;
     background: none;
@@ -439,11 +635,13 @@ html.is-editing .dash-card-body * {
 .dash-card-resize::after {
     content: "";
     position: absolute;
-    inset: 5px;
-    border: 3.5px solid var(--muted);
-    border-top-color: transparent;
-    border-inline-start-color: transparent;
-    border-end-end-radius: 21px;
+    inset-inline-end: 5px;
+    bottom: 5px;
+    width: 11px;
+    height: 11px;
+    border-inline-end: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    border-end-end-radius: 7px;
     opacity: 0.75;
 }
 
@@ -452,6 +650,15 @@ html.is-editing .dash-card-body * {
     border-bottom-color: var(--accent);
     border-inline-end-color: var(--accent);
     opacity: 1;
+}
+
+.dashboard-grid.is-editing .dash-card[data-widget-type="image"] .dash-card-menu-btn,
+.dashboard-grid.is-editing .dash-card[data-widget-type="image"] .dash-card-resize {
+    background-color: var(--tile-bg);
+}
+
+.dashboard-grid.is-editing .dash-card[data-widget-type="image"] .dash-card-resize {
+    border-start-start-radius: 7px;
 }
 
 [dir="rtl"] .dashboard-grid.is-editing .dash-card-resize {
@@ -638,9 +845,11 @@ html.is-editing .dash-card-body * {
     z-index: 60;
     display: flex;
     flex-direction: column;
-    min-width: 216px;
+    min-width: min(216px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     padding: 6px;
-    border-radius: 15px;
+    border-radius: var(--card-radius);
     background-color: var(--menu-background-color, var(--surface));
     box-shadow:
         0 0 0 1px var(--edge),
@@ -803,18 +1012,24 @@ html.is-editing .dashboard-empty-actions {
 
 .dashboard-footer {
     position: fixed;
-    inset-inline: 0;
+    inset-inline: 18px;
     bottom: 18px;
     z-index: 40;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
     gap: 8px;
     pointer-events: none;
 }
 
 .dashboard-footer > * {
     pointer-events: auto;
+}
+
+.dashboard-hint,
+.dash-dock {
+    grid-column: 1 / -1;
+    justify-self: center;
 }
 
 .dash-dock {
@@ -825,7 +1040,7 @@ html.is-editing .dashboard-empty-actions {
     gap: 3px;
     max-width: calc(100vw - 24px);
     padding: 6px;
-    border-radius: 23px;
+    border-radius: var(--card-radius);
     background-color: var(--float);
     backdrop-filter: blur(22px) saturate(1.6);
     box-shadow:
@@ -853,7 +1068,7 @@ html.is-editing .dashboard-empty-actions {
     height: 34px;
     padding: 0 14px;
     border: none;
-    border-radius: 999px;
+    border-radius: 7px;
     background: none;
     color: var(--text);
     font: inherit;
@@ -958,10 +1173,13 @@ html.is-editing .dashboard-empty-actions {
 }
 
 .dash-customize-wrap {
-    position: fixed;
-    inset-inline-end: 22px;
-    bottom: 18px;
-    z-index: 5;
+    grid-column: 2;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    border: 1px solid var(--tile-edge);
+    border-radius: 8px;
+    background-color: var(--tile-bg);
 }
 
 .dash-customize {
@@ -969,11 +1187,11 @@ html.is-editing .dashboard-empty-actions {
     align-items: center;
     gap: 6px;
     height: 32px;
-    padding: 0 13px 0 11px;
+    padding: 0 10px;
     border: none;
-    border-radius: 999px;
-    background-color: var(--tile-bg);
-    box-shadow: inset 0 0 0 1px var(--tile-edge);
+    border-start-start-radius: 7px;
+    border-end-start-radius: 7px;
+    background: none;
     color: var(--body);
     font: inherit;
     font-size: 12.5px;
@@ -982,46 +1200,52 @@ html.is-editing .dashboard-empty-actions {
 }
 
 .dash-customize:hover {
-    background-image: var(--hover-overlay);
+    background-color: var(--control);
     color: var(--text);
 }
 
-/* A small close button on the Customize button's corner offers to hide it. */
+/* Both actions share one outline and have separate pointer and focus targets. */
 .dash-customize-hide {
-    position: absolute;
-    top: -6px;
-    inset-inline-end: -6px;
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 30px;
+    height: 32px;
     padding: 0;
     border: none;
-    border-radius: 50%;
-    background-color: var(--badge-fill);
-    box-shadow: 0 0 0 2px var(--page);
-    color: var(--body);
+    border-start-end-radius: 7px;
+    border-end-end-radius: 7px;
+    background: none;
+    color: var(--muted);
     cursor: pointer;
+}
+
+.dash-customize-hide::before {
+    content: "";
+    position: absolute;
+    inset-block: 7px;
+    inset-inline-start: 0;
+    width: 1px;
+    background-color: var(--separator);
+}
+
+.dash-customize-hide .dash-icon {
+    width: 12px;
+    height: 12px;
 }
 
 .dash-customize-hide:hover,
 .dash-customize-hide[aria-expanded="true"] {
-    background-color: var(--tint-fill);
-    color: #ffffff;
+    background-color: var(--control);
+    color: var(--text);
 }
 
 .dash-customize-hide:focus-visible {
     outline: none;
     box-shadow:
-        0 0 0 2px var(--page),
-        0 0 0 3px var(--focus-edge),
-        0 0 0 5px var(--focus-ring);
-}
-
-html:not(.is-ready) .dash-customize-wrap,
-html:not(.is-ready) .dash-customize {
-    visibility: hidden;
+        0 0 0 1px var(--focus-edge),
+        0 0 0 3px var(--focus-ring);
 }
 
 html.shelf-open .dash-dock {
@@ -1048,7 +1272,7 @@ html.shelf-open body.dashboard-page {
     display: flex;
     flex-direction: column;
     height: var(--shelf-height);
-    border-radius: 26px 26px 0 0;
+    border-radius: 16px 16px 0 0;
     background-color: var(--float);
     backdrop-filter: blur(26px) saturate(1.6);
     box-shadow:
@@ -1068,10 +1292,14 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .shelf-header,
-.shelf-cats,
-.shelf-body > * {
+.shelf-cats {
     width: 100%;
-    max-width: 1280px;
+    max-width: 1216px;
+    margin-inline: auto;
+}
+
+.shelf-body > * {
+    max-width: 1160px;
     margin-inline: auto;
 }
 
@@ -1109,7 +1337,7 @@ html.shelf-peeking .dash-shelf.is-open {
     width: 100%;
     height: 32px;
     padding: 0 14px;
-    border-radius: 999px;
+    border-radius: 7px;
     background-color: var(--control);
 }
 
@@ -1117,7 +1345,7 @@ html.shelf-peeking .dash-shelf.is-open {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
-    padding: 0 26px 10px;
+    padding: 4px 28px 10px;
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -1130,7 +1358,7 @@ html.shelf-peeking .dash-shelf.is-open {
     height: 28px;
     padding: 0 12px;
     border: none;
-    border-radius: 999px;
+    border-radius: 7px;
     background: none;
     color: var(--body);
     font: inherit;
@@ -1143,16 +1371,9 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .shelf-cat.active {
-    background-color: var(--control);
-    color: var(--text);
+    background-color: var(--choice-fill);
+    color: var(--choice);
     font-weight: 600;
-}
-
-.shelf-cat-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background-color: var(--tint);
 }
 
 .shelf-body {
@@ -1171,7 +1392,7 @@ html.shelf-peeking .dash-shelf.is-open {
 
 .picker-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
     gap: 12px;
 }
 
@@ -1181,13 +1402,11 @@ html.shelf-peeking .dash-shelf.is-open {
 
     position: relative;
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    gap: 12px 12px;
-    align-content: space-between;
-    min-height: 122px;
+    grid-template-columns: 30px minmax(0, 1fr) 28px;
+    grid-template-rows: 1fr auto;
+    gap: 10px;
     padding: 14px;
-    border-radius: 20px;
+    border-radius: var(--card-radius);
     background-color: var(--tile-bg);
     box-shadow: inset 0 0 0 1px var(--tile-edge);
 }
@@ -1205,9 +1424,11 @@ html.shelf-peeking .dash-shelf.is-open {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 46px;
-    height: 46px;
-    border-radius: 14px;
+    grid-column: 1;
+    grid-row: 1;
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
     background-color: var(--tint-soft);
     color: var(--tint-ink);
 }
@@ -1216,8 +1437,9 @@ html.shelf-peeking .dash-shelf.is-open {
     display: flex;
     flex-direction: column;
     gap: 3px;
+    grid-column: 2;
+    grid-row: 1;
     min-width: 0;
-    padding-inline-end: 30px;
 }
 
 .picker-item-title {
@@ -1227,9 +1449,7 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .picker-item-desc {
-    max-height: 2.7em;
     margin: 0;
-    overflow: hidden;
     color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
@@ -1238,10 +1458,15 @@ html.shelf-peeking .dash-shelf.is-open {
 .picker-foot {
     grid-column: 1 / -1;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
     min-height: 28px;
+}
+
+.picker-foot:empty {
+    display: none;
 }
 
 .picker-sizes {
@@ -1278,9 +1503,8 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .picker-add {
-    position: absolute;
-    top: 12px;
-    inset-inline-end: 12px;
+    grid-column: 3;
+    grid-row: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1288,7 +1512,7 @@ html.shelf-peeking .dash-shelf.is-open {
     height: 28px;
     padding: 0;
     border: none;
-    border-radius: 50%;
+    border-radius: 7px;
     background-color: var(--tint-soft);
     color: var(--tint-ink);
     cursor: pointer;
@@ -1306,7 +1530,7 @@ html.shelf-peeking .dash-shelf.is-open {
 }
 
 .picker-grid-presets {
-    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
 }
 
 .picker-preset {
@@ -1349,7 +1573,7 @@ html.shelf-peeking .dash-shelf.is-open {
     padding: 0;
     overflow: hidden;
     border: none;
-    border-radius: 22px;
+    border-radius: var(--card-radius);
     background-color: var(--surface);
     box-shadow:
         0 0 0 1px var(--edge),
@@ -1430,7 +1654,6 @@ html.shelf-peeking .dash-shelf.is-open {
 .dashboard-dialog button.primary-button,
 .dashboard-dialog button.secondary-button {
     height: 32px;
-    border-radius: 999px;
 }
 
 .form-grid-2 {
@@ -1619,7 +1842,7 @@ html.shelf-peeking .dash-shelf.is-open {
     height: 30px;
     padding: 0 11px;
     border: none;
-    border-radius: 10px;
+    border-radius: 7px;
     background-color: var(--well);
     box-shadow: inset 0 0 0 1px var(--well-edge);
     color: var(--text);
@@ -1648,7 +1871,10 @@ html.shelf-peeking .dash-shelf.is-open {
 .dashboard-page .dash-input:focus,
 .dashboard-page .dash-select:focus-visible,
 .dashboard-page .dash-textarea:focus,
-.dash-btn:focus-visible {
+.dash-btn:focus-visible,
+.image-advanced-settings > summary:focus-visible,
+.image-shader-help summary:focus-visible,
+#image-file:focus-visible {
     outline: none;
     box-shadow:
         0 0 0 1px var(--focus-edge),
@@ -1660,7 +1886,8 @@ html.shelf-peeking .dash-shelf.is-open {
     color: var(--muted);
 }
 
-.dash-btn {
+.dash-btn,
+#image-file::file-selector-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1669,7 +1896,7 @@ html.shelf-peeking .dash-shelf.is-open {
     height: 28px;
     padding: 0 12px;
     border: none;
-    border-radius: 999px;
+    border-radius: 7px;
     background-color: var(--control);
     color: var(--text);
     font: inherit;
@@ -1679,11 +1906,13 @@ html.shelf-peeking .dash-shelf.is-open {
     cursor: pointer;
 }
 
-.dash-btn:hover:not(:disabled) {
+.dash-btn:hover:not(:disabled),
+#image-file:enabled::file-selector-button:hover {
     background-color: var(--control-hover);
 }
 
-.dash-btn:active:not(:disabled) {
+.dash-btn:active:not(:disabled),
+#image-file:enabled::file-selector-button:active {
     background-color: var(--control-pressed);
 }
 
@@ -1735,7 +1964,7 @@ html.shelf-peeking .dash-shelf.is-open {
     display: inline-flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: 9px;
     background-color: var(--control);
 }
 
@@ -1859,14 +2088,15 @@ html.shelf-peeking .dash-shelf.is-open {
     .dash-card-face,
     .picker-item,
     .dashboard-banner,
-    .dash-customize {
+    .dash-customize-wrap {
         box-shadow: inset 0 0 0 1.5px var(--text);
     }
 }
 
 @media (max-width: 620px) {
-    body.dashboard-page {
-        padding: 16px 14px 96px;
+    .dashboard-footer {
+        inset-inline: 12px;
+        bottom: 12px;
     }
 
     .dash-shelf .shelf-header {
@@ -1891,15 +2121,36 @@ html.shelf-peeking .dash-shelf.is-open {
         display: none;
     }
 
-    /* The dock keeps to one row: Presets drops its label. */
+    .dash-dock {
+        gap: 2px;
+        padding: 4px;
+    }
+
+    .dash-dock .dock-btn {
+        padding: 0 10px;
+    }
+
+    .dash-dock .dock-btn.icon-only,
+    #btn-presets {
+        width: 30px;
+        padding: 0;
+    }
+
     #btn-presets {
         gap: 0;
-        width: 34px;
-        padding: 0;
         font-size: 0;
     }
 
     .dock-sep {
         margin: 0 2px;
+    }
+}
+
+@media (max-width: 380px) {
+    #btn-add-widget {
+        width: 30px;
+        padding: 0;
+        gap: 0;
+        font-size: 0;
     }
 }

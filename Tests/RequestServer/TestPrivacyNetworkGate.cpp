@@ -69,6 +69,12 @@ struct GateTestHarness {
         VERIFY(!MUST(static_cast<RequestServerEndpoint::Stub&>(*connection).handle(move(message))));
     }
 
+    void start_public_resource_request(u64 request_id, URL::URL url)
+    {
+        auto message = make<Messages::RequestServer::StartPublicResourceRequest>(request_id, move(url), Vector<HTTP::Header> {});
+        VERIFY(!MUST(static_cast<RequestServerEndpoint::Stub&>(*connection).handle(move(message))));
+    }
+
     Optional<Requests::NetworkError> wait_for_request_finished(u64 request_id)
     {
         auto wake_timer = Core::Timer::create_repeating(AK::Duration::from_milliseconds(10), [] { });
@@ -193,4 +199,35 @@ TEST_CASE(coordinator_loss_closes_admissions_and_aborts_in_flight_request)
     harness.start_request(2, url);
     EXPECT(harness.wait_for_request_finished(2) == Requests::NetworkError::BlockedByPrivacyPolicy);
     EXPECT_EQ(held_sockets.size(), connections_before);
+}
+
+TEST_CASE(public_resource_requests_do_not_open_local_connections)
+{
+    auto server = MUST(Core::TCPServer::try_create());
+    MUST(server->listen(IPv4Address { 127, 0, 0, 1 }, 0));
+    bool accepted_connection = false;
+    server->on_ready_to_accept = [&] {
+        accepted_connection = true;
+        auto socket = MUST(server->accept());
+        socket->close();
+    };
+
+    GateTestHarness harness;
+    auto allow = MUST(Privacy::PolicyCompiler::compile(7, 1, { .user_preference = Privacy::NetworkPolicy::allow_default() })).snapshot;
+    EXPECT(harness.install_policy(allow).accepted);
+
+    auto http_url = URL::Parser::basic_parse(ByteString::formatted("http://127.0.0.1:{}/image", *server->local_port())).release_value();
+    harness.start_public_resource_request(1, move(http_url));
+    EXPECT(harness.wait_for_request_finished(1) == Requests::NetworkError::MalformedUrl);
+
+    auto https_url = URL::Parser::basic_parse(ByteString::formatted("https://127.0.0.1:{}/image", *server->local_port())).release_value();
+    harness.start_public_resource_request(2, https_url);
+    EXPECT(harness.wait_for_request_finished(2) == Requests::NetworkError::UnableToConnect);
+    EXPECT(!accepted_connection);
+
+    auto offline = MUST(Privacy::PolicyCompiler::compile(7, 2, { .user_preference = Privacy::NetworkPolicy::offline() })).snapshot;
+    EXPECT(harness.install_policy(offline).accepted);
+    harness.start_public_resource_request(3, move(https_url));
+    EXPECT(harness.wait_for_request_finished(3) == Requests::NetworkError::BlockedByPrivacyPolicy);
+    EXPECT(!accepted_connection);
 }

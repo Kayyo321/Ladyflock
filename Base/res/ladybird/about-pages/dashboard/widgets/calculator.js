@@ -199,7 +199,6 @@ export function mount(root, api) {
     const input = document.createElement("input");
     input.type = "text";
     input.className = "calc-expr mono";
-    input.placeholder = "(12+8)*3 · 32 F to C · 1 MiB to B";
     input.setAttribute("aria-label", "Calculator expression or unit conversion");
     input.spellcheck = false;
     const evalBtn = document.createElement("button");
@@ -332,6 +331,7 @@ export function mount(root, api) {
     }
 
     function render() {
+        input.placeholder = tier === "compact" ? "(12+8)*3" : "(12+8)*3 · 32 F to C · 1 MiB to B";
         // The narrow tile's eyebrow has no room for it; the value stays in Settings.
         api.setMeta(tier === "compact" ? "" : `rem=${config.remBase || 16}px`);
         keypadEl.classList.toggle("hidden", tier !== "expanded");

@@ -6,7 +6,7 @@
  * board is being edited (pick-up surface, remove badge, options, resize corner).
  */
 
-import { effectiveSizesForBreakpoint } from "./grid-engine.js";
+import { GRID_STEPS_PER_CELL, effectiveSizesForBreakpoint, formatGridSize } from "./grid-engine.js";
 import { icon } from "./icons.js";
 import { SIZE_NAMES, getWidgetShortTitle } from "./widget-registry.js";
 
@@ -21,7 +21,8 @@ export function closeCardMenus(restoreFocus = false) {
         activeMenuEl = null;
     }
     if (activeMenuReturnFocus) {
-        activeMenuReturnFocus.setAttribute("aria-expanded", "false");
+        if (activeMenuReturnFocus.hasAttribute("aria-expanded"))
+            activeMenuReturnFocus.setAttribute("aria-expanded", "false");
         if (restoreFocus && document.contains(activeMenuReturnFocus))
             activeMenuReturnFocus.focus();
     }
@@ -68,23 +69,23 @@ export function computeCardTier(placement, def, cols) {
     const match = eff.find(s => s.w === placement.w && s.h === placement.h);
     if (match)
         return match.tier;
-    if (placement.w <= 2 || placement.h <= 1)
+    if (placement.w <= 2 * GRID_STEPS_PER_CELL || placement.h <= GRID_STEPS_PER_CELL)
         return "compact";
     // A wide tile that is only two rows tall has no room for a large face's extra rows.
-    if ((placement.w >= 6 && placement.h >= 3) || placement.h >= 4)
+    if ((placement.w >= 6 * GRID_STEPS_PER_CELL && placement.h >= 3 * GRID_STEPS_PER_CELL) || placement.h >= 4 * GRID_STEPS_PER_CELL)
         return "expanded";
     return "default";
 }
 
 /** A small picture of a tile's footprint, used wherever a size is offered. */
-export function createSizePictogram(w, h, cols = 12) {
+export function createSizePictogram(w, h, cols = 12 * GRID_STEPS_PER_CELL) {
     const wrap = document.createElement("span");
     wrap.className = "size-pictogram";
     wrap.setAttribute("aria-hidden", "true");
     const shape = document.createElement("span");
     shape.className = "size-pictogram-shape";
     // 22 px is the tallest/widest the picture gets; keep the footprint's proportions.
-    const unit = Math.min(22 / Math.max(w, 1), 22 / Math.max(h, 1), 5.5);
+    const unit = Math.min(22 / Math.max(w, 1), 22 / Math.max(h, 1), 5.5 / GRID_STEPS_PER_CELL);
     shape.style.width = `${Math.max(6, Math.round(Math.min(w, cols) * unit))}px`;
     shape.style.height = `${Math.max(6, Math.round(h * unit))}px`;
     wrap.append(shape);
@@ -125,7 +126,9 @@ export function createCardElement({ instance, def, handlers }) {
     const body = document.createElement("div");
     body.className = "dash-card-body";
 
-    face.append(head, body);
+    if (instance.widgetType !== "image")
+        face.append(head);
+    face.append(body);
 
     // The pick-up surface covers the tile while editing. It is the one focusable handle
     // for moving and resizing from the keyboard.
@@ -195,6 +198,8 @@ export function createCardElement({ instance, def, handlers }) {
     menuBtn.setAttribute("aria-label", `${fullTitle} options`);
     menuBtn.addEventListener("click", e => {
         e.stopPropagation();
+        if (!handlers.isEditing())
+            return;
         if (activeMenuEl && activeMenuReturnFocus === menuBtn) {
             closeCardMenus(false);
             return;
@@ -231,7 +236,7 @@ export function createCardElement({ instance, def, handlers }) {
  * A menu of plain actions for a control outside the tiles. `items` are
  * { glyph, label, onClick, danger } objects, or "separator".
  */
-export function openActionMenu(anchorBtn, label, items) {
+export function openActionMenu(anchor, label, items, point = null) {
     closeCardMenus(false);
     const menu = document.createElement("div");
     menu.className = "dash-card-menu";
@@ -258,7 +263,7 @@ export function openActionMenu(anchorBtn, label, items) {
         });
         menu.append(btn);
     }
-    presentMenu(menu, anchorBtn);
+    presentMenu(menu, anchor, point);
 }
 
 /** Records where a tile sits on the grid. Pixel geometry is applied by the board. */
@@ -267,8 +272,8 @@ export function applyPlacementData(section, placement, def, cols) {
     section.dataset.row = String(placement.row);
     section.dataset.w = String(placement.w);
     section.dataset.h = String(placement.h);
-    section.dataset.compactRow = placement.h <= 1 ? "true" : "false";
-    section.dataset.narrow = placement.w <= 2 ? "true" : "false";
+    section.dataset.compactRow = placement.h <= GRID_STEPS_PER_CELL ? "true" : "false";
+    section.dataset.narrow = placement.w <= 2 * GRID_STEPS_PER_CELL ? "true" : "false";
     section.dataset.tier = computeCardTier(placement, def, cols);
 }
 
@@ -322,7 +327,7 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
                 btn.setAttribute("role", "menuitemradio");
                 btn.setAttribute("aria-checked", isCurrent ? "true" : "false");
                 const name = SIZE_NAMES[size.tier] || "Size";
-                btn.setAttribute("aria-label", `${name}, ${size.w} by ${size.h}`);
+                btn.setAttribute("aria-label", `${name}, ${formatGridSize(size, " by ")}`);
                 const label = document.createElement("span");
                 label.className = "dash-menu-size-label";
                 label.textContent = name;
@@ -343,11 +348,8 @@ export function openCardMenu(anchorBtn, instance, def, handlers, point = null) {
         addItem("configure", "Settings…", () => handlers.onOpenConfigure(id));
     addItem("swap", "Swap with…", () => handlers.onStartSwap(id), { disabled: handlers.cardCount() < 2 });
     addItem("replace", "Replace…", () => handlers.onOpenReplacePicker(id));
-    // With the Customize button hidden, a tile's menu is the way into editing, and back to the button.
     if (handlers.isCustomizeHidden?.()) {
         addSeparator();
-        if (!handlers.isEditing())
-            addItem("customize", "Customize dashboard", () => handlers.onCustomizeBoard());
         addItem("eye", "Show Customize button", () => handlers.onShowCustomizeButton());
     }
     addSeparator();
@@ -371,7 +373,8 @@ function presentMenu(menu, anchorBtn, point = null) {
 
     activeMenuEl = menu;
     activeMenuReturnFocus = anchorBtn;
-    anchorBtn.setAttribute("aria-expanded", "true");
+    if (anchorBtn.hasAttribute("aria-expanded"))
+        anchorBtn.setAttribute("aria-expanded", "true");
 
     const first = menu.querySelector('[aria-checked="true"]') || menu.querySelector("button:not(:disabled)");
     if (first)

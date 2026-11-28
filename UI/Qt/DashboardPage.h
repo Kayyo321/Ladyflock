@@ -75,6 +75,17 @@ private:
     void handle_items_delete(i64 request_id, JsonObject const& params);
     void handle_items_clear_completed(i64 request_id, JsonObject const& params);
 
+    void handle_image_load(i64 request_id, JsonObject const& params);
+    void handle_image_save(i64 request_id, JsonObject const& params);
+    void handle_image_remove(i64 request_id, JsonObject const& params);
+    void handle_image_fetch_url(i64 request_id, JsonObject const& params);
+    void broadcast_image_change(String const& instance_id);
+    void handle_shaders_list(i64 request_id);
+    void handle_shader_load(i64 request_id, JsonObject const& params);
+    void handle_shader_save(i64 request_id, JsonObject const& params);
+    void handle_shader_remove(i64 request_id, JsonObject const& params);
+    void broadcast_shader_change(String const& shader_id);
+
     // Phase B: Navigation & History
     void handle_top_sites_load(i64 request_id);
     void handle_search_engines(i64 request_id);

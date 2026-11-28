@@ -16,7 +16,6 @@ export function mount(root, api) {
 
     root.classList.add("tasks");
 
-    // The entry row reads as the next empty line of the list.
     const formRow = document.createElement("div");
     formRow.className = "tasks-entry";
 
@@ -32,7 +31,7 @@ export function mount(root, api) {
     input.placeholder = "New task";
     input.setAttribute("aria-label", "New task");
 
-    formRow.append(addBtn, input);
+    formRow.append(input, addBtn);
 
     const listEl = document.createElement("ul");
     listEl.className = "dash-list tasks-list";
@@ -94,7 +93,7 @@ export function mount(root, api) {
         if (vis.length === 0) {
             const empty = document.createElement("li");
             empty.className = "tasks-empty";
-            empty.textContent = config.listFilter ? `Nothing in “${config.listFilter}”.` : "Nothing to do.";
+            empty.textContent = config.listFilter ? `No tasks in “${config.listFilter}”.` : "No tasks yet.";
             listEl.append(empty);
             return;
         }

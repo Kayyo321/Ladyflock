@@ -263,8 +263,8 @@
     gap: 10px;
     flex-shrink: 0;
     height: 38px;
-    padding: 0 6px 0 14px;
-    border-radius: 999px;
+    padding-inline: 12px 5px;
+    border-radius: 7px;
     background-color: var(--well);
     box-shadow: inset 0 0 0 1px var(--well-edge);
 }
@@ -308,7 +308,7 @@
     height: 28px;
     padding: 0;
     border: none;
-    border-radius: 50%;
+    border-radius: 5px;
     background-color: var(--tint-fill);
     color: #ffffff;
     cursor: pointer;
@@ -449,7 +449,7 @@
 }
 
 .tabs-list .dash-list {
-    margin: 0 -6px;
+    margin: 0;
 }
 
 .tabs-heading {
@@ -485,7 +485,7 @@
 }
 
 .dash-list-item.is-current {
-    background-color: var(--tint-soft);
+    background-color: var(--tint-softer);
 }
 
 .dash-list-item.is-current .tabs-title {
@@ -497,14 +497,9 @@
     color: #ffffff;
 }
 
-/* A tab with a logo keeps it on a plain tile; the current one is ringed in the accent. */
 .tabs-mark.has-logo,
 .dash-list-item.is-current .tabs-mark.has-logo {
     background-color: var(--control);
-}
-
-.dash-list-item.is-current .tabs-mark.has-logo {
-    box-shadow: 0 0 0 1.5px var(--tint);
 }
 
 .tabs-mark > img {

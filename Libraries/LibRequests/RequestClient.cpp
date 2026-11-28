@@ -83,6 +83,15 @@ RefPtr<Request> RequestClient::start_request(ByteString const& method, URL::URL 
     return request;
 }
 
+NonnullRefPtr<Request> RequestClient::start_public_resource_request(URL::URL const& url, HTTP::HeaderList const& headers)
+{
+    auto request_id = m_next_request_id++;
+    IPCProxy::async_start_public_resource_request(request_id, url, headers.headers().span());
+    auto request = Request::create_from_id({}, *this, request_id, {});
+    m_requests.set(request_id, request);
+    return request;
+}
+
 RefPtr<Request> RequestClient::adopt_request(int source_client_id, u64 source_request_id, TransferLease transfer_lease, Optional<int> owner_client_id)
 {
     auto request_id = m_next_request_id++;

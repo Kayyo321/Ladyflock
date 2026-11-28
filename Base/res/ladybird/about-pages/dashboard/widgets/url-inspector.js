@@ -48,7 +48,7 @@ export function mount(root, api) {
     const input = document.createElement("input");
     input.type = "text";
     input.className = "urlx-input mono";
-    input.placeholder = "Paste an http:// or https:// URL…";
+    input.placeholder = "Paste a web URL…";
     input.spellcheck = false;
     input.setAttribute("aria-label", "URL to inspect");
     field.append(input);

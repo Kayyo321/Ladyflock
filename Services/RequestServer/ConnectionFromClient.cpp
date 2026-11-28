@@ -448,6 +448,33 @@ void ConnectionFromClient::start_request(u64 request_id, ByteString method, URL:
         m_request_transfer_leases.set(*transfer_lease, RequestTransferLease { *this, request_id });
 }
 
+void ConnectionFromClient::start_public_resource_request(u64 request_id, URL::URL url, Vector<HTTP::Header> request_headers)
+{
+    if (is_live_request_id(request_id)) {
+        did_misbehave("reused live request ID");
+        return;
+    }
+
+    if (m_site_binding != SiteBinding::Unrestricted || m_is_private == IsPrivate::Yes
+        || privacy_network_gate().state() != Privacy::NetworkGate::State::Active) {
+        async_request_finished(request_id, 0, {}, Requests::NetworkError::BlockedByPrivacyPolicy);
+        return;
+    }
+
+    if (url.scheme() != "https"sv || !url.username().is_empty() || !url.password().is_empty() || !is_fetchable_url(url)) {
+        async_request_finished(request_id, 0, {}, Requests::NetworkError::MalformedUrl);
+        return;
+    }
+
+    auto headers = HTTP::HeaderList::create();
+    for (auto& header : request_headers) {
+        if (header.name.is_one_of_ignoring_ascii_case("Accept"sv, "User-Agent"sv) && HTTP::is_header_value(header.value))
+            headers->set(move(header));
+    }
+    auto request = Request::fetch_public_resource(request_id, *this, m_fetch_curl.handle, m_resolver, move(url), move(headers));
+    m_active_requests.set(request_id, move(request));
+}
+
 void ConnectionFromClient::adopt_request(int source_client_id, u64 source_request_id, u64 target_request_id, bool preserve_transfer_lease, Optional<int> owner_client_id)
 {
     if (is_live_request_id(target_request_id)) {

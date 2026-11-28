@@ -27,7 +27,7 @@ export function mount(root, api) {
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "list-entry-input";
-    nameInput.placeholder = "Save this window as…";
+    nameInput.placeholder = "Workspace name";
     nameInput.setAttribute("aria-label", "Workspace name");
     saveRow.append(saveBtn, nameInput);
 

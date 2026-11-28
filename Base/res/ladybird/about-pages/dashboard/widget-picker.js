@@ -7,7 +7,7 @@
  * the board. Everything shown here is bundled sample data; nothing subscribes or fetches.
  */
 
-import { effectiveSizesForBreakpoint } from "./grid-engine.js";
+import { effectiveSizesForBreakpoint, formatGridSize } from "./grid-engine.js";
 import { icon } from "./icons.js";
 import { createSizePictogram } from "./widget-chrome.js";
 import {
@@ -34,10 +34,7 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
         chip.className = "shelf-cat";
         chip.setAttribute("role", "tab");
         chip.dataset.section = section.id;
-        const dot = document.createElement("span");
-        dot.className = "shelf-cat-dot";
-        dot.setAttribute("aria-hidden", "true");
-        chip.append(dot, section.short);
+        chip.textContent = section.short;
         chip.title = section.title;
         chip.addEventListener("click", () => setCategory(section.id));
         catsEl.insertBefore(chip, tabPresetsEl);
@@ -59,6 +56,7 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
         const select = (el, on) => {
             el.classList.toggle("active", on);
             el.setAttribute("aria-selected", on ? "true" : "false");
+            el.tabIndex = on ? 0 : -1;
         };
         select(tabWidgetsEl, category === "all");
         select(tabPresetsEl, category === "presets");
@@ -144,7 +142,7 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
 
         const art = document.createElement("div");
         art.className = "picker-art";
-        art.append(icon(def.id, 24));
+        art.append(icon(def.id, 18));
 
         const title = document.createElement("span");
         title.className = "picker-item-title";
@@ -172,8 +170,8 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
                 btn.className = "picker-size";
                 btn.disabled = isSingletonPlaced;
                 btn.setAttribute("aria-pressed", size.tier === tier ? "true" : "false");
-                btn.setAttribute("aria-label", `${SIZE_NAMES[size.tier] || "Size"}, ${size.w} by ${size.h}`);
-                btn.title = `${SIZE_NAMES[size.tier] || "Size"} · ${size.w} × ${size.h}`;
+                btn.setAttribute("aria-label", `${SIZE_NAMES[size.tier] || "Size"}, ${formatGridSize(size, " by ")}`);
+                btn.title = `${SIZE_NAMES[size.tier] || "Size"} · ${formatGridSize(size)}`;
                 btn.append(createSizePictogram(size.w, size.h, state.cols));
                 btn.addEventListener("click", () => {
                     chosenTier.set(def.id, size.tier);
@@ -287,6 +285,23 @@ export function createPickerController({ shelfEl, titleEl, catsEl, tabWidgetsEl,
 
     tabWidgetsEl.addEventListener("click", () => setCategory("all"));
     tabPresetsEl.addEventListener("click", () => setCategory("presets"));
+    catsEl.addEventListener("keydown", e => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+            return;
+        const tabs = [...catsEl.querySelectorAll('[role="tab"]:not(.hidden)')];
+        const index = tabs.indexOf(e.target);
+        if (index < 0)
+            return;
+        e.preventDefault();
+        let next = e.key === "Home" ? 0 : tabs.length - 1;
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            const rtl = getComputedStyle(catsEl).direction === "rtl";
+            const step = (e.key === "ArrowRight") !== rtl ? 1 : -1;
+            next = (index + step + tabs.length) % tabs.length;
+        }
+        tabs[next].click();
+        tabs[next].focus();
+    });
     searchInputEl.addEventListener("input", () => {
         if (category !== "all")
             category = "all";

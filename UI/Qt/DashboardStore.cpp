@@ -5,14 +5,19 @@
  */
 
 #include <AK/Array.h>
+#include <AK/CharacterTypes.h>
 #include <AK/HashTable.h>
 #include <AK/JsonValue.h>
 #include <AK/Time.h>
+#include <LibDatabase/ResultRow.h>
 #include <UI/Qt/DashboardStore.h>
 
 namespace Ladybird {
 
 static constexpr u32 DASHBOARD_SCHEMA_VERSION_1 = 1u;
+static constexpr u32 DASHBOARD_SCHEMA_VERSION_2 = 2u;
+static constexpr u32 DASHBOARD_SCHEMA_VERSION_3 = 3u;
+static constexpr u32 DASHBOARD_SCHEMA_VERSION_4 = 4u;
 
 ErrorOr<Database::MigrationOutcome> DashboardStore::migrate_schema(Database::Database& database, Database::MigrationMode mode)
 {
@@ -73,6 +78,39 @@ ErrorOr<Database::MigrationOutcome> DashboardStore::migrate_schema(Database::Dat
                 );
             )#"sv,
         },
+        {
+            .version = DASHBOARD_SCHEMA_VERSION_2,
+            // Preserve existing layouts when splitting each grid cell into four steps per axis.
+            .sql = "UPDATE DashboardPlacements SET col = col * 4, row = row * 4, w = w * 4, h = h * 4;"sv,
+        },
+        {
+            .version = DASHBOARD_SCHEMA_VERSION_3,
+            // Shift each layout's occupied midpoint to the viewport centerline.
+            .sql = R"#(
+                WITH LayoutCenters AS MATERIALIZED (
+                    SELECT scope_key, breakpoint, (MAX(row + h) + MIN(row)) / 2 AS center_row
+                    FROM DashboardPlacements
+                    GROUP BY scope_key, breakpoint
+                )
+                UPDATE DashboardPlacements
+                SET row = row - LayoutCenters.center_row
+                FROM LayoutCenters
+                WHERE DashboardPlacements.scope_key = LayoutCenters.scope_key
+                    AND DashboardPlacements.breakpoint = LayoutCenters.breakpoint;
+            )#"sv,
+        },
+        {
+            .version = DASHBOARD_SCHEMA_VERSION_4,
+            .sql = R"#(
+                CREATE TABLE IF NOT EXISTS DashboardImages (
+                    scope_key TEXT NOT NULL,
+                    instance_id TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY (scope_key, instance_id)
+                );
+            )#"sv,
+        },
     });
 
     return database.migrate("Dashboard"sv, migrations, mode);
@@ -124,6 +162,30 @@ ErrorOr<DashboardStore::Statements> DashboardStore::prepare_statements(Database:
     s.delete_grant = TRY(db.prepare_statement("DELETE FROM DashboardNetworkGrants WHERE scope_key = ? AND source_id = ?;"sv));
     s.delete_scope_grants = TRY(db.prepare_statement("DELETE FROM DashboardNetworkGrants WHERE scope_key = ?;"sv));
     s.sum_cache_bytes = TRY(db.prepare_statement("SELECT COALESCE(SUM(LENGTH(CAST(cache_json AS BLOB))), 0) FROM DashboardNetworkGrants WHERE scope_key = ?;"sv));
+    s.verify_image_widget = TRY(db.prepare_statement(R"#(
+        SELECT 1 FROM DashboardWidgets AS widget
+        WHERE widget.scope_key = ? AND widget.instance_id = ? AND widget.widget_type = 'image'
+            AND EXISTS (
+                SELECT 1 FROM DashboardPlacements AS placement
+                WHERE placement.scope_key = widget.scope_key AND placement.instance_id = widget.instance_id
+            );
+    )#"sv));
+    s.get_image = TRY(db.prepare_statement("SELECT mime_type, data FROM DashboardImages WHERE scope_key = :scope_key AND instance_id = :instance_id;"sv));
+    s.upsert_image = TRY(db.prepare_statement(R"#(
+        INSERT INTO DashboardImages(scope_key, instance_id, mime_type, data)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(scope_key, instance_id) DO UPDATE SET mime_type = excluded.mime_type, data = excluded.data;
+    )#"sv));
+    s.delete_image = TRY(db.prepare_statement("DELETE FROM DashboardImages WHERE scope_key = ? AND instance_id = ?;"sv));
+    s.delete_scope_images = TRY(db.prepare_statement("DELETE FROM DashboardImages WHERE scope_key = ?;"sv));
+    s.delete_orphan_images = TRY(db.prepare_statement(R"#(
+        DELETE FROM DashboardImages WHERE scope_key = ? AND NOT EXISTS (
+            SELECT 1 FROM DashboardWidgets AS widget
+            JOIN DashboardPlacements AS placement ON placement.scope_key = widget.scope_key AND placement.instance_id = widget.instance_id
+            WHERE widget.scope_key = DashboardImages.scope_key AND widget.instance_id = DashboardImages.instance_id AND widget.widget_type = 'image'
+        );
+    )#"sv));
+    s.sum_other_image_bytes = TRY(db.prepare_statement("SELECT COALESCE(SUM(LENGTH(data)), 0) FROM DashboardImages WHERE scope_key = ? AND instance_id != ?;"sv));
     return s;
 }
 
@@ -200,13 +262,13 @@ StringView DashboardStore::storage_status_string() const
 i64 DashboardStore::columns_for_breakpoint(StringView breakpoint)
 {
     if (breakpoint == "wide"sv)
-        return 12;
+        return 48;
     if (breakpoint == "medium"sv)
-        return 8;
+        return 32;
     if (breakpoint == "narrow"sv)
-        return 4;
+        return 16;
     if (breakpoint == "compact"sv)
-        return 2;
+        return 8;
     return 0;
 }
 
@@ -225,11 +287,11 @@ ErrorOr<void> DashboardStore::validate_placements(StringView breakpoint, Vector<
             return Error::from_string_literal("Duplicate placement for widget instance");
         seen.set(p.instance_id);
 
-        if (p.col < 0 || p.row < 0 || p.w < 1 || p.h < 1)
+        if (p.col < 0 || p.row < MIN_GRID_ROW || p.w < 1 || p.h < 1)
             return Error::from_string_literal("Placement dimensions out of bounds");
-        if (p.col + p.w > cols)
+        if (p.col > cols - p.w)
             return Error::from_string_literal("Placement exceeds breakpoint column count");
-        if (p.row + p.h > MAX_GRID_ROWS)
+        if (p.h > MAX_GRID_ROWS || p.row > MAX_GRID_ROWS - p.h)
             return Error::from_string_literal("Placement exceeds maximum row count");
 
         for (size_t j = 0; j < i; ++j) {
@@ -252,41 +314,66 @@ DashboardStore::LayoutSnapshot DashboardStore::build_starter_layout(bool is_ephe
     snapshot.initialized = false;
     snapshot.compact_mode = false;
 
-    Vector<Placement> wide;
+    JsonObject clock_config;
+    clock_config.set("use24Hour"sv, false);
+    clock_config.set("showSeconds"sv, false);
+    clock_config.set("zones"sv, JsonArray {});
+    snapshot.widgets.append({ "starter-clock"_string, "world-clock"_string, 1, move(clock_config) });
+
     if (is_ephemeral_starter) {
-        JsonObject clock_cfg;
-        clock_cfg.set("use24Hour"sv, false);
-        clock_cfg.set("showSeconds"sv, false);
-        clock_cfg.set("zones"sv, JsonArray {});
-        snapshot.widgets.append({ "starter-clock"_string, "world-clock"_string, 1, move(clock_cfg) });
-        wide.append({ "starter-clock"_string, 0, 0, 3, 2 });
+        JsonObject calculator_config;
+        calculator_config.set("remBase"sv, 16);
+        calculator_config.set("saveHistory"sv, false);
+        snapshot.widgets.append({ "starter-calc"_string, "calculator"_string, 1, move(calculator_config) });
 
-        JsonObject calc_cfg;
-        calc_cfg.set("remBase"sv, 16);
-        calc_cfg.set("saveHistory"sv, false);
-        snapshot.widgets.append({ "starter-calc"_string, "calculator"_string, 1, move(calc_cfg) });
-        wide.append({ "starter-calc"_string, 3, 0, 3, 2 });
+        snapshot.placements.set("wide"_string, Vector<Placement> {
+            { "starter-clock"_string, 8, -6, 16, 12 },
+            { "starter-calc"_string, 24, -6, 16, 12 },
+        });
+        snapshot.placements.set("medium"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -6, 16, 12 },
+            { "starter-calc"_string, 16, -6, 16, 12 },
+        });
+        snapshot.placements.set("narrow"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -10, 16, 8 },
+            { "starter-calc"_string, 0, -2, 16, 12 },
+        });
+        snapshot.placements.set("compact"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -10, 8, 8 },
+            { "starter-calc"_string, 0, -2, 8, 12 },
+        });
     } else {
-        JsonObject clock_cfg;
-        clock_cfg.set("use24Hour"sv, false);
-        clock_cfg.set("showSeconds"sv, false);
-        clock_cfg.set("zones"sv, JsonArray {});
-        snapshot.widgets.append({ "starter-clock"_string, "world-clock"_string, 1, move(clock_cfg) });
-        wide.append({ "starter-clock"_string, 0, 0, 3, 2 });
+        JsonObject tasks_config;
+        tasks_config.set("listFilter"sv, ""_string);
+        snapshot.widgets.append({ "starter-tasks"_string, "quick-tasks"_string, 1, move(tasks_config) });
 
-        JsonObject tasks_cfg;
-        tasks_cfg.set("listFilter"sv, ""_string);
-        snapshot.widgets.append({ "starter-tasks"_string, "quick-tasks"_string, 1, move(tasks_cfg) });
-        wide.append({ "starter-tasks"_string, 3, 0, 4, 3 });
+        JsonObject scratchpad_config;
+        scratchpad_config.set("noteId"sv, "default-note"_string);
+        scratchpad_config.set("preview"sv, false);
+        snapshot.widgets.append({ "starter-scratchpad"_string, "scratchpad"_string, 1, move(scratchpad_config) });
 
-        JsonObject pad_cfg;
-        pad_cfg.set("noteId"sv, "default-note"_string);
-        pad_cfg.set("preview"sv, false);
-        snapshot.widgets.append({ "starter-scratchpad"_string, "scratchpad"_string, 1, move(pad_cfg) });
-        wide.append({ "starter-scratchpad"_string, 7, 0, 4, 3 });
+        snapshot.placements.set("wide"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -5, 16, 10 },
+            { "starter-tasks"_string, 16, -5, 16, 10 },
+            { "starter-scratchpad"_string, 32, -5, 16, 10 },
+        });
+        snapshot.placements.set("medium"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -5, 10, 10 },
+            { "starter-tasks"_string, 10, -5, 12, 10 },
+            { "starter-scratchpad"_string, 22, -5, 10, 10 },
+        });
+        snapshot.placements.set("narrow"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -14, 16, 8 },
+            { "starter-tasks"_string, 0, -6, 16, 10 },
+            { "starter-scratchpad"_string, 0, 4, 16, 10 },
+        });
+        snapshot.placements.set("compact"_string, Vector<Placement> {
+            { "starter-clock"_string, 0, -14, 8, 8 },
+            { "starter-tasks"_string, 0, -6, 8, 10 },
+            { "starter-scratchpad"_string, 0, 4, 8, 10 },
+        });
     }
 
-    snapshot.placements.set("wide"_string, move(wide));
     return snapshot;
 }
 
@@ -473,7 +560,7 @@ DashboardStore::CommitResult DashboardStore::commit_layout(
                 TRY(m_database->try_execute_statement(m_statements.insert_placement, {}, scope_key, bp, p.instance_id, p.col, p.row, p.w, p.h));
             }
         }
-        return {};
+        return m_database->try_execute_statement(m_statements.delete_orphan_images, {}, scope_key);
     });
 
     if (tx_result.is_error()) {
@@ -554,15 +641,34 @@ DashboardStore::ItemSaveResult DashboardStore::save_item(
     if (collection.is_empty() || collection.bytes().size() > 64 || item_id.is_empty() || item_id.bytes().size() > 128)
         return { .ok = false, .conflict = false, .error = "Invalid item identifier."_string, .revision = 0, .current_value = {} };
 
-    auto serialized = JsonValue { value }.serialized();
-    size_t max_bytes = (collection == "notes"sv) ? (MAX_NOTE_BYTES + 4096) : MAX_ITEM_JSON_BYTES;
-    if (serialized.bytes().size() > max_bytes)
-        return { .ok = false, .conflict = false, .error = "Item exceeds maximum allowed size."_string, .revision = 0, .current_value = {} };
-
     if (collection == "notes"sv) {
         if (auto body = value.get_string("content"sv); body.has_value() && body->bytes().size() > MAX_NOTE_BYTES)
             return { .ok = false, .conflict = false, .error = "Notes are limited to 64 KiB."_string, .revision = 0, .current_value = {} };
     }
+
+    bool is_shader = collection == IMAGE_SHADER_COLLECTION;
+    if (is_shader) {
+        auto name = value.get_string("name"sv).value_or(String {});
+        auto source = value.get_string("source"sv).value_or(String {});
+        bool invalid_name = name.bytes().size() > MAX_SHADER_NAME_BYTES || name.bytes_as_string_view().trim_whitespace().is_empty();
+        for (auto byte : name.bytes()) {
+            if (is_ascii_control(byte)) {
+                invalid_name = true;
+                break;
+            }
+        }
+        if (invalid_name)
+            return { .ok = false, .conflict = false, .error = "Choose a shader file with a shorter, valid name."_string, .revision = 0, .current_value = {} };
+        if (source.bytes().size() > MAX_SHADER_BYTES)
+            return { .ok = false, .conflict = false, .error = "Shader files are limited to 16 KiB."_string, .revision = 0, .current_value = {} };
+        if (source.bytes_as_string_view().trim_whitespace().is_empty() || source.bytes_as_string_view().contains('\0'))
+            return { .ok = false, .conflict = false, .error = "Choose a shader file containing UTF-8 text."_string, .revision = 0, .current_value = {} };
+    }
+
+    auto serialized = JsonValue { value }.serialized();
+    size_t max_bytes = (collection == "notes"sv) ? (MAX_NOTE_BYTES + 4096) : MAX_ITEM_JSON_BYTES;
+    if (serialized.bytes().size() > max_bytes)
+        return { .ok = false, .conflict = false, .error = "Item exceeds maximum allowed size."_string, .revision = 0, .current_value = {} };
 
     auto existing = get_item(scope_key, collection, item_id);
     if (!existing.has_value()) {
@@ -575,8 +681,10 @@ DashboardStore::ItemSaveResult DashboardStore::save_item(
             },
             scope_key,
             collection);
-        if (static_cast<size_t>(existing_count) >= MAX_COLLECTION_ITEMS)
-            return { .ok = false, .conflict = false, .error = "Collection limit reached."_string, .revision = 0, .current_value = {} };
+        if (static_cast<size_t>(existing_count) >= (is_shader ? MAX_SHADER_FILES : MAX_COLLECTION_ITEMS)) {
+            auto error = is_shader ? "The shader library is full. Remove a saved shader to add another."_string : "Collection limit reached."_string;
+            return { .ok = false, .conflict = false, .error = move(error), .revision = 0, .current_value = {} };
+        }
     }
 
     if (expected_revision.has_value()) {
@@ -705,6 +813,83 @@ bool DashboardStore::revoke_network_grant(String const& scope_key, String const&
     return !m_database->try_execute_statement(m_statements.delete_grant, {}, scope_key, source_id).is_error();
 }
 
+static bool is_supported_image_mime_type(StringView mime_type)
+{
+    return mime_type.is_one_of("image/png"sv, "image/jpeg"sv, "image/gif"sv, "image/webp"sv, "image/avif"sv, "image/bmp"sv);
+}
+
+ErrorOr<void> DashboardStore::verify_image_widget(String const& scope_key, String const& instance_id)
+{
+    if (instance_id.is_empty() || instance_id.bytes().size() > 128)
+        return Error::from_string_literal("Invalid image widget identifier.");
+
+    bool found = false;
+    TRY(m_database->try_execute_statement(
+        m_statements.verify_image_widget,
+        [&](auto) -> ErrorOr<void> {
+            found = true;
+            return {};
+        },
+        scope_key,
+        instance_id));
+    if (!found)
+        return Error::from_string_literal("This image widget is no longer on the dashboard.");
+    return {};
+}
+
+ErrorOr<Optional<DashboardStore::Image>> DashboardStore::load_image(String const& scope_key, String const& instance_id)
+{
+    TRY(verify_image_widget(scope_key, instance_id));
+    Optional<Image> image;
+    TRY(m_database->try_execute_bound_statement(
+        m_statements.get_image,
+        [&](auto& bind) -> ErrorOr<void> {
+            TRY(bind("scope_key"sv, scope_key));
+            return bind("instance_id"sv, instance_id);
+        },
+        [&](Database::ResultRow& row) -> ErrorOr<void> {
+            auto mime_type = TRY(row.read_text("mime_type"sv, 32));
+            if (!is_supported_image_mime_type(mime_type))
+                return Error::from_string_literal("Unsupported dashboard image type.");
+            image = Image { move(mime_type), TRY(row.read_blob("data"sv, MAX_IMAGE_BYTES)) };
+            return {};
+        }));
+    return image;
+}
+
+ErrorOr<void> DashboardStore::save_image(String const& scope_key, String const& instance_id, StringView mime_type, ReadonlyBytes bytes)
+{
+    if (!is_supported_image_mime_type(mime_type) || bytes.is_empty())
+        return Error::from_string_literal("Unsupported dashboard image type.");
+    if (bytes.size() > MAX_IMAGE_BYTES)
+        return Error::from_string_literal("Dashboard images can be up to 8 MiB.");
+    auto stored_mime_type = TRY(String::from_utf8(mime_type));
+
+    return m_database->transaction([&]() -> ErrorOr<void> {
+        TRY(verify_image_widget(scope_key, instance_id));
+        i64 other_image_bytes = 0;
+        TRY(m_database->try_execute_statement(
+            m_statements.sum_other_image_bytes,
+            [&](auto stmt) -> ErrorOr<void> {
+                other_image_bytes = m_database->result_column<i64>(stmt, 0);
+                return {};
+            },
+            scope_key,
+            instance_id));
+        if (other_image_bytes > static_cast<i64>(MAX_SCOPE_IMAGE_BYTES - bytes.size()))
+            return Error::from_string_literal("The dashboard’s image storage is full.");
+        return m_database->try_execute_statement(m_statements.upsert_image, {}, scope_key, instance_id, stored_mime_type, bytes);
+    });
+}
+
+ErrorOr<void> DashboardStore::remove_image(String const& scope_key, String const& instance_id)
+{
+    return m_database->transaction([&]() -> ErrorOr<void> {
+        TRY(verify_image_widget(scope_key, instance_id));
+        return m_database->try_execute_statement(m_statements.delete_image, {}, scope_key, instance_id);
+    });
+}
+
 bool DashboardStore::delete_scope_data(String const& scope_key)
 {
     m_recent_ops.remove(scope_key);
@@ -714,6 +899,7 @@ bool DashboardStore::delete_scope_data(String const& scope_key)
         TRY(m_database->try_execute_statement(m_statements.delete_placements, {}, scope_key));
         TRY(m_database->try_execute_statement(m_statements.delete_scope_items, {}, scope_key));
         TRY(m_database->try_execute_statement(m_statements.delete_scope_grants, {}, scope_key));
+        TRY(m_database->try_execute_statement(m_statements.delete_scope_images, {}, scope_key));
         return {};
     });
     return !tx.is_error();
